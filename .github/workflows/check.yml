@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
       # node は check-seccomp が .ts を直接実行するのに使う (型ストリッピング、node>=23.6。
       # core/docs/verified-facts/nodejs.md)。pnpm/tsx は不要。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
       - name: Install checkers
