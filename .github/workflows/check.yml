@@ -1,0 +1,88 @@
+name: check
+
+# kit の受け入れゲート: (1) templates を scaffold して make -C core check を全緑に
+# (2) install.sh の冪等性 (3) dev/redact/secrets-proxy イメージの実ビルド。
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      # node は check-seccomp が .ts を直接実行するのに使う (型ストリッピング、node>=23.6。
+      # core/docs/verified-facts/node.md)。pnpm/tsx は不要。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck dnsmasq-base proxychains4
+          sudo ln -sf /usr/sbin/dnsmasq /usr/local/bin/dnsmasq
+          # hadolint: devcontainer 側 (core/Dockerfile の hadolint ステージ) と版を合わせる (手動更新)
+          sudo curl -fsSL -o /usr/local/bin/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64
+          sudo chmod +x /usr/local/bin/hadolint
+      - name: uv sync (kit venv)
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
+        run: uv sync --project core --frozen
+      - name: lint (install.sh / templates の workflow・JSON・YAML)
+        run: |
+          set -euo pipefail
+          shellcheck -S warning install.sh
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz | tar xz actionlint
+          ./actionlint .github/workflows/*.yml templates/github/workflows/*.yml
+          python3 -c 'import json; json.load(open("templates/claude/settings.json")); json.load(open("templates/devcontainer.json"))'
+          .venv/bin/python -c 'import yaml; yaml.safe_load(open("templates/github/dependabot.yml")); yaml.safe_load(open(".github/dependabot.yml"))'
+      - name: Scaffold project layer (kit CI 用 consumer 相当物)
+        run: |
+          set -euo pipefail
+          cp -Rp templates/project project
+          cp -p templates/devcontainer.json devcontainer.json
+          sed -i 's/@@PROJECT_NAME@@/kitci/' project/compose.yaml devcontainer.json
+          bash core/bin/gen-dockerfile.sh > Dockerfile
+      - run: make -C core check
+
+  install-idempotency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh を 2 回実行 → 2 回目は no-op、project 編集は保持
+        run: |
+          set -euo pipefail
+          consumer=$(mktemp -d)
+          cd "$consumer" && git init -q .
+          bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
+          git add -A && git -c user.email=ci@example.com -c user.name=ci commit -qm scaffold
+          bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
+          [ -z "$(git status --porcelain)" ] || { echo "2 回目の install.sh が差分を出した:"; git status --porcelain; exit 1; }
+          echo "# consumer edit" >> .devcontainer/project/allow-domains.txt
+          bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
+          grep -q "consumer edit" .devcontainer/project/allow-domains.txt || { echo "project 編集が installer に消された" >&2; exit 1; }
+
+  build-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scaffold + gen
+        run: |
+          set -euo pipefail
+          cp -Rp templates/project project
+          cp -p templates/devcontainer.json devcontainer.json
+          sed -i 's/@@PROJECT_NAME@@/kitci/' project/compose.yaml devcontainer.json
+          bash core/bin/gen-dockerfile.sh > Dockerfile
+      - name: Build dev / redact / secrets-proxy
+        run: |
+          set -euo pipefail
+          docker build --target dev -f Dockerfile .
+          docker build --target redact -f Dockerfile .
+          docker build core/secrets-proxy

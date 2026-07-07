@@ -1,0 +1,15 @@
+# devcontainer の Dockerfile の image を tag+digest 込みで自動更新する (kit が一元管理し、
+# consumer へは installer 再実行 / devcontainer-kit-update.yml で届く)。
+# docker ecosystem は FROM 行だけを解析する (COPY --from= は追従しない。core/docs/verified-facts/dependabot.md)。
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directories:
+      - "/core"
+      - "/core/secrets-proxy"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
