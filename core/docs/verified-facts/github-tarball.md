@@ -1,4 +1,4 @@
-# GitHub archive tarball (`/archive/<ref>.tar.gz`)
+# GitHub archive tarball (`/archive/<ref>.tar.gz` および `gh api .../tarball/<ref>`)
 
 confidence tag の凡例: [README](README.md)。
 
@@ -40,3 +40,33 @@ curl -fsSL "https://github.com/hadolint/hadolint/archive/<full-sha>.tar.gz" -o s
 - HTTP 404 (release 未作成時の既定 ref 解決失敗、typo した ref 等) は `curl -fsSL` が非 0 で
   fail-closed になり、`set -euo pipefail` で installer 全体が止まる (部分展開のまま次工程に
   進まない)。
+
+## GitHub REST API tarball エンドポイント (`gh api repos/<owner>/<repo>/tarball/<ref>`)
+
+root README の「curl \| bash を避けたい場合」の代替手順で使う。上の `/archive/<ref>.tar.gz` (codeload
+直叩き) とは **top dir の生成規則が別物**。
+
+### 実測 (2026-07-08, `hadolint/hadolint` と `octokit/octokit.js` — ともに public repo)
+
+`https://api.github.com/repos/<owner>/<repo>/tarball/<ref>` は 302 で
+`https://codeload.github.com/<owner>/<repo>/legacy.tar.gz/refs/heads/<ref>` (または `refs/tags/<ref>`) に
+リダイレクトする (`legacy.tar.gz` エンドポイント。`/archive/<ref>.tar.gz` とは別パス)。`tar tzf | head -1`
+で top dir を確認:
+
+| repo | ref 種別 | ref | top dir |
+|---|---|---|---|
+| hadolint/hadolint | branch | `master` | `hadolint-hadolint-84c6da5/` |
+| hadolint/hadolint | tag | `v2.12.0` | `hadolint-hadolint-b30b8b5/` |
+| octokit/octokit.js | branch | `main` | `octokit-octokit.js-f2d3153/` |
+
+`[empirical]`
+
+### 結論
+
+- top dir は常に `<owner>-<repo>-<short-sha>` (owner 込み、branch/tag で規則の差は無い —
+  `/archive/<ref>.tar.gz` と違いここは対称。tag の `v` prefix は short SHA に置き換わるため
+  そもそも残らない)。
+- したがって `ikeyan/agent-devcontainer` を `gh api repos/ikeyan/agent-devcontainer/tarball/<ref> | tar xz`
+  で展開すると top dir は `ikeyan-agent-devcontainer-<short-sha>/` になる。**`agent-devcontainer-*` という
+  glob は owner prefix (`ikeyan-`) が無いためマッチしない** — root README の代替手順は
+  `ikeyan-agent-devcontainer-*` を使うこと。

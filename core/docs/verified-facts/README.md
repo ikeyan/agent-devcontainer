@@ -22,7 +22,7 @@ confidence: `[docs]`=公式文書, `[man]`=man/manual, `[empirical]`=実機/実�
 - [gh.md](gh.md) — gh CLI (認証, config マイグレーション)
 - [git.md](git.md) — merge-backend rebase の phantom-dirty (virtiofs で core.checkStat=minimal)
 - [github-releases-sha256.md](github-releases-sha256.md) — GitHub Releases 成果物の sha256
-- [github-tarball.md](github-tarball.md) — GitHub archive tarball の top dir 名 (ref 種別依存)
+- [github-tarball.md](github-tarball.md) — GitHub archive tarball の top dir 名 (`/archive/` は ref 種別依存、`gh api .../tarball/` は owner 込み固定)
 - [mitmproxy.md](mitmproxy.md) — mitmweb 11.1.3 の web_* オプション/認証常時ON/flow_detail 差/Host allowlist 無し
 - [dependabot.md](dependabot.md) — Dependabot docker ecosystem / OCI image の digest 固定
 - [tree-sitter-containerfile.md](tree-sitter-containerfile.md) — Dockerfile parse の AST node 名 (check_dockerfile_deps)
