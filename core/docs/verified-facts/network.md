@@ -107,8 +107,10 @@ confidence tag の凡例: [README](README.md)。
     トリムが要るのは nested rootless podman のような複数 nameserver 環境で、そこでは resolv.conf は
     書込可。BuildKit 環境は nameserver 1 行 (`127.0.0.11` 等) なので書き込み自体が発生しない。
     トリムが必要なのに書けない環境では printf が自然に失敗する (fail-closed 維持)。条件の
-    `$(grep -c ...)` は grep の stdout (行数) を使い exit code は使わないため、SHELL の
-    bash -o pipefail 下でも 0 件 (exit 1) で連鎖が切れる罠は無い。 `[empirical]`
+    `$(grep -c ...)` は pipe を含まない単一コマンドの command substitution なので pipefail は
+    そもそも無関係 — `[ ... -gt 1 ]` の引数として使われる command substitution は中のコマンドの
+    exit status を捨てて標準出力の文字列だけを使う (shell の一般規則) ため、grep が 0 件マッチで
+    exit 1 になっても `[` の判定自体には影響しない。 `[empirical]`
 
 ## uv / sfw の CA 結合 (TLS)
 

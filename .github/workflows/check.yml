@@ -17,7 +17,7 @@ jobs:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
       # node は check-seccomp が .ts を直接実行するのに使う (型ストリッピング、node>=23.6。
-      # core/docs/verified-facts/node.md)。pnpm/tsx は不要。
+      # core/docs/verified-facts/nodejs.md)。pnpm/tsx は不要。
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -50,6 +50,8 @@ jobs:
           cp -p templates/devcontainer.json devcontainer.json
           sed -i 's/@@PROJECT_NAME@@/kitci/' project/compose.yaml devcontainer.json
           bash core/bin/gen-dockerfile.sh > Dockerfile
+      - name: 置換漏れ placeholder が無いこと (置換漏れの devcontainer.json は silent に出荷されるため pin — CLAUDE.md 規則 5 相当)
+        run: ! grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile
       - run: make -C core check
 
   install-idempotency:
@@ -68,6 +70,9 @@ jobs:
           echo "# consumer edit" >> .devcontainer/project/allow-domains.txt
           bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
           grep -q "consumer edit" .devcontainer/project/allow-domains.txt || { echo "project 編集が installer に消された" >&2; exit 1; }
+          rm .github/dependabot.yml
+          bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
+          [ ! -e .github/dependabot.yml ] || { echo "更新実行 (core 既存) で consumer が削除した glue (.github/dependabot.yml) が再scaffoldされた" >&2; exit 1; }
 
   build-images:
     runs-on: ubuntu-latest

@@ -29,8 +29,9 @@ trap cleanup EXIT
 
 if [ -z "$SRC" ]; then
   if [ -z "$REF" ]; then
-    # 既定 ref = 最新 release tag (jq 非依存で tag_name を抜く。release 未作成なら空になり、
-    # 下の tarball 取得が 404 で自然に失敗する — その場合は --ref main を指定する)
+    # 既定 ref = 最新 release tag (jq 非依存で tag_name を抜く。release 未作成なら releases/latest
+    # 自体が 404 になり curl -f が失敗、pipefail で REF=$(...) の代入ごと fail する (REF が空に
+    # なる前にここで止まる) — その場合は --ref main を指定する)
     REF=$(curl -fsSL "https://api.github.com/repos/$REPO_SLUG/releases/latest" \
       | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
   fi
@@ -45,6 +46,9 @@ fi
 
 # --- core: 全置換同期 (rsync --delete と同じ事後条件。rsync 非依存) -----------------
 mkdir -p "$DIR"
+# rm -rf の前に判定: core/ の有無で初回インストールか更新実行かを見分ける (下の glue scaffold gate で使う)
+first_install=0
+[ -d "$DIR/core" ] || first_install=1
 rm -rf "$DIR/core"
 cp -Rp "$SRC/core" "$DIR/core"
 printf '%s\n' "$REF" > "$DIR/core/VERSION"
@@ -71,12 +75,16 @@ fi
 if scaffold devcontainer.json "$DIR/devcontainer.json"; then
   sed -i.bak "s/@@PROJECT_NAME@@/$name/" "$DIR/devcontainer.json" && rm -f "$DIR/devcontainer.json.bak"
 fi
-scaffold github/workflows/devcontainer-check.yml .github/workflows/devcontainer-check.yml || true
-scaffold github/workflows/devcontainer-kit-update.yml .github/workflows/devcontainer-kit-update.yml || true
-scaffold github/dependabot.yml .github/dependabot.yml \
-  || { echo "note: .github/dependabot.yml は既存。次の内容の取り込みを検討:"; sed 's/^/  | /' "$SRC/templates/github/dependabot.yml"; }
-scaffold claude/settings.json .claude/settings.json \
-  || { echo "note: .claude/settings.json は既存。次の SessionStart hook の追記を検討:"; sed 's/^/  | /' "$SRC/templates/claude/settings.json"; }
+# 更新実行 (core が既にある) は glue を触らない — consumer の「不採用」判断を安定させる。既存
+# .devcontainer から移行する consumer は templates/ から手動コピー (README 参照)。
+if [ "$first_install" = 1 ]; then
+  scaffold github/workflows/devcontainer-check.yml .github/workflows/devcontainer-check.yml || true
+  scaffold github/workflows/devcontainer-kit-update.yml .github/workflows/devcontainer-kit-update.yml || true
+  scaffold github/dependabot.yml .github/dependabot.yml \
+    || { echo "note: .github/dependabot.yml は既存。次の内容の取り込みを検討:"; sed 's/^/  | /' "$SRC/templates/github/dependabot.yml"; }
+  scaffold claude/settings.json .claude/settings.json \
+    || { echo "note: .claude/settings.json は既存。次の SessionStart hook の追記を検討:"; sed 's/^/  | /' "$SRC/templates/claude/settings.json"; }
+fi
 
 # --- Dockerfile 生成 (core template + project fragments) ----------------------------
 bash "$DIR/core/bin/gen-dockerfile.sh" > "$DIR/Dockerfile"

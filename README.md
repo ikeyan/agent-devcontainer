@@ -27,8 +27,9 @@ curl -fsSL https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/inst
   | bash -s -- --ref v0.1.0 --dir .devcontainer
 ```
 
-release が 1 つも無いと既定 ref の解決が空になり、tarball 取得が 404 で fail-closed する
-(`set -euo pipefail`)。その場合は `--ref main` を明示する。
+release が 1 つも無いと既定 ref の解決に使う `releases/latest` API 自体が 404 になり、`curl -f` が
+失敗して `pipefail` で `REF=$(...)` の代入ごと fail-closed する (REF が空になる前にここで止まる)。
+その場合は `--ref main` を明示する。
 
 curl \| bash を避けたい場合:
 
@@ -110,10 +111,12 @@ push/PR ごとに上記を実行する)。`check-seccomp` は node>=23.6 を要�
   作る。`GITHUB_TOKEN` で作った PR は他の workflow を trigger しない GitHub の仕様があるため、PR 上で
   CI を回したい場合は close/reopen するか PAT に差し替える)。
 
-## 既知の ikeyan 前提 (汎用化 TODO)
+## 既知の ikeyan/tools 前提 (汎用化 TODO)
 
 - `core/gh/hosts.yml` に GitHub user 名 `ikeyan` が直書きされている。
 - `core/init-firewall.sh` の直結許可ドメインと `core/compose.yaml` の `NO_PROXY` に `ikeyan.github.io`
   が含まれる。
 - `core/claude/` (`managed-settings.json` / `user-settings.json` / `local-mask.json`) は Claude Code
   固有の seed。他 agent CLI (Codex 等) への対応は今後。
+- `core/redact/compose.yaml` の `name: tools-redact` — 複数 consumer で compose namespace が衝突する。
+- `core/pyproject.toml` の `name = "tools"`。

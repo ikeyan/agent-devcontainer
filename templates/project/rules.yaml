@@ -9,12 +9,12 @@
 #   - dev が本物の値を持つリクエストは即遮断 (detect_leaks)
 
 # hosts / allow_hosts / passthrough_hosts のどれにも無いホストを 403 で弾く。
-# 既定 true (core/secrets-proxy/addon.py:108-109 の初期値、:120-121 の cfg.get フォールバックとも true)。
+# 既定 true (core/secrets-proxy/addon.py の SecretsProxy 既定。block_unlisted / detect_leaks とも true)。
 # 変える必要が無ければ省略してよいが、意図を残すため明記する。
 block_unlisted: true
 
 # リクエストに本物の捕獲済み秘密が現れたら遮断 (dev は本物を持たないはず = 漏洩検知)。
-# 既定 true (block_unlisted と同じ箇所: addon.py:108-109 / :120-121)。
+# 既定 true (block_unlisted と同じ SecretsProxy 既定)。
 detect_leaks: true
 
 # ---- 到達を許可するだけのホスト (inject/capture なし。block_unlisted の例外) ----
