@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "make -C \"$CLAUDE_PROJECT_DIR/.devcontainer/core\" check >/tmp/devcontainer-make-check.log 2>&1 && echo '[devcontainer gate] make check: all green' || { echo '[devcontainer gate] make check FOUND ISSUES:'; tail -40 /tmp/devcontainer-make-check.log; }"
+          }
+        ]
+      }
+    ]
+  }
+}

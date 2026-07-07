@@ -1,0 +1,9 @@
+# scaffold 元: agent-devcontainer。devcontainer の base image digest は kit repo の Dependabot が
+# 追従する (consumer 側で .devcontainer に docker ecosystem を向けない — 生成物 Dockerfile を
+# 直接書き換えられて gen 検査と衝突する)。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
