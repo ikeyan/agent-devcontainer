@@ -1,0 +1,36 @@
+name: devcontainer-check
+
+# scaffold 元: agent-devcontainer。.devcontainer (core+project) の検証を PR/push ごとに回す。
+# 導入先に既存の check CI があり make -C .devcontainer/core check を含むなら、このファイルは削除して良い。
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      # node>=23.6 必須 (check-seccomp が .ts を型ストリッピングで直接実行する)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck dnsmasq-base proxychains4
+          sudo ln -sf /usr/sbin/dnsmasq /usr/local/bin/dnsmasq
+          sudo curl -fsSL -o /usr/local/bin/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64
+          sudo chmod +x /usr/local/bin/hadolint
+      - name: uv sync (kit venv)
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.devcontainer/.venv
+        run: uv sync --project .devcontainer/core --frozen
+      - run: make -C .devcontainer/core check

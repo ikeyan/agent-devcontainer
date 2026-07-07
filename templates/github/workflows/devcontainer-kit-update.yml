@@ -1,0 +1,26 @@
+name: devcontainer-kit-update
+
+# scaffold 元: agent-devcontainer。週次で installer を再実行し、kit 更新 (base image digest bump 等) が
+# あれば PR を開く。GITHUB_TOKEN の PR は他の workflow を trigger しない (GitHub の仕様) — PR 上で
+# CI を回したい場合は close/reopen するか PAT に差し替える。
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run installer (最新 release)
+        run: curl -fsSL https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/install.sh | bash
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: devcontainer-kit-update
+          title: "chore(devcontainer): agent-devcontainer kit update"
+          commit-message: "chore(devcontainer): agent-devcontainer kit update"

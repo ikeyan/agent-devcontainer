@@ -58,7 +58,10 @@ name=$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | sed 's
 scaffold() { # $1=templates 内の src ($SRC 相対) $2=先 (導入先 repo 相対)。既存なら 1 を返す
   if [ -e "$2" ]; then return 1; fi
   mkdir -p "$(dirname "$2")"
-  cp -Rp "$SRC/templates/$1" "$2"
+  # 明示 exit: 呼び出し側の || が「既存 (return 1)」許容のため errexit が外れるコンテキストで走る。
+  # cp 失敗 (テンプレート欠落等) は「既存」と違い installer 全体を止める (fail-closed)。
+  # exit は conditional コンテキストからでも発火する。エラーメッセージは cp 自身の stderr に任せる。
+  cp -Rp "$SRC/templates/$1" "$2" || exit 1
   echo "scaffolded: $2"
 }
 
