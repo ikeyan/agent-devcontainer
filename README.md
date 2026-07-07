@@ -67,10 +67,13 @@ done. 次の手順:
 | `devcontainer.json` | 同上。`dockerComposeFile: ["project/compose.yaml", "core/compose.yaml"]` の順で重ね、project 側 (先頭) が compose の project directory になる | 可 (薄い project 所有) |
 | `Dockerfile` | `core/bin/gen-dockerfile.sh` が `core` の template と `project/Dockerfile.{top,dev}` から生成し、install.sh が毎回上書き | 不可 (生成物。直接編集は次回の再生成で消える) |
 
-`--dir` の外にも、install.sh は初回のみ次を scaffold する (2 回目以降は触らない。
-workflows は既存なら黙ってスキップ、`dependabot.yml`/`.claude/settings.json` は既存なら取り込み候補を
-stdout に表示する): `.github/workflows/devcontainer-check.yml`,
-`.github/workflows/devcontainer-kit-update.yml`, `.github/dependabot.yml`, `.claude/settings.json`。
+`--dir` の外にも、install.sh は**初回インストール時のみ** (= 同期前に `core/` が無かった実行でのみ)
+次の root glue を scaffold する: `.github/workflows/devcontainer-check.yml`,
+`.github/workflows/devcontainer-kit-update.yml`, `.github/dependabot.yml`, `.claude/settings.json`
+(workflows は既存なら黙ってスキップ、`dependabot.yml`/`.claude/settings.json` は既存なら取り込み候補を
+stdout に表示する)。更新実行 (core が既にある) は glue を一切触らないので、不要な glue は削除すれば
+復活しない。既存の `.devcontainer` 運用から移行するなど「core は有るが glue が欲しい」場合は、
+リポジトリの `templates/github/` / `templates/claude/` から手動でコピーする。
 
 ### project 層の編集ポイント
 
