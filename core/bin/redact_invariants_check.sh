@@ -235,12 +235,17 @@ POSTURE=core/bin/check_compose_posture.py
 # PyYAML は kit venv から供給する (check_compose_paths.py と同じ一元化。system python3 に yaml が
 # 入っている保証は無い — Dockerfile は apt python3-yaml を持たない)。cd 済みの repo root 相対。
 PY=.venv/bin/python
+# 期待する project 名は project/compose.yaml 自身の name: から読む (kit 化により @@PROJECT_NAME@@ 置換後の
+# 値は consumer ごとに違うのでリテラル固定できない。ここで読んだ値と、マージ済み compose config が
+# 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。
+EXPECTED_NAME=$("$PY" -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["name"])' "$P/compose.yaml") \
+    || fail "§10: project/compose.yaml から name: を読めない"
 merged=$(mktemp)
 "${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>/dev/null \
     || { rm -f "$merged"; fail "§10: compose config が失敗 (${COMPOSE[*]} 未導入 or compose.yaml 不正)"; }
-"$PY" "$POSTURE" < "$merged" \
+"$PY" "$POSTURE" "$EXPECTED_NAME" < "$merged" \
     || { rm -f "$merged"; fail "§10: マージ済み compose のセキュリティ姿勢に違反 (上の NG 行を参照)"; }
-"$PY" "$POSTURE" --selftest < "$merged" \
+"$PY" "$POSTURE" "$EXPECTED_NAME" --selftest < "$merged" \
     || { rm -f "$merged"; fail "§10: negative probe が違反注入を検出できない (上の NG 行を参照)"; }
 rm -f "$merged"
 

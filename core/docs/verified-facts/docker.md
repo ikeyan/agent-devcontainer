@@ -73,6 +73,18 @@ confidence tag の凡例: [README](README.md)。
   network 所属・secrets-proxy 専用 volume の非漏洩・project の `name:` 宣言といった「マージ結果そのもの」の
   セキュリティ姿勢は、後勝ちの一般則に頼らず `bin/redact_invariants_check.sh` §10 がマージ済み config を
   PyYAML で parse して assert し pin する。 `[empirical]`
+- **先頭 `-f` が `name:` と `services: {<svc>: {}}` (空 mapping) だけの最小ファイルでも、`compose config` は
+  valid で後続ファイルと正しく merge される**。kit 化した `project/compose.yaml` テンプレート (プレースホルダ
+  scaffold 直後、project 固有の上乗せが何も無い状態) はまさにこの形なので、これが壊れると
+  「project 層を汎用化した瞬間に compose が死ぬ」という kit 最大のリグレッションになる。
+  検証: `podman compose -f project/compose.yaml -f core/compose.yaml config` (project/compose.yaml は
+  `name: "kitlocal"` と `services: { dev: {} }` のみ) → exit 0、出力の `name:` は `kitlocal`、
+  `services.dev` は core/compose.yaml が宣言する内容 (build/cap_add/volumes/networks 等) がそのまま
+  現れる (= 空の `dev: {}` は「このキーは存在するが値を追加しない」という merge の単位オブジェクトとして
+  働き、後続ファイルの `dev:` 定義を丸ごと採用する。mapping merge の一般則と整合)。 `[empirical]`
+  この形は `make -C core check` の `check-compose` / `check-compose-paths` が毎回 `-f project/compose.yaml
+  -f compose.yaml config` を実行するため、kit ローカル検証パイプライン (Step 7: scaffold → gen →
+  `make -C core check`) が壊れれば即座に検出できる (常時 pin)。
 
 ## Docker /proc マスク (systempaths)
 

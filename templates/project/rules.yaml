@@ -1,252 +1,30 @@
-# secrets-proxy の注入ルール（実設定。git 管理。project 層 — 機構本体は .devcontainer/core/ 側)。
+# secrets-proxy の注入ルール（実設定。git 管理。project 層 — 機構本体は core/ 側)。
 # 秘密は含まない（Vaultwarden のアイテム名と宛先ホストだけ）。全ルール型 (inject/capture/substitute/block)
-# の構造・必須項目は .devcontainer/core/secrets-proxy/rules.schema.json を参照
-# (`make -C .devcontainer/core check-rules` で検証)。
+# の構造・必須項目は core/secrets-proxy/rules.schema.json を参照
+# (`make -C core check-rules` で検証)。
 #
 # 守るべき不変条件 (ルール追加時に維持する):
 #   - 応答に現れる「本物の値」は全てプレースホルダに置換してから dev に返す
 #   - 捕獲/注入した秘密は bind で指定した宛先ホストにしか復元しない
 #   - dev が本物の値を持つリクエストは即遮断 (detect_leaks)
 
-# hosts / allow_hosts / passthrough_hosts のどれにも無いホストを 403 で弾く
+# hosts / allow_hosts / passthrough_hosts のどれにも無いホストを 403 で弾く。
+# 既定 true (core/secrets-proxy/addon.py:108-109 の初期値、:120-121 の cfg.get フォールバックとも true)。
+# 変える必要が無ければ省略してよいが、意図を残すため明記する。
 block_unlisted: true
 
-# リクエストに本物の捕獲済み秘密が現れたら遮断 (dev は本物を持たないはず = 漏洩検知)
+# リクエストに本物の捕獲済み秘密が現れたら遮断 (dev は本物を持たないはず = 漏洩検知)。
+# 既定 true (block_unlisted と同じ箇所: addon.py:108-109 / :120-121)。
 detect_leaks: true
 
-# MITM せず生TLS素通し → block/capture/leak 全部無効 = 無検査路。MITM 不可時(cert-pin/大容量DL)だけ最小限
-passthrough_hosts:
-  - "api.anthropic.com"
-  - "*.claude.com"
-  - "claude.ai"
-  - "*.statsig.com"
-  - "*.sentry.io"
-  - "*.pythonhosted.org"
-  # github.com は passthrough = proxy 経由の無検査 tunnel (git clone/fetch 用)。NO_PROXY は suffix 一致で
-  # api.github.com まで巻き込むため github.com を NO_PROXY に置けず、ここで素通しする
-  # (docs/verified-facts/network.md「proxy bypass / NO_PROXY」)。codeload は NO_PROXY 直結 (compose) だが、NO_PROXY を
-  # 無視するクライアントが proxy に渡した時の fallback として passthrough にも置く。api/uploads は MITM して
-  # token を substitute するので *.github.com のワイルドカードは置かない (passthrough だと substitute が効かない)。
-  - "github.com"
-  - "codeload.github.com"
-  - "*.githubusercontent.com"
+# ---- 到達を許可するだけのホスト (inject/capture なし。block_unlisted の例外) ----
+# allow_hosts:
+#   - "example.com"
 
-# MITM はする(leak 検知は残る)が inject/capture なし。到達させたいだけなら既定でこちら
-allow_hosts:
-  - "example.org"
-  # コンテナレジストリ (rootless Podman の pull 用)。host は完全一致なので apex docker.io でなく podman が
-  # 実際に繋ぐホストを挙げる。blob CDN は manifest/auth とは別ホストで、最初の pull 失敗の block ログ
-  # (または blob の 307 Location) で確定して足す (PODMAN.md)。
-  - "registry-1.docker.io"           # Docker Hub manifest/blob API
-  - "auth.docker.io"                 # Docker Hub token
-  - "production.cloudfront.docker.com"  # Docker Hub blob CDN (registry-1 が署名付き URL でリダイレクト)
-  - "ghcr.io"
-  - "docs.docker.com"
-  - "*.npmjs.org"
-  - "pypi.org"
-  - "jsr.io"
-  - "api.jsr.io"
-  - "npm.jsr.io"
-  - "deb.debian.org"
-  - "www.schemastore.org"
-  - "mcp-proxy.anthropic.com"
-  # gh CLI の GitHub API。token は dev に置かず proxy が substitute する (下記 hosts: 参照)。
-  - "api.github.com"
-  - "uploads.github.com"
-  # antigravity (agy)
-  - "antigravity.google"
-  - "antigravity-unleash.goog"
-  - "antigravity-cli-auto-updater-974169037036.us-central1.run.app"
-  - "storage.googleapis.com"
-  - "oauth2.googleapis.com"
-  - "www.googleapis.com"
-  - "lh3.googleusercontent.com"  # Eligibility Check
-  - "cloudcode-pa.googleapis.com"
-  - "daily-cloudcode-pa.googleapis.com"
-  - "playwright.azureedge.net"
-  - "playwright-akamai.azureedge.net"
-  - "playwright-verizon.azureedge.net"
-  # github copilot https://docs.github.com/ja/copilot/reference/copilot-allowlist-reference
-  - "*.githubcopilot.com"
-  - "*.individual.githubcopilot.com"
-  - "*.business.githubcopilot.com"
-  - "collector.github.com"
-  - "copilot-telemetry.githubusercontent.com"
-  # vscode
-  - "*.vscode-cdn.net"
-  - "*.vscode-unpkg.net"
-  - "vscode.dev"
-  - "auth.vscode.dev"
-  - "marketplace.visualstudio.com"
-  # chatgpt codex
-  - "chatgpt.com"
-
-# ---- 危険エンドポイントの遮断 (先頭で評価。host/methods は省略可) ----
-block:
-  - host: "*.example.com"
-    methods: [POST, PUT, DELETE, PATCH]
-    path: "^/(account|settings|security|api/keys|billing)"
-    reason: "破壊的なアカウント操作を禁止"
-  - path: "/admin"          # host 省略 = 全ホスト
-    reason: "管理画面は禁止"
-
-# ---- 宛先ホストごとのルール ----
-hosts:
-  # 例1: 静的トークンを Authorization ヘッダに注入 (inject のみ。リスト短縮形も可)
-  "api.example.com":
-    inject:
-      - secret: { item: "Example API", field: password }
-        into: { type: header, name: Authorization, value: "Bearer ${secret}" }
-
-  # 例2: パスワードログイン -> クッキーのトークン化
-  #   - inject : ログイン POST に username/password を注入 (Vaultwarden)
-  #   - capture: 応答の Set-Cookie "session" を捕獲。dev には代替トークンを返す。
-  #              bind したホスト宛にだけ本物のクッキーを復元する。
-  "login.example.com":
-    inject:
-      - secret: { item: "Example Web Login", field: username }
-        into: { type: form, name: username }
-      - secret: { item: "Example Web Login", field: password }
-        into: { type: form, name: password }
-    capture:
-      - from: { type: set-cookie, name: session }
-        store: example_session
-        bind: ["example.com", "*.example.com"]   # このクッキーを使ってよい宛先
-        into: { type: cookie, name: session }
-
-  # 例3: リフレッシュトークン -> アクセストークン (本文 JSON)
-  #   refresh token は Vaultwarden 静的注入でもよいし、別フローの capture でもよい。
-  #   ここでは応答本文 JSON の access_token を捕獲してトークン化する。
-  #   dev は受け取った代替トークンを Authorization に載せれば、proxy が本物に戻す。
-  "auth.example.com":
-    inject:
-      - secret: { item: "Example Refresh Token", field: password }
-        into: { type: form, name: refresh_token }   # POST 本文に注入
-    capture:
-      - from: { type: json, name: access_token }   # 応答本文 {"access_token": "..."} を捕獲
-        store: example_access
-        bind: ["api.example.com"]      # このアクセストークンを使ってよい宛先
-        into: { type: header, name: Authorization }
-
-  # 例4: 任意パターンの捕獲 (正規表現。group 1 が秘密)
-  "*.internal.example.com":
-    capture:
-      - from: { type: regex, name: '"csrf"\s*:\s*"([^"]+)"' }
-        store: internal_csrf
-        bind: ["*.internal.example.com"]
-        into: { type: header, name: x-csrf-token }
-
-  # しらせるバス viewer API (1 ホストに多数のエンドポイント)。
-  #   - inject : 長命のリフレッシュトークン (Vaultwarden 管理) を refresh エンドポイントの
-  #              JSON 本文 {"refreshToken": ...} にだけ注入する。match で path/method を
-  #              絞らないと同ホストの全リクエストに撒かれて漏れるので必須。
-  #   - capture: 応答 JSON の idToken (短命アクセストークン) を捕獲し、dev には代替トークンを
-  #              返す。以降 dev が代替トークンを authorization に載せれば、proxy が同ホスト宛に
-  #              だけ本物の idToken を復元する (apiGet/apiPost は Bearer 無しの生 idToken)。
-  "viewer-api.shirav2-prod.com":
-    inject:
-      - secret: { item: "d6112362-0f3c-407b-ba75-9a607e5859de", field: password }
-        into: { type: json, name: refreshToken }
-        match: { path: "^/api/user/refreshIdToken$", methods: [POST] }
-    capture:
-      - from: { type: json, name: idToken }
-        store: shiraseru_id_token
-        into: { type: header, name: authorization }
-
-  # NESCAFE ポイント Web ログイン (ndgapp-web)。アプリ内 webview の資格情報フォーム。dev は本物の
-  # メール/パスワードを持たず、proxy が Vaultwarden から注入して通信させる。
-  #   - inject : ログイン POST にだけ emailAddress/password を注入。match で path/method を絞り、
-  #              同ホストの他リクエスト (静的資産・gift 等) に秘密を撒かない。
-  #   - capture: ログイン成功 POST の応答 Set-Cookie で発行される一時資格情報 (AWS Cognito 風の
-  #              accessKeyId / secretKey / sessionToken / refreshToken。全て HttpOnly・Max-Age=1200)
-  #              を捕獲してトークン化。以降 dev が代替トークンを Cookie で送れば、proxy が
-  #              ndgapp-web 宛にだけ本物を復元する。
-  #
-  # フォーム契約・セッション Cookie とも一次情報で確定済み (出典: flows.jsonl):
-  #   GET  /sp/nescafe_point/login 応答 HTML:
-  #     <form method="post" action="/sp/nescafe_point/login">
-  #       <input name="emailAddress" type="email"> <input name="password" type="password">
-  #       <input name="keepsLogin" type="checkbox" value="true">   # UI 用 (秘密でないので注入しない)
-  #     sp-login.js は検証のみで XHR せず素の form POST = application/x-www-form-urlencoded。
-  #   POST /sp/nescafe_point/login (成功): body は emailAddress=...&password=... で上の契約どおり。
-  #     応答 302 -> /sp/gift。Set-Cookie で下記 4 資格情報を発行 (Domain 無し = ndgapp-web 限定)。
-  #   path は観測値が /sp/ (スマホ版)。当初聞いていた /pc/ (PC 版) も同契約と見て両方 match する。
-  #   AWSALB / AWSALBCORS は LB 固定用・keepsLogin は UI フラグなので捕獲しない (秘密でない)。
-  "ndgapp-web.nestle.jp":
-    inject:
-      - secret: { item: &nestle_acct "da5e3c40-ff18-407c-be57-fa90033d7dd3", field: username }
-        into: { type: form, name: emailAddress }
-        match: { path: "^/(sp|pc)/nescafe_point/login$", methods: [POST] }
-      - secret: { item: *nestle_acct, field: password }
-        into: { type: form, name: password }
-        match: { path: "^/(sp|pc)/nescafe_point/login$", methods: [POST] }
-    capture:
-      - from: { type: set-cookie, name: accessKeyId }
-        store: nestle_point_access_key_id
-        into: { type: cookie, name: accessKeyId }
-      - from: { type: set-cookie, name: secretKey }
-        store: nestle_point_secret_key
-        into: { type: cookie, name: secretKey }
-      - from: { type: set-cookie, name: sessionToken }
-        store: nestle_point_session_token
-        into: { type: cookie, name: sessionToken }
-      - from: { type: set-cookie, name: refreshToken }
-        store: nestle_point_refresh_token
-        into: { type: cookie, name: refreshToken }
-
-  # NESCAFE アプリ版 API (nbapp)。client (extract/nestle-jp-nbapp) が叩く独自 JSON エンベロープ API。
-  # ndgapp-web (Web ログイン) とは別系統で、アプリ自前の資格情報ログイン + セッショントークンを使う。
-  # dev は本物のメール/パスワードもセッショントークンも持たず、proxy が肩代わりする。
-  #
-  # API 契約 (出典: extract/nestle-jp-nbapp/client/*, flows.jsonl):
-  #   POST /ngs/api/applications/install  (認証不要)        応答 .response.installId  → 以降 x-barista-id
-  #   POST /ngs/api/amuse/login           x-barista-id 必須  本文 JSON {buser, bpass, ...}
-  #       buser=base64(email) / bpass=base64(password) (client の encodeCredentials)。
-  #       応答 .response.accessToken → 以降 x-barista-auth。
-  #   以降の points/get・ecosys_qr/* は x-barista-id + x-barista-auth で認証。
-  #
-  #   - substitute: ログイン資格情報 (buser/bpass) を Vaultwarden の本物へ差し替える。client は平文
-  #       email/pass を base64 してから送る (encodeCredentials)。into に encode: base64 を付けると proxy が
-  #       本物を base64 して載せるので、Vaultwarden は平文のまま — ndgapp-web と同一アカウントなら同じ
-  #       item (da5e3c40 の username/password) をそのまま流用できる。placeholder 側は client が base64 した
-  #       後の値なので「dev が使う fake 平文の base64」。into=json で当該フィールドの placeholder だけ差し替える。
-  #       multi-account はアカウントごとに placeholder (= fake の base64) を変えて 2 行ずつ足す。
-  #       ※ dev 手順: 下記 fake 平文を env に入れて main.ts 実行 (client が base64 して placeholder に一致):
-  #            NESTLE_EMAIL="nbapp-sandbox@example.invalid"   # base64 → bmJhcHAtc2FuZGJveEBleGFtcGxlLmludmFsaWQ=
-  #            NESTLE_PASSWORD="nbapp-sandbox-pw"             # base64 → bmJhcHAtc2FuZGJveC1wdw==
-  #   - capture: install / login 応答のセッショントークン (installId / accessToken) を捕獲してトークン化。
-  #       dev には placeholder を返し、以降 dev が x-barista-id / x-barista-auth に載せて送ると nbapp 宛に
-  #       だけ本物へ復元する (持ち出し防止)。install 応答には accessToken が、login 応答には installId が
-  #       無いので、各 capture は該当応答にだけ反応する (path 不一致は no-op)。
-  "nbapp.nestle.jp":
-    substitute:
-      - placeholder: "bmJhcHAtc2FuZGJveEBleGFtcGxlLmludmFsaWQ="    # base64("nbapp-sandbox@example.invalid")
-        secret: { item: *nestle_acct, field: username }            # ndgapp-web と同一アカウント (anchor)
-        into: { type: json, name: buser, encode: base64 }          # 平文 email を base64 して buser へ載せる
-      - placeholder: "bmJhcHAtc2FuZGJveC1wdw=="                     # base64("nbapp-sandbox-pw")
-        secret: { item: *nestle_acct, field: password }
-        into: { type: json, name: bpass, encode: base64 }
-    capture:
-      - from: { type: json, name: response.installId }
-        store: nbapp_install_id
-        into: { type: header, name: x-barista-id }
-      - from: { type: json, name: response.accessToken }
-        store: nbapp_access_token
-        into: { type: header, name: x-barista-auth }
-
-  # gh CLI の GitHub 認証。dev の ~/.config/gh/hosts.yml は placeholder トークンだけを持ち
-  # (gh/hosts.yml をイメージに seed し ro bind。gh auth login は EROFS で不可)、proxy が Authorization
-  # ヘッダ内の placeholder を Vaultwarden の実トークンへ substitute する。bind は GitHub API ホスト
-  # だけ — 応答からは redact され、dev が実トークンを送れば detect_leaks が 403。
-  #   gh 2.46 は Authorization: token <oauth_token> を verbatim 送出 (docs/verified-facts/gh.md「gh CLI / 認証」)。
-  #   uploads.github.com (release upload 用) も同 token。substitute は placeholder+bind で効く (host キー
-  #   単位でない。addon.py) ので、別ブロックを置かず下の bind に両ホストを含める。到達性は allow_hosts。
-  #   routing: api/uploads は proxy 経由 (MITM)。github.com を compose の NO_PROXY に置くと suffix 一致で
-  #   api.github.com まで直結して substitute が効かなくなるので、github.com は NO_PROXY でなく上の
-  #   passthrough_hosts で素通しする (docs/verified-facts/network.md「proxy bypass / NO_PROXY」)。
-  "api.github.com":
-    substitute:
-      - placeholder: "@@SECRET_github_token@@"
-        secret: { item: "e7f05db7-12a0-43a5-8aae-8a32c35953bf", field: "fields.token" }
-        into: { type: header, name: Authorization }
-        bind: ["api.github.com", "uploads.github.com"]
+# ---- 宛先ホストごとの inject / capture / substitute ルール ----
+# 例: 静的トークンを Authorization ヘッダに注入 (inject のみ。リスト短縮形も可)
+# hosts:
+#   "api.example.com":
+#     inject:
+#       - secret: { item: "Example API", field: password }
+#         into: { type: header, name: Authorization, value: "Bearer ${secret}" }

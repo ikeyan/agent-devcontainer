@@ -18,7 +18,7 @@ confidence: `[docs]`=公式文書, `[man]`=man/manual, `[empirical]`=実機/実�
 - [devcontainers-cli.md](devcontainers-cli.md) — devcontainers CLI の compose `-f` 渡し順 / `--project-directory` 不使用 / project 名 fallback
 - [podman.md](podman.md) — rootless Podman (newuidmap, overlay, userns, build format)
 - [claude-code.md](claude-code.md) — Claude Code CLI
-- [nodejs.md](nodejs.md) — Node.js (undici の proxy 対応)
+- [nodejs.md](nodejs.md) — Node.js (undici の proxy 対応 / .ts 型ストリッピングの直接実行)
 - [gh.md](gh.md) — gh CLI (認証, config マイグレーション)
 - [git.md](git.md) — merge-backend rebase の phantom-dirty (virtiofs で core.checkStat=minimal)
 - [github-releases-sha256.md](github-releases-sha256.md) — GitHub Releases 成果物の sha256

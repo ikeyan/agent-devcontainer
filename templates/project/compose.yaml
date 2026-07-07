@@ -1,19 +1,8 @@
-# このリポジトリ固有の compose 層。core/compose.yaml と重ねて使う。devcontainer.json が
+# この repo 固有の compose 層。core/compose.yaml と重ねて使う。devcontainer.json が
 # ["project/compose.yaml", "core/compose.yaml"] の順で列挙する (先頭 = このファイルのディレクトリが
 # compose の project directory になり .env が効く。後勝ちマージで core がスカラー設定で優先)。
-name: tools
+# 追加 volume / build args / 環境変数は services.dev 以下に足す。
+name: "@@PROJECT_NAME@@"
 
 services:
-  dev:
-    build:
-      args:
-        PNPM_VERSION: "11.5.2" # package.json の packageManager と合わせる
-    volumes:
-      # host(mac) の node_modules / pnpm store を隠すコンテナ専用 volume (この repo は node project)。
-      # 再生成可能なキャッシュなので migrate-volumes.sh の対象外 (pnpm install で作り直せる)。
-      - node-modules:/workspace/node_modules
-      - pnpm-store:/home/node/.local/share/pnpm
-
-volumes:
-  node-modules:
-  pnpm-store:
+  dev: {}

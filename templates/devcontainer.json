@@ -1,5 +1,5 @@
 {
-  "name": "tools (Claude Code + sfw + secrets-proxy)",
+  "name": "@@PROJECT_NAME@@ (agent-devcontainer)",
   "dockerComposeFile": ["project/compose.yaml", "core/compose.yaml"],
   "service": "dev",
   "workspaceFolder": "/workspace",
@@ -8,10 +8,8 @@
   "initializeCommand": "mkdir -p \"${localWorkspaceFolder}/.claude\" && { [ -e \"${localWorkspaceFolder}/.claude/settings.local.json\" ] || printf '{}\\n' > \"${localWorkspaceFolder}/.claude/settings.local.json\"; }",
   "customizations": {
     "vscode": {
-      "extensions": ["anthropic.claude-code", "biomejs.biome", "Prisma.prisma", "exiasr.hadolint"],
+      "extensions": ["anthropic.claude-code"],
       "settings": {
-        "editor.formatOnSave": true,
-        "editor.defaultFormatter": "biomejs.biome",
         "terminal.integrated.defaultProfile.linux": "zsh"
       }
     }

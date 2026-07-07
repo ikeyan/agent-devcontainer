@@ -296,10 +296,10 @@ check-proxychains: ## proxychains の config 整合性 + 透過ルーティン�
 
 # tailored seccomp profile (rootless Podman 用)。gen-seccomp が gen-seccomp.ts の出力を seccomp.json に
 # 書き、check-seccomp は再生成結果と commit 済みを diff する。設計と追従は PODMAN.md。
-# node/tsx はこの repo の node_modules から解決される (cwd から上方探索)。
-SECCOMP_GEN := node --import tsx podman/gen-seccomp.ts
+# node が .ts を直接実行する (型ストリッピング、node>=23.6。docs/verified-facts/nodejs.md)。
+SECCOMP_GEN := node podman/gen-seccomp.ts
 SECCOMP_JSON := podman/seccomp.json
 gen-seccomp: ## seccomp.json を再生成 (HTTP_CACHE_REFRESH=1 で default.json も再取得)
 	$(SECCOMP_GEN) >/dev/null && $(SECCOMP_GEN) > $(SECCOMP_JSON)
-check-seccomp: ## seccomp.json が default.json snapshot + 変換と一致するか (node/tsx 必須)
+check-seccomp: ## seccomp.json が default.json snapshot + 変換と一致するか (node>=23.6 必須)
 	@$(SECCOMP_GEN) | diff -u $(SECCOMP_JSON) - && echo "ok  seccomp"

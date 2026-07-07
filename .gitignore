@@ -5,4 +5,3 @@
 /core/VERSION
 # ローカル環境物
 /.venv/
-/node_modules/

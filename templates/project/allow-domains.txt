@@ -1,5 +1,2 @@
 # この repo 固有の egress 直結許可 (core/init-firewall.sh が ipset に足す)。1 行 1 ドメイン、# コメント可。
 # proxy バイパス側 (project/.env の PROJECT_NO_PROXY) と対で維持する。編集後は dev イメージの rebuild が必要。
-binaries.prisma.sh
-generativelanguage.googleapis.com
-api.real-debrid.com

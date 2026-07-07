@@ -8,28 +8,35 @@ core 未宣言キーは project 値が通る (docs/verified-facts/docker.md「co
 編集で崩れうる姿勢は、後勝ちの一般則でなくマージ結果を直接検査して固定する。
 
 pin する条件 (§10):
-  A. project 名が 'tools' (= project/compose.yaml が name: を宣言している)。消えると fallback で
-     'project' 等に化け、全 named volume が別 namespace に切り替わり既存データから切り離される
-     (docs/verified-facts/devcontainers-cli.md「project 名の fallback」)。
+  A. project 名が呼び出し側の指定 (= project/compose.yaml 自身が宣言する name:) と一致する。消えると
+     fallback で 'project' (project/compose.yaml のディレクトリ basename) 等に化け、全 named volume が
+     別 namespace に切り替わり既存データから切り離される
+     (docs/verified-facts/devcontainers-cli.md「project 名の fallback」)。kit 化により project 名は
+     consumer ごとに変わる (@@PROJECT_NAME@@) ため、リテラル固定値でなく呼び出し側 (redact_invariants_check.sh
+     が project/compose.yaml から読んだ実際の name:) と突き合わせる。
   B. dev の cap_add がちょうど {NET_ADMIN, NET_RAW, SETUID, SETGID}。project 層が cap を追記して
      権限を広げていないこと (list は追記マージなので後勝ちで守れない)。
   C. dev に privileged: true が無い。
   D. dev の networks が tools-net のみ (proxy-upstream に居ない = dev に v6 egress 経路が無い)。
+     tools-net は core/compose.yaml が宣言する固定のネットワーク名 (project 名とは無関係) なので
+     consumer が変わっても値は変化しない。
   E. proxy-confdir / proxy-bw volume が secrets-proxy 以外のサービスに mount されない
      (CA 秘密鍵 / BW_SESSION が dev 等へ漏れない)。
   F. どのサービスにも docker.sock の bind が無い (docker socket 奪取での隔離破壊を封じる)。
 
 --selftest: 各条件について「違反を注入したコピー」を作り、対応する検出器が実際に弾くことを確認する
 (negative probe)。検出漏れがあれば exit 1。
+
+CLI: `check_compose_posture.py <expected-project-name> [--selftest]` (stdin = compose config)。
 """
 from __future__ import annotations
 
 import copy
+import functools
 import sys
 
 import yaml
 
-EXPECTED_NAME = "tools"
 EXPECTED_DEV_CAPS = {"NET_ADMIN", "NET_RAW", "SETUID", "SETGID"}
 SECRET_VOLUMES = {"proxy-confdir", "proxy-bw"}
 DOCKER_SOCK_NAMES = ("docker.sock",)
@@ -61,10 +68,10 @@ def _net_keys(nets: object) -> set[str]:
     return set()
 
 
-def check_name(cfg: dict) -> list[str]:
+def check_name(cfg: dict, expected_name: str) -> list[str]:
     name = cfg.get("name")
-    if name != EXPECTED_NAME:
-        return [f"A: project 名が '{EXPECTED_NAME}' でない (実際: {name!r})。project/compose.yaml の name: が消えた可能性"]
+    if name != expected_name:
+        return [f"A: project 名が {expected_name!r} でない (実際: {name!r})。project/compose.yaml の name: が消えた/変わった可能性"]
     return []
 
 
@@ -117,18 +124,23 @@ def check_no_docker_sock(cfg: dict) -> list[str]:
     return errs
 
 
-CHECKS = [
-    ("name", check_name),
-    ("dev_caps", check_dev_caps),
-    ("dev_privileged", check_dev_not_privileged),
-    ("dev_networks", check_dev_networks),
-    ("secret_volumes", check_secret_volumes_isolated),
-    ("docker_sock", check_no_docker_sock),
-]
+def _build_checks(expected_name: str) -> list[tuple[str, "object"]]:
+    # "name" だけ expected_name を要るので functools.partial で束縛し、他の check_* と同じ
+    # `fn(cfg) -> list[str]` 形に揃える (validate/selftest からは一様に呼べる)。
+    return [
+        ("name", functools.partial(check_name, expected_name=expected_name)),
+        ("dev_caps", check_dev_caps),
+        ("dev_privileged", check_dev_not_privileged),
+        ("dev_networks", check_dev_networks),
+        ("secret_volumes", check_secret_volumes_isolated),
+        ("docker_sock", check_no_docker_sock),
+    ]
 
 
-def _mut_name(cfg: dict) -> None:
-    cfg["name"] = "project"
+def _mut_name(cfg: dict, expected_name: str) -> None:
+    # expected_name が何であっても確実に不一致にする (project 名が偶然 "project" 等の
+    # fallback 値そのものを選んでいても negative probe が意味を保つように)。
+    cfg["name"] = f"{expected_name}-mutated-by-selftest"
 
 
 def _mut_caps(cfg: dict) -> None:
@@ -159,28 +171,29 @@ def _mut_docker_sock(cfg: dict) -> None:
     )
 
 
-MUTATORS = {
-    "name": _mut_name,
-    "dev_caps": _mut_caps,
-    "dev_privileged": _mut_privileged,
-    "dev_networks": _mut_networks,
-    "secret_volumes": _mut_secret_volume,
-    "docker_sock": _mut_docker_sock,
-}
+def _build_mutators(expected_name: str) -> dict[str, "object"]:
+    return {
+        "name": functools.partial(_mut_name, expected_name=expected_name),
+        "dev_caps": _mut_caps,
+        "dev_privileged": _mut_privileged,
+        "dev_networks": _mut_networks,
+        "secret_volumes": _mut_secret_volume,
+        "docker_sock": _mut_docker_sock,
+    }
 
 
-def validate(cfg: dict) -> list[str]:
+def validate(cfg: dict, checks: list) -> list[str]:
     errs: list[str] = []
-    for _name, fn in CHECKS:
+    for _name, fn in checks:
         errs.extend(fn(cfg))
     return errs
 
 
-def selftest(cfg: dict) -> list[str]:
+def selftest(cfg: dict, checks: list, mutators: dict) -> list[str]:
     """各条件について違反を注入したコピーを検出器が弾くことを確認 (negative probe)。"""
     problems: list[str] = []
-    check_by_name = dict(CHECKS)
-    for name, mutate in MUTATORS.items():
+    check_by_name = dict(checks)
+    for name, mutate in mutators.items():
         mutated = copy.deepcopy(cfg)
         mutate(mutated)
         if not check_by_name[name](mutated):
@@ -189,15 +202,23 @@ def selftest(cfg: dict) -> list[str]:
 
 
 def main() -> int:
-    selftest_mode = "--selftest" in sys.argv[1:]
+    argv = sys.argv[1:]
+    selftest_mode = "--selftest" in argv
+    positional = [a for a in argv if a != "--selftest"]
+    if len(positional) != 1:
+        print("usage: check_compose_posture.py <expected-project-name> [--selftest]", file=sys.stderr)
+        return 2
+    expected_name = positional[0]
+
     cfg = yaml.safe_load(sys.stdin)
     if not isinstance(cfg, dict):
         print("check_compose_posture: stdin が compose config の mapping でない", file=sys.stderr)
         return 1
 
-    errs = validate(cfg)
+    checks = _build_checks(expected_name)
+    errs = validate(cfg, checks)
     if selftest_mode:
-        errs = errs + selftest(cfg)
+        errs = errs + selftest(cfg, checks, _build_mutators(expected_name))
 
     if errs:
         for e in errs:
