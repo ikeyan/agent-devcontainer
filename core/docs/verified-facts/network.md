@@ -97,6 +97,18 @@ confidence tag の凡例: [README](README.md)。
   `redact/entrypoint.sh` がコンテナ起動直後 (dnsmasq 起動直後・firewall 適用前) に
   `printf 'nameserver 127.0.0.1\noptions ndots:0\n' > /etc/resolv.conf` で無条件に上書きするため、
   DNS 持ち出し経路の脅威モデル (`SECURITY-MODEL.md` 不変条件 6) には影響しない。 `[empirical]`
+- **BuildKit は RUN 中の `/etc/resolv.conf` を read-only で bind する** — 無条件の
+  `> /etc/resolv.conf` は docker (既定ビルダー = BuildKit) で `Read-only file system` (EROFS) になり
+  ビルドが落ちる。出典: moby/buildkit#1267「BuildKit builds (via Docker) are broken if /etc/hosts or
+  /etc/resolv.conf is replaced」+ GH Actions ubuntu-latest (Docker 28.0.4) での実測
+  (kit CI https://github.com/ikeyan/agent-devcontainer/actions/runs/28874487759 の build-images job)。
+  `[docs][empirical]`
+  - 対処: トリムを条件付きにした (`if [ "$(grep -c '^nameserver' /etc/resolv.conf)" -gt 1 ]`)。
+    トリムが要るのは nested rootless podman のような複数 nameserver 環境で、そこでは resolv.conf は
+    書込可。BuildKit 環境は nameserver 1 行 (`127.0.0.11` 等) なので書き込み自体が発生しない。
+    トリムが必要なのに書けない環境では printf が自然に失敗する (fail-closed 維持)。条件の
+    `$(grep -c ...)` は grep の stdout (行数) を使い exit code は使わないため、SHELL の
+    bash -o pipefail 下でも 0 件 (exit 1) で連鎖が切れる罠は無い。 `[empirical]`
 
 ## uv / sfw の CA 結合 (TLS)
 

@@ -252,11 +252,17 @@ COPY core/pyproject.toml /tmp/pyproject.toml
 # uv はシム (sfw) を避けて実体を直叩きする。--system の site-packages は誰でも読めるので、
 # entrypoint が node へ降格した子も python3 で import できる。
 # uv (musl 静的バイナリ) の pip install 直前に /etc/resolv.conf を先頭の nameserver 1 行だけに
-# 削る (理由: docs/verified-facts/network.md「musl (uv) resolver / 複数 nameserver」)。
+# 削る (理由: docs/verified-facts/network.md「musl (uv) resolver / 複数 nameserver」)。ただし書き換えは
+# nameserver 行が 2 つ以上あるときだけ: トリムが要るのは nested rootless podman のような複数 nameserver
+# 環境で、そこでは resolv.conf は書込可。BuildKit (docker 既定) は RUN 中 /etc/resolv.conf を read-only
+# bind にするが (moby/buildkit#1267)、その環境は nameserver 1 行なので書き込み自体が発生しない。
+# トリムが必要なのに書けない環境では printf が自然に失敗する (fail-closed 維持)。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       dnsmasq \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
-    && resolv=$(awk '!/^nameserver/ || !n++' /etc/resolv.conf) && printf '%s\n' "$resolv" > /etc/resolv.conf \
+    && if [ "$(grep -c '^nameserver' /etc/resolv.conf)" -gt 1 ]; then \
+         resolv=$(awk '!/^nameserver/ || !n++' /etc/resolv.conf) && printf '%s\n' "$resolv" > /etc/resolv.conf; \
+       fi \
     && /usr/local/bin/uv pip install --system --break-system-packages --project /tmp --group redact \
     && rm -f /tmp/pyproject.toml \
     && useradd --system --no-create-home --shell /usr/sbin/nologin redact-dns
