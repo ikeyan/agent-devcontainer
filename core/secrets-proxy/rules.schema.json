@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ikeyan/agent-devcontainer/core/secrets-proxy/rules.schema.json",
+  "title": "secrets-proxy rules",
+  "description": "secrets-proxy の注入・捕獲・遮断ルール。秘密そのものは含まず (Vaultwarden のアイテム名と宛先ホストだけ)、addon.py が解釈する。機構: inject=静的な秘密を宛先ホストごとにリクエストへ注入 / capture=応答からクッキー/トークンを捕獲し dev には代替トークンに置換して返す / block=危険なエンドポイントを 403 で遮断。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "block_unlisted": {
+      "type": "boolean",
+      "default": true,
+      "description": "hosts / allow_hosts / passthrough_hosts のどれにも無いホスト宛のリクエストを 403 で弾く。"
+    },
+    "detect_leaks": {
+      "type": "boolean",
+      "default": true,
+      "description": "リクエストに本物の捕獲済み秘密が現れたら遮断する。dev は本物を持たないはずなので出現 = 漏洩検知。"
+    },
+    "passthrough_hosts": {
+      "type": "array",
+      "description": "MITM せず生 TLS のまま素通しするホスト。block / capture / inject は一切効かない。",
+      "items": { "$ref": "#/$defs/hostPattern" }
+    },
+    "allow_hosts": {
+      "type": "array",
+      "description": "注入も捕獲もしないが通過は許可するホスト (block_unlisted の例外)。",
+      "items": { "$ref": "#/$defs/hostPattern" }
+    },
+    "block": {
+      "type": "array",
+      "description": "危険エンドポイントの遮断ルール。注入・捕獲より先に、先頭から順に評価される。",
+      "items": { "$ref": "#/$defs/blockRule" }
+    },
+    "hosts": {
+      "type": "object",
+      "description": "宛先ホスト (キー) ごとの inject / capture ルール。キーは完全一致ホスト (\"api.example.com\") かサブドメインワイルドカード (\"*.example.com\")。",
+      "propertyNames": { "$ref": "#/$defs/hostPattern" },
+      "additionalProperties": { "$ref": "#/$defs/hostSpec" }
+    }
+  },
+  "$defs": {
+    "hostPattern": {
+      "type": "string",
+      "description": "完全一致ホスト (\"example.com\"。任意ポートを許容) か、サブドメイン一致のワイルドカード (\"*.example.com\"。apex には一致しない)。",
+      "minLength": 1
+    },
+    "regex": {
+      "type": "string",
+      "description": "Python re の正規表現。",
+      "minLength": 1
+    },
+    "httpMethods": {
+      "type": "array",
+      "description": "HTTP メソッド (大文字の正準形で書く。runtime は大小無視で照合)。",
+      "items": {
+        "type": "string",
+        "enum": ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "CONNECT", "TRACE"]
+      },
+      "minItems": 1
+    },
+    "blockRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "$ref": "#/$defs/hostPattern",
+          "description": "対象ホスト。省略すると全ホストに適用。"
+        },
+        "methods": { "$ref": "#/$defs/httpMethods", "description": "対象メソッド。省略すると全メソッド。" },
+        "path": {
+          "$ref": "#/$defs/regex",
+          "description": "リクエストパスに対する正規表現 (search)。省略すると全パス。"
+        },
+        "reason": { "type": "string", "description": "403 応答とログに出す遮断理由。" }
+      },
+      "anyOf": [{ "required": ["host"] }, { "required": ["path"] }],
+      "examples": [
+        {
+          "host": "*.example.com",
+          "methods": ["POST", "DELETE"],
+          "path": "^/(account|billing)",
+          "reason": "破壊的なアカウント操作を禁止"
+        }
+      ]
+    },
+    "hostSpec": {
+      "description": "ホストのルール。{inject, capture} のオブジェクト、または inject だけの短縮形 (injection の配列)。null は no-op (allow_hosts 相当)。",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "inject": {
+              "type": "array",
+              "description": "このホスト宛リクエストへの静的注入 (Vaultwarden の値)。",
+              "items": { "$ref": "#/$defs/injection" }
+            },
+            "capture": {
+              "type": "array",
+              "description": "このホストの応答からの捕獲 (トークン化)。",
+              "items": { "$ref": "#/$defs/capture" }
+            },
+            "substitute": {
+              "type": "array",
+              "description": "代理文字列 -> 静的秘密 の置換 (capture の逆。multi-account 対応)。",
+              "items": { "$ref": "#/$defs/substituteEntry" }
+            }
+          }
+        },
+        {
+          "type": "array",
+          "description": "短縮形: injection の配列 = inject のみ。",
+          "items": { "$ref": "#/$defs/injection" }
+        },
+        { "type": "null" }
+      ]
+    },
+    "secretRef": {
+      "type": "object",
+      "description": "秘密の参照元。Vaultwarden アイテム ({item,field}) / 環境変数 ({env}) / ファイル ({file}) のいずれか 1 つ。env/file は Vaultwarden を持たない最小サンドボックス (redact 等) 向けで、bw 無しに注入トークンを渡せる。",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": ["item"],
+          "properties": {
+            "item": {
+              "type": "string",
+              "description": "Vaultwarden のアイテム名または ID (bw get item の引数)。",
+              "minLength": 1
+            },
+            "field": {
+              "type": "string",
+              "default": "password",
+              "description": "取り出すフィールド: password / username / uri / notes / totp / fields.<カスタムフィールド名>。",
+              "pattern": "^(password|username|uri|notes|totp|fields\\..+)$"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["env"],
+          "properties": {
+            "env": {
+              "type": "string",
+              "description": "環境変数名。その値を秘密として使う (Vaultwarden 不要)。",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "ファイルパス。中身 (前後空白を strip) を秘密として使う (Vaultwarden 不要)。",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "injectTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name"],
+      "description": "秘密をリクエストのどこへどう載せるか。",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["header", "cookie", "query", "form", "json"],
+          "description": "header=ヘッダ / cookie=Cookie / query=クエリ文字列 / form=urlencoded 本文 / json=JSON 本文の dot パス。"
+        },
+        "name": {
+          "type": "string",
+          "description": "載せ先の名前。header/cookie/query/form はその名前、json は本文の dot パス (例: refreshToken / auth.token)。",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "default": "${secret}",
+          "description": "載せる値のテンプレート。${secret} が解決済みの秘密に置換される (例: \"Bearer ${secret}\")。省略時は秘密そのもの。"
+        },
+        "encode": {
+          "type": "string",
+          "enum": ["base64"],
+          "description": "載せる前に解決後の値をエンコードする。base64 = 値を base64 して載せる。例: 平文の email/pass を base64 が要る buser/bpass フィールドへ流用する。inject / substitute の into で有効 (capture.into では非対応)。"
+        }
+      }
+    },
+    "captureInto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name"],
+      "description": "捕獲値の復元先 {type, name}。injectTarget と違い encode/value は非対応 (サーバ発行の本物をそのまま戻すため)。",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["header", "cookie", "query", "form", "json"],
+          "description": "復元先の種類 (injectTarget.type と同じ)。"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "復元先の名前 (header/cookie/query/form 名、または json の dot パス)。"
+        }
+      }
+    },
+    "captureSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name"],
+      "description": "捕獲元。type=捕獲する場所、name=その名前/パス/正規表現 (into と同形の {type,name})。",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["set-cookie", "header", "json", "regex"],
+          "description": "set-cookie=Set-Cookie の name / header=応答ヘッダの name / json=応答本文 JSON の dot パス / regex=応答本文の正規表現 (group 1 が秘密)。"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "type に応じた名前: クッキー名 / ヘッダ名 / dot パス (例: data.token / items.0.v) / 正規表現。"
+        }
+      }
+    },
+    "injectMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "注入を行うリクエストを絞る。省略すると当該ホスト宛の全リクエストに注入されるため、1 ホストに複数エンドポイントがある API では秘密を撒かないよう必須。",
+      "properties": {
+        "path": { "$ref": "#/$defs/regex", "description": "リクエストパスに対する正規表現 (search)。" },
+        "methods": { "$ref": "#/$defs/httpMethods" }
+      }
+    },
+    "injection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["secret", "into"],
+      "properties": {
+        "secret": { "$ref": "#/$defs/secretRef" },
+        "into": { "$ref": "#/$defs/injectTarget" },
+        "match": { "$ref": "#/$defs/injectMatch" }
+      },
+      "examples": [
+        {
+          "secret": { "item": "Example API", "field": "password" },
+          "into": { "type": "header", "name": "Authorization", "value": "Bearer ${secret}" }
+        }
+      ]
+    },
+    "substituteEntry": {
+      "description": "静的秘密 (Vaultwarden/env/file) を代理文字列で置換する。name 形 (糖衣: @@SECRET_<name>_<field>@@ を生成) か placeholder 形 (任意のリテラル文字列) のいずれか。",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "secret", "fields"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "placeholder @@SECRET_<name>_<field>@@ の <name>。"
+            },
+            "secret": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["item"],
+              "properties": {
+                "item": { "type": "string", "minLength": 1, "description": "Vaultwarden アイテム名/ID。" }
+              }
+            },
+            "fields": {
+              "type": "array",
+              "minItems": 1,
+              "description": "item から引く field と、その復元先。",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["field", "into"],
+                "properties": {
+                  "field": { "type": "string", "pattern": "^(password|username|uri|notes|fields\\..+)$" },
+                  "into": { "$ref": "#/$defs/injectTarget" }
+                }
+              }
+            },
+            "bind": { "type": "array", "items": { "$ref": "#/$defs/hostPattern" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["placeholder", "secret", "into"],
+          "properties": {
+            "placeholder": {
+              "type": "string",
+              "minLength": 1,
+              "description": "任意の代理文字列。tool の validation を通る fake を選ぶ。"
+            },
+            "secret": { "$ref": "#/$defs/secretRef" },
+            "into": { "$ref": "#/$defs/injectTarget" },
+            "bind": { "type": "array", "items": { "$ref": "#/$defs/hostPattern" } }
+          }
+        }
+      ]
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "store", "into"],
+      "description": "応答から秘密を捕獲して proxy に保管し、dev にはプレースホルダ (@@CRED_<store>_...@@) を返す。以降 dev がそのプレースホルダを送ると、bind したホスト宛にだけ本物へ復元して上流に送る。",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/captureSource",
+          "description": "捕獲元 {type, name} (into と同形)。"
+        },
+        "into": {
+          "$ref": "#/$defs/captureInto",
+          "description": "復元先。ここに現れた placeholder だけを本物へ戻す (他フィールドには復元しない = exfil 防止)。"
+        },
+        "store": {
+          "type": "string",
+          "description": "保管キー (= プレースホルダ名の一部)。再捕獲時は同じプレースホルダのまま値だけ差し替える。",
+          "minLength": 1
+        },
+        "bind": {
+          "type": "array",
+          "description": "この捕獲値を復元注入してよい宛先ホスト。省略すると捕獲元ホストだけに束縛される。ここに無いホストへは復元されない (持ち出し防止)。",
+          "items": { "$ref": "#/$defs/hostPattern" }
+        }
+      }
+    }
+  }
+}

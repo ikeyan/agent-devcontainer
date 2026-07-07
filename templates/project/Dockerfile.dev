@@ -1,0 +1,7 @@
+# core/Dockerfile の @@PROJECT:dev@@ (dev ステージ内・USER root 区間) に挿入される project fragment。
+# 例) 追加パッケージ:
+#   RUN apt-get update && apt-get install -y --no-install-recommends foo \
+#     && apt-get clean && rm -rf /var/lib/apt/lists/*
+# 例) project ファイルの配置 (build context は .devcontainer/):
+#   COPY project/myfile /etc/myfile
+# 変更後: make -C .devcontainer/core gen-dockerfile

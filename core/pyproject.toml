@@ -1,0 +1,18 @@
+[project]
+name = "tools"
+version = "0.1.0"
+description = ".devcontainer の Python 依存 (secrets-proxy/redact の mitmproxy と検査系)"
+requires-python = ">=3.12"
+dependencies = [
+    "mitmproxy>=12.2.3",
+    "hypothesis>=6",
+    "PyYAML>=6",
+    "jsonschema>=4",
+    "tree-sitter~=0.25",
+    "tree-sitter-containerfile~=0.9.2",
+]
+
+# redact イメージ (Dockerfile の redact ステージ) が `uv pip install --group redact` で読む。
+# mitmproxy だけを厳密に固定する (hypothesis/PyYAML を巻き込まない)。
+[dependency-groups]
+redact = ["mitmproxy==12.2.3"]

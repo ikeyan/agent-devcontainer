@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": ["Read(//**)", "Write(//workspace/extract/__APP__/**)", "Edit(//workspace/extract/__APP__/**)"],
+    "deny": ["Read(//home/node/.claude/**)"],
+    "defaultMode": "bypassPermissions"
+  },
+  "enableAllProjectMcpServers": false,
+  "sandbox": {
+    "enabled": false
+  }
+}

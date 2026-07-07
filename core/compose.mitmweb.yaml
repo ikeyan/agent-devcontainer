@@ -1,0 +1,22 @@
+# secrets-proxy をデバッグ用に mitmweb (ライブ傍受 Web UI) で起動する override。
+# 既定の compose.yaml には一切 Web UI 設定を置かない。これを重ねた時だけ Web UI が立つ:
+#   make -C .devcontainer/core proxy-web
+#   (実体: up -d --build --no-deps secrets-proxy → host 踏み台トンネルを foreground で開く)
+#   dev は VS Code 管理 (overrideCommand) なので touch せず secrets-proxy だけ差し替える。
+#   project 名は project/compose.yaml の `name: tools` で VS Code と共有する。戻すのは make proxy-web-off。
+#
+# 脅威モデル (redact/SECURITY-MODEL.md 不変条件 1/4): mitmweb のフロー画面には proxy が
+# substitute した平文 cred が on-wire で映るので、敵対的 dev (同一 tools-net, NET_ADMIN 持ち) や
+# LAN に晒せない。防御は 2 段で、経路と token の両方で締め出す:
+#   - 経路: mitmweb の Web UI を container の loopback (127.0.0.1) にだけ bind する (entrypoint 既定)。
+#     dev は別コンテナなので route_localnet=0 の下で他コンテナの loopback へ到達できない
+#     (martian drop。NET_ADMIN でも weak host model で迂回不可。docs/verified-facts/mitmproxy.md)。
+#     publish は張らない = LAN/dev への露出ゼロ。host は proxy-web-tunnel.py の docker exec 踏み台
+#     経由でだけ届く (dev は docker socket を持たず exec できない)。
+#   - token: mitmweb 常時 ON の token (128bit/起動毎、entrypoint が web_password に固定) が defense-in-depth。
+# ports は置かない (publish しない)。web_host も override しない (entrypoint 既定の 127.0.0.1)。
+services:
+  secrets-proxy:
+    environment:
+      SECRETS_PROXY_WEB: "1"
+      SECRETS_PROXY_WEB_PORT: "8081"

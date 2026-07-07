@@ -1,0 +1,21 @@
+{
+  "name": "tools (Claude Code + sfw + secrets-proxy)",
+  "dockerComposeFile": ["project/compose.yaml", "core/compose.yaml"],
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "node",
+  "overrideCommand": true,
+  "initializeCommand": "mkdir -p \"${localWorkspaceFolder}/.claude\" && { [ -e \"${localWorkspaceFolder}/.claude/settings.local.json\" ] || printf '{}\\n' > \"${localWorkspaceFolder}/.claude/settings.local.json\"; }",
+  "customizations": {
+    "vscode": {
+      "extensions": ["anthropic.claude-code", "biomejs.biome", "Prisma.prisma", "exiasr.hadolint"],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "biomejs.biome",
+        "terminal.integrated.defaultProfile.linux": "zsh"
+      }
+    }
+  },
+  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh && sudo /usr/local/bin/install-proxy-ca.sh",
+  "waitFor": "postStartCommand"
+}

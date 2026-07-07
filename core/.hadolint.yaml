@@ -1,0 +1,5 @@
+# hadolint 設定 (make check-dockerfile)。CWD = .devcontainer/core で自動検出される。
+# 以下は意図的な選択なので抑制する (バグではなくポリシー)。
+ignored:
+  - DL3008  # apt パッケージのバージョン固定はしない: dev イメージのツール群で保守コスト過大
+  - DL3016  # npm のバージョン固定はしない: claude-code (ARG CLAUDE_CODE_VERSION で latest 追従) と sfw

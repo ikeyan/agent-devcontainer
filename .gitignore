@@ -1,0 +1,8 @@
+# kit CI / ローカル検証が scaffold する consumer 相当物 (commit しない)
+/project/
+/devcontainer.json
+/Dockerfile
+/core/VERSION
+# ローカル環境物
+/.venv/
+/node_modules/

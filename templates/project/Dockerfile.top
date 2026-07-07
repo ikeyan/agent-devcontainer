@@ -1,0 +1,3 @@
+# core/Dockerfile の @@PROJECT:top@@ (トップレベル) に挿入される project fragment。
+# 追加 ARG や、COPY --from で使う追加 FROM ステージをここに書く。
+# 変更後: make -C .devcontainer/core gen-dockerfile

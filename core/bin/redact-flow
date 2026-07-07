@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# アプリ固有の redact_flow.py を、egress を Anthropic (api.anthropic.com + platform.claude.com) に
+# 固めた docker サンドボックス内の子 claude が、ユーザーと対話しながら実装するための launcher。
+#
+#   .devcontainer/core/bin/redact-flow <app> <raw.flows>
+#
+# やること:
+#   1. extract/<app>/ を作り、redact_flow.py が無ければ identity テンプレから scaffold する。
+#   2. redact 派生イメージ (.devcontainer/core/Dockerfile の redact ステージ) をビルドする。
+#      dev (devcontainer。claude-code/uv/node/iptables 等を持つ) は同一 Dockerfile の
+#      ステージなので BuildKit が依存として自動ビルドする。
+#   3. サンドボックスを起動する。
+# サンドボックス内の egress 封じ・書込制限の実体は .devcontainer/core/redact/ の entrypoint と
+# init-firewall.sh。生 flow はリポジトリに置かない (コミットで漏れる) 前提で、ここでは外部パスを
+# read-only マウントするだけ。
+set -euo pipefail
+
+usage() {
+    echo "usage: .devcontainer/core/bin/redact-flow <app> <raw.flows>" >&2
+    exit 2
+}
+[ $# -eq 2 ] || usage
+APP="$1"
+RAW="$2"
+
+# <app> はディレクトリ名兼 mount パスに使うので、安全な文字だけ許す。
+[[ "$APP" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "app 名が不正 (英数 . _ - のみ): $APP" >&2; exit 2; }
+# . / .. は弾く: APP は extract/<app> の path component なので、APP=.. だと OUT や compose の
+# rw bind 元/先が extract/<app> の外 (=リポジトリ root) を指し、repo 全体が rw で露出してしまう。
+case "$APP" in .|..) echo "app 名に . / .. は使えない: $APP" >&2; exit 2 ;; esac
+[ -r "$RAW" ] || { echo "raw flows が読めない: $RAW" >&2; exit 2; }
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(git -C "$SELF_DIR" rev-parse --show-toplevel)"
+HERE="$(cd "$SELF_DIR/.." && pwd)/redact"
+
+command -v docker >/dev/null 2>&1 || { echo "docker が無い。docker のあるホストで実行してください。" >&2; exit 1; }
+docker info >/dev/null 2>&1 || { echo "docker daemon に接続できない。dockerd を起動してください。" >&2; exit 1; }
+
+# 子 claude の認証。egress は Anthropic に固めてあるので、平文 API キー (api.anthropic.com を透過)
+# が一番素直。未設定だと子は agent-devcontainer-redact-auth volume の認証情報を使い、それも無ければ
+# platform.claude.com 経由のログインを促す (= 未認証だと「お住まいの国では…」風の不親切な失敗)。
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "[redact-flow] 注意: ANTHROPIC_API_KEY 未設定。" >&2
+    echo "[redact-flow]   推奨: export ANTHROPIC_API_KEY=sk-... して再実行 (api.anthropic.com を透過)。" >&2
+    echo "[redact-flow]   代替: agent-devcontainer-redact-auth volume を事前に認証しておく (claude login)。" >&2
+fi
+
+OUT="$REPO/extract/$APP"
+# extract/<app> が symlink だと、compose の rw bind 元 (${REDACT_REPO}/extract/${REDACT_APP}) が
+# repo 外の実体を指しうる: repo 全体を ro マウントしても、その symlink 先には子が rw で書ける。
+# mkdir 前に symlink を弾く (mkdir -p は symlink を辿って repo 外に実ディレクトリを作ってしまう)。
+if [ -L "$OUT" ]; then
+    echo "extract/$APP が symlink。実ディレクトリにしてください (repo 外への書込経路を防ぐため)。" >&2
+    exit 2
+fi
+mkdir -p "$OUT"
+# 実体パスが repo 内の extract/ 配下であることを確認する (extract や中間が symlink で repo 外を
+# 指すケースも realpath で弾く)。
+real_repo="$(realpath "$REPO")"
+real_out="$(realpath "$OUT")"
+case "$real_out" in
+    "$real_repo"/extract/*) : ;;
+    *) echo "extract/$APP の実体が repo の extract/ 外を指している ($real_out)。" >&2; exit 2 ;;
+esac
+if [ ! -e "$OUT/redact_flow.py" ]; then
+    echo "[redact-flow] scaffold extract/$APP/redact_flow.py (identity テンプレ)"
+    sed "s|__APP__|$APP|g" "$HERE/redact_flow.template.py" > "$OUT/redact_flow.py"
+fi
+
+# redact 派生イメージをビルドする。compose は .devcontainer/core/Dockerfile の redact ステージを
+# target にしている (dev は同一 Dockerfile のステージなので自動でビルドされる)。
+REDACT_APP="$APP" \
+REDACT_REPO="$REPO" \
+REDACT_RAW="$(realpath "$RAW")" \
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    docker compose -f "$HERE/compose.yaml" build
+
+echo "[redact-flow] launch sandbox (egress = Anthropic only: api.anthropic.com + platform.claude.com)…"
+exec env \
+    REDACT_APP="$APP" \
+    REDACT_REPO="$REPO" \
+    REDACT_RAW="$(realpath "$RAW")" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    docker compose -f "$HERE/compose.yaml" run --rm redact

@@ -1,0 +1,2 @@
+# gh の config マイグレーション台帳。生成元: make -C .devcontainer/core gh-seed
+version: "1"

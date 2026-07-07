@@ -1,0 +1,59 @@
+name: tools-redact
+
+# redact サンドボックス。.devcontainer/core/bin/redact-flow が REDACT_* を export して
+#   docker compose -f .devcontainer/core/redact/compose.yaml run --rm redact
+# で起動する。dev の compose とは別物 (secrets-proxy も HTTP_PROXY も持たない。
+# egress は entrypoint+init-firewall.sh が Anthropic (api.anthropic.com + platform.claude.com):443
+# + dnsmasq DNS に固める。後者は claude の Console 認証で必須)。
+
+services:
+  redact:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: redact
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN        # iptables / ipset
+      - NET_RAW          # iptables -m set が raw socket で ipset を問い合わせる (docs/verified-facts/capabilities.md「Linux capabilities」)
+      - NET_BIND_SERVICE # dnsmasq が 127.0.0.1:53 を bind
+      - SETUID           # dnsmasq の権限降格 + runuser で node へ降格
+      - SETGID
+      - SETPCAP          # dnsmasq の capability 調整
+      - DAC_READ_SEARCH  # root の entrypoint が事前認証 cred (node 所有 0600) を /root 配下から
+                         # 読むため (cap_drop ALL だと root でも他 uid の 0600 は読めない)。
+                         # 子 (node) は非 root ゆえ付与されず、/root へは到達不可のまま。
+    environment:
+      REDACT_APP: ${REDACT_APP:?set REDACT_APP}
+      # 認証は平文 API キーが素直 (api.anthropic.com を透過)。Console の OAuth ログイン/更新は
+      # platform.claude.com を許可済みなので可能だが、claude.ai サブスク認証 (claude.ai ドメイン)
+      # は egress 外なので不可。キーが無い場合は agent-devcontainer-redact-auth volume を事前認証しておく
+      # (下記 ro マウント。entrypoint が root として OAuth access token を取り出し env で渡す)。
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # extract/<app> 以外は全て read-only。書き込み可能な層 (image layer = /) は --rm で破棄される。
+      - ${REDACT_REPO:?set REDACT_REPO}:/workspace:ro
+      - ${REDACT_REPO:?set REDACT_REPO}/extract/${REDACT_APP:?set REDACT_APP}:/workspace/extract/${REDACT_APP:?set REDACT_APP}:rw
+      - ${REDACT_RAW:?set REDACT_RAW}:/input/raw.flows:ro
+      # 子 claude の home は volume を当てない: 子が raw 秘密を home へ退避しても (image layer なので)
+      # 永続しない (durable spill 防止)。事前認証する場合だけ、その volume を ro で /root 配下
+      # (mode 700 = node から不可視) に渡し、entrypoint が root として OAuth access token だけを取り出し
+      # env で claude へ渡す (cred ファイルは node 可視パスに置かない)。
+      - redact-claude:/root/.claude-auth:ro
+    networks:
+      - redact-net
+    stdin_open: true
+    tty: true
+
+networks:
+  # IPv4 のみ。v6 を有効化しない = 子に v6 egress 経路を与えない
+  # (ipset/iptables は v4 のみを固めるので、v6 があると迂回されうる)。
+  redact-net: {}
+
+volumes:
+  # name を固定する。既定だと compose は project 名を冠した tools-redact_redact-claude を
+  # 作るため、ユーザーが `claude login` で認証する literal な agent-devcontainer-redact-auth volume
+  # と食い違い、/root/.claude-auth が空マウントになって未認証で起動してしまう。
+  redact-claude:
+    name: agent-devcontainer-redact-auth

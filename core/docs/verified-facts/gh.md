@@ -1,0 +1,37 @@
+# gh CLI
+
+confidence tag の凡例: [README](README.md)。
+
+## gh CLI / 認証 (secrets-proxy 経由)
+
+- gh 2.46 は `~/.config/gh/hosts.yml` の `oauth_token` を **`Authorization: token <oauth_token>` で
+  verbatim 送出**する (scheme は `token`、Bearer でない)。**placeholder 文字列も受理**する。検証:
+  使い捨て `GH_CONFIG_DIR` に `oauth_token: "@@SECRET_github_token@@"` を置いて `gh api user` →
+  api.github.com が **401 Bad credentials** (= placeholder をトークンとしてそのまま送っている)。 `[empirical]`
+- gh は Go 製なので `HTTPS_PROXY`/`NO_PROXY` を既定で honor し、TLS は system CA pool (Linux は
+  `/etc/ssl/certs`) を使う。proxy CA は install-proxy-ca.sh で system バンドルへ導入済みなので gh も
+  信頼する (podman も Go で同経路の MITM が通っている前例)。api.github.com が proxy 経由になれば proxy が
+  MITM して Authorization 内の placeholder を実トークンへ substitute する。**ただし NO_PROXY は suffix
+  一致なので、api.github.com を NO_PROXY から外すだけでは不十分** — bare `github.com` が残ると
+  api.github.com まで捕まえて直結させる (docs/verified-facts/network.md「proxy bypass / NO_PROXY」)。検証: NO_PROXY から
+  github.com を外すと `gh api user` が proxy 経由で 200 を返し substitute が効く。 `[empirical]`
+- hosts.yml format (gh 2.46): `github.com` 配下に `users.<login>.oauth_token` と top-level `oauth_token`
+  の両方へ同じ値を書く。seed (gh/hosts.yml) は両方を placeholder にする。 `[empirical]`
+- init-firewall.sh の `curl https://api.github.com/meta` は `sudo` 実行で env が剥がれる (env_reset、
+  sudoers に env_keep 無し) ため proxy env を見ず直結する。よって api.github.com を NO_PROXY から外しても
+  firewall 構築の meta 取得には影響しない (meta は IP レンジ算出用で、DROP 適用前の開放状態で取る)。 `[empirical]`
+
+## gh CLI / config マイグレーション (hosts.yml の ro bind)
+
+- gh は起動時に config マイグレーションを走らせ、必要なら **hosts.yml を書き換える** (gh 2.46 で観測:
+  ダブルクォート→シングルクォートの再シリアライズ)。マイグレーション済みかは **config.yml の `version`** で
+  判定し、ledger は hosts.yml でなく config.yml 側にある。よって hosts.yml を **ro bind** して `gh auth login`
+  を構造的に封じる (書込が EROFS) には、`config.yml` に現行版 (`version: "1"`) を seed してマイグレーションを
+  スキップさせる必要がある。検証 (gh 2.46.0): ① ro hosts.yml + config.yml 無し → `gh api user` が
+  `failed to write config after migration` で失敗。② ro hosts.yml + `config.yml: version "1"` → `gh api user`
+  が 200 (`ikeyan`)・hosts.yml は mtime 不変 (書換なし)。gh を上げてマイグレーション版が変わったら
+  `make -C .devcontainer/core gh-seed` で追従する: committed の config.yml (= 現在の版) + hosts.yml を gh に渡して
+  **差分 migration を実適用**させ、結果 (新 version + migrate 済み hosts.yml) を書き戻す (version を pin する
+  のでなく gh 自身に schema 変換させるので hosts.yml の構造変更も反映)。追従漏れは `make check` の
+  check-gh-seed が「installed gh が seed を書き換える」を検出して fail-closed。どちらもネットワーク不要
+  (user: 設定済みで migration はローカル。`gh config get version` を unreachable proxy 付きでも exit 0 で確認)。 `[empirical]`

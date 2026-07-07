@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""マージ済み compose config のセキュリティ姿勢を pin する (redact_invariants_check.sh §10)。
+
+`docker/podman compose -f ../project/compose.yaml -f compose.yaml config` の出力 (stdin) を読み、
+「マージ結果そのもの」の不変条件を assert する。なぜ config を直接見るか: 複数 -f の「後勝ち」で
+core が勝つのは core が明示宣言したスカラーだけで、list (cap_add/networks/volumes) は追記マージ、
+core 未宣言キーは project 値が通る (docs/verified-facts/docker.md「compose 複数 -f」)。よって project 層の
+編集で崩れうる姿勢は、後勝ちの一般則でなくマージ結果を直接検査して固定する。
+
+pin する条件 (§10):
+  A. project 名が 'tools' (= project/compose.yaml が name: を宣言している)。消えると fallback で
+     'project' 等に化け、全 named volume が別 namespace に切り替わり既存データから切り離される
+     (docs/verified-facts/devcontainers-cli.md「project 名の fallback」)。
+  B. dev の cap_add がちょうど {NET_ADMIN, NET_RAW, SETUID, SETGID}。project 層が cap を追記して
+     権限を広げていないこと (list は追記マージなので後勝ちで守れない)。
+  C. dev に privileged: true が無い。
+  D. dev の networks が tools-net のみ (proxy-upstream に居ない = dev に v6 egress 経路が無い)。
+  E. proxy-confdir / proxy-bw volume が secrets-proxy 以外のサービスに mount されない
+     (CA 秘密鍵 / BW_SESSION が dev 等へ漏れない)。
+  F. どのサービスにも docker.sock の bind が無い (docker socket 奪取での隔離破壊を封じる)。
+
+--selftest: 各条件について「違反を注入したコピー」を作り、対応する検出器が実際に弾くことを確認する
+(negative probe)。検出漏れがあれば exit 1。
+"""
+from __future__ import annotations
+
+import copy
+import sys
+
+import yaml
+
+EXPECTED_NAME = "tools"
+EXPECTED_DEV_CAPS = {"NET_ADMIN", "NET_RAW", "SETUID", "SETGID"}
+SECRET_VOLUMES = {"proxy-confdir", "proxy-bw"}
+DOCKER_SOCK_NAMES = ("docker.sock",)
+
+
+def _vol_source(v: object) -> str | None:
+    if isinstance(v, dict):
+        s = v.get("source")
+        return s if isinstance(s, str) else None
+    if isinstance(v, str):
+        return v.split(":", 1)[0]
+    return None
+
+
+def _vol_is_bind(v: object) -> bool:
+    if isinstance(v, dict):
+        return v.get("type") == "bind"
+    if isinstance(v, str):
+        src = v.split(":", 1)[0]
+        return src.startswith("/") or src.startswith(".")
+    return False
+
+
+def _net_keys(nets: object) -> set[str]:
+    if isinstance(nets, dict):
+        return set(nets.keys())
+    if isinstance(nets, list):
+        return set(nets)
+    return set()
+
+
+def check_name(cfg: dict) -> list[str]:
+    name = cfg.get("name")
+    if name != EXPECTED_NAME:
+        return [f"A: project 名が '{EXPECTED_NAME}' でない (実際: {name!r})。project/compose.yaml の name: が消えた可能性"]
+    return []
+
+
+def check_dev_caps(cfg: dict) -> list[str]:
+    dev = (cfg.get("services") or {}).get("dev") or {}
+    caps = set(dev.get("cap_add") or [])
+    if caps != EXPECTED_DEV_CAPS:
+        return [f"B: dev の cap_add が {sorted(EXPECTED_DEV_CAPS)} でない (実際: {sorted(caps)})"]
+    return []
+
+
+def check_dev_not_privileged(cfg: dict) -> list[str]:
+    dev = (cfg.get("services") or {}).get("dev") or {}
+    if dev.get("privileged"):
+        return ["C: dev に privileged: true がある"]
+    return []
+
+
+def check_dev_networks(cfg: dict) -> list[str]:
+    dev = (cfg.get("services") or {}).get("dev") or {}
+    nets = _net_keys(dev.get("networks"))
+    if nets != {"tools-net"}:
+        return [f"D: dev の networks が {{tools-net}} でない (実際: {sorted(nets)})。proxy-upstream 所属は v6 経路を開く"]
+    return []
+
+
+def check_secret_volumes_isolated(cfg: dict) -> list[str]:
+    errs: list[str] = []
+    for name, svc in (cfg.get("services") or {}).items():
+        if name == "secrets-proxy" or not isinstance(svc, dict):
+            continue
+        for v in svc.get("volumes") or []:
+            src = _vol_source(v)
+            if src in SECRET_VOLUMES:
+                errs.append(f"E: secrets-proxy 専用 volume '{src}' が service '{name}' に mount されている")
+    return errs
+
+
+def check_no_docker_sock(cfg: dict) -> list[str]:
+    errs: list[str] = []
+    for name, svc in (cfg.get("services") or {}).items():
+        if not isinstance(svc, dict):
+            continue
+        for v in svc.get("volumes") or []:
+            if not _vol_is_bind(v):
+                continue
+            src = _vol_source(v) or ""
+            if any(src.rstrip("/").endswith(n) for n in DOCKER_SOCK_NAMES):
+                errs.append(f"F: service '{name}' が docker socket を bind している: {src}")
+    return errs
+
+
+CHECKS = [
+    ("name", check_name),
+    ("dev_caps", check_dev_caps),
+    ("dev_privileged", check_dev_not_privileged),
+    ("dev_networks", check_dev_networks),
+    ("secret_volumes", check_secret_volumes_isolated),
+    ("docker_sock", check_no_docker_sock),
+]
+
+
+def _mut_name(cfg: dict) -> None:
+    cfg["name"] = "project"
+
+
+def _mut_caps(cfg: dict) -> None:
+    cfg["services"]["dev"].setdefault("cap_add", []).append("SYS_ADMIN")
+
+
+def _mut_privileged(cfg: dict) -> None:
+    cfg["services"]["dev"]["privileged"] = True
+
+
+def _mut_networks(cfg: dict) -> None:
+    nets = cfg["services"]["dev"].get("networks")
+    if isinstance(nets, dict):
+        nets["proxy-upstream"] = None
+    else:
+        cfg["services"]["dev"]["networks"] = {"tools-net": None, "proxy-upstream": None}
+
+
+def _mut_secret_volume(cfg: dict) -> None:
+    cfg["services"]["dev"].setdefault("volumes", []).append(
+        {"type": "volume", "source": "proxy-bw", "target": "/steal"}
+    )
+
+
+def _mut_docker_sock(cfg: dict) -> None:
+    cfg["services"]["dev"].setdefault("volumes", []).append(
+        {"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}
+    )
+
+
+MUTATORS = {
+    "name": _mut_name,
+    "dev_caps": _mut_caps,
+    "dev_privileged": _mut_privileged,
+    "dev_networks": _mut_networks,
+    "secret_volumes": _mut_secret_volume,
+    "docker_sock": _mut_docker_sock,
+}
+
+
+def validate(cfg: dict) -> list[str]:
+    errs: list[str] = []
+    for _name, fn in CHECKS:
+        errs.extend(fn(cfg))
+    return errs
+
+
+def selftest(cfg: dict) -> list[str]:
+    """各条件について違反を注入したコピーを検出器が弾くことを確認 (negative probe)。"""
+    problems: list[str] = []
+    check_by_name = dict(CHECKS)
+    for name, mutate in MUTATORS.items():
+        mutated = copy.deepcopy(cfg)
+        mutate(mutated)
+        if not check_by_name[name](mutated):
+            problems.append(f"negative: 検出器 '{name}' が注入した違反を弾かない")
+    return problems
+
+
+def main() -> int:
+    selftest_mode = "--selftest" in sys.argv[1:]
+    cfg = yaml.safe_load(sys.stdin)
+    if not isinstance(cfg, dict):
+        print("check_compose_posture: stdin が compose config の mapping でない", file=sys.stderr)
+        return 1
+
+    errs = validate(cfg)
+    if selftest_mode:
+        errs = errs + selftest(cfg)
+
+    if errs:
+        for e in errs:
+            print(f"NG: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
