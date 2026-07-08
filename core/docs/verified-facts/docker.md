@@ -98,7 +98,7 @@ confidence tag の凡例: [README](README.md)。
     `docker run --rm --network <internal> busybox nslookup example.com` → SERVFAIL、
     同 net で peer コンテナ名 → 解決、通常 net で `example.com` → 解決。
   - 回帰 pin: `redact/dns_egress_test.sh` (`make -C .devcontainer/core check-redact-dns-egress`;
-    kit CI が毎 PR で当時最新の docker に対し実行)。二重コントロール (通常 net で外部名が解決する
+    kit CI が毎 PR で runner 同梱の docker に対し実行 = 版は runner image 依存)。二重コントロール (通常 net で外部名が解決する
     有意性 + internal net で peer 名が解決する機能性) が成立した時だけ「internal net で外部名が
     解決しない」を assert する fail-closed 設計。転送が復活したら FAIL。
   - podman は DNS 実装が別物 (aardvark-dns) のためこの pin の対象外。internal net 設計を podman 実行に

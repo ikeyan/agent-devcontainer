@@ -60,7 +60,11 @@ jobs:
 
       # internal net の DNS 無転送 (redact を proxy 中継 + internal net へ移す設計の要石) を実機 pin する。
       # docker daemon が要るので既定の make check には含めず、daemon のあるここで明示的に走らせる。
+      # DNS_EGRESS_REQUIRE=1: daemon/外部 DNS が揃う CI では健全性コントロールの SKIP を FATAL に昇格し、
+      # 「pin が空回りしたまま緑」を防ぐ (green = 実際に assert した、を担保)。
       - run: make -C core check-redact-dns-egress
+        env:
+          DNS_EGRESS_REQUIRE: "1"
 
   install-idempotency:
     runs-on: ubuntu-latest
