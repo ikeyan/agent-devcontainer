@@ -6,7 +6,9 @@
 #
 # 使い方 (discovery):
 #   1) build:   docker build -t secrets-proxy:observe .devcontainer/core/secrets-proxy
-#   2) run:     docker run --rm --name sp-observe -p 8080:8080 \
+#   2) run:     docker run --rm --name sp-observe -p 127.0.0.1:8080:8080 \
+#               (loopback bind: block_unlisted:false + 無認証なので 0.0.0.0 だと LAN に開いた MITM proxy
+#                になり第三者トラフィックが観測を汚す。step 4 は localhost 経由なので loopback で十分)
 #                 -e SECRETS_PROXY_LOG_REQUESTS=1 \
 #                 -e SECRETS_PROXY_RULES_SRCDIR=/observe \
 #                 -v "$PWD/.devcontainer/core/secrets-proxy/rules.observe-anthropic.yaml:/observe/rules.yaml:ro" \

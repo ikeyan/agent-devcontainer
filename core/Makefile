@@ -149,10 +149,13 @@ check-addon: ## addon.py / 踏み台スクリプトの構文を compile() で検
 	done; \
 	echo "ok  addon.py / tcp-bridge.py / proxy-web-tunnel.py"
 
-# project 層の rules.yaml (実設定) を core 側の rules.schema.json (JSON Schema) で構造検証する。
-# negative probe は schema が未知キーを弾くことを pin。PyYAML/jsonschema は kit venv ($(PY)) に入っている。
-check-rules: ## ../project/rules.yaml を JSON Schema で検証 (PyYAML+jsonschema 必須)
-	@$(PY) -c 'import json,sys,yaml,jsonschema; sc=json.load(open("secrets-proxy/rules.schema.json")); v=jsonschema.validators.validator_for(sc)(sc); v.check_schema(sc); errs=sorted(v.iter_errors(yaml.safe_load(open("../project/rules.yaml")) or {}), key=lambda e: list(e.path)); [sys.stderr.write("  rules.yaml /"+"/".join(map(str,e.path))+": "+e.message+"\n") for e in errs]; sys.exit(1) if errs else (sys.exit(1) if v.is_valid({"bogus_key":1}) else None)' \
+# committed な rules を core 側の rules.schema.json (JSON Schema) で構造検証する: project 層の実設定
+# (../project/rules.yaml) と core 同梱の observe 用 rules (secrets-proxy/rules.observe-anthropic.yaml)。
+# 後者は discovery 専用で本番 rules.yaml とは別名 (entrypoint は拾わない) だが、committed config なので
+# キー typo を実行前に捕まえる。negative probe は schema が未知キーを弾くことを pin。PyYAML/jsonschema は
+# kit venv ($(PY)) に入っている。
+check-rules: ## project/rules.yaml + observe rules を JSON Schema で検証 (PyYAML+jsonschema 必須)
+	@$(PY) -c 'import json,sys,yaml,jsonschema; sc=json.load(open("secrets-proxy/rules.schema.json")); v=jsonschema.validators.validator_for(sc)(sc); v.check_schema(sc); files=["../project/rules.yaml","secrets-proxy/rules.observe-anthropic.yaml"]; errs=[(f,e) for f in files for e in sorted(v.iter_errors(yaml.safe_load(open(f)) or {}), key=lambda e: list(e.path))]; [sys.stderr.write("  "+f+" /"+"/".join(map(str,e.path))+": "+e.message+"\n") for f,e in errs]; sys.exit(1) if errs else (sys.exit(1) if v.is_valid({"bogus_key":1}) else None)' \
 		|| { echo "rules invalid (schema 検証失敗 / negative probe)" >&2; exit 1; }; \
 	echo "ok  rules (schema)"
 
