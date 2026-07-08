@@ -18,7 +18,7 @@ jobs:
     steps:
       # checkout 既定は contents:write token を .git/config に永続化する。直後に kit main の未 pin
       # コードを curl|bash するため、永続化を切って create-pull-request の token 供給に限定する。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Run installer (最新 release)
