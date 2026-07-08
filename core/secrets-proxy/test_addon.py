@@ -10,6 +10,7 @@
 import base64
 import contextlib
 import json
+import logging
 import os
 import tempfile
 import urllib.parse as _url
@@ -232,6 +233,48 @@ def test_block_rules_and_unlisted():
         sp.request(f)
         blocked = f.response is not None and f.response.status_code == 403
         assert blocked == want, (method, host, path, f.response and f.response.status_code)
+
+
+# ===================== 観測ログ (allowlist 割り出し) =====================
+
+def _capture_logs(fn):
+    """addon.log の INFO 以上を捕まえてメッセージのリストを返す。"""
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda r: records.append(r.getMessage())
+    prev_level = addon.log.level
+    addon.log.addHandler(handler)
+    addon.log.setLevel(logging.INFO)
+    try:
+        fn()
+    finally:
+        addon.log.removeHandler(handler)
+        addon.log.setLevel(prev_level)
+    return records
+
+
+def test_log_requests_observation():
+    """観測ログ: SECRETS_PROXY_LOG_REQUESTS で on/off。on なら許可も拒否も (block より前なので)
+    `REQ method host path` で残り、query (秘密が載りうる) は落ちる。既定 off = 挙動不変。"""
+    rules = 'block_unlisted: true\nallow_hosts: ["api.anthropic.com"]\n'
+    os.environ.pop("SECRETS_PROXY_LOG_REQUESTS", None)
+    sp = _proxy(rules)
+    assert sp.log_requests is False
+    msgs = _capture_logs(lambda: sp.request(_reqflow("api.anthropic.com", path="/v1/messages")))
+    assert not any("REQ " in m for m in msgs), msgs
+
+    with _env(SECRETS_PROXY_LOG_REQUESTS="1"):
+        sp = _proxy(rules)
+    assert sp.log_requests is True
+
+    def drive():
+        sp.request(_reqflow("api.anthropic.com", method="POST",
+                            path="/v1/messages?beta=tok-SECRET"))
+        sp.request(_reqflow("evil.example.com", method="GET", path="/steal"))
+    msgs = _capture_logs(drive)
+    assert any("REQ POST api.anthropic.com /v1/messages" in m for m in msgs), msgs
+    assert any("REQ GET evil.example.com /steal" in m for m in msgs), msgs
+    assert all("tok-SECRET" not in m for m in msgs), msgs
 
 
 # ===================== inject =====================
