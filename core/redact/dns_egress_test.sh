@@ -27,21 +27,23 @@ set -euo pipefail
 docker info >/dev/null   # daemon 必須 (無ければ docker 自身のエラーで止まる)
 
 # busybox (nslookup 入り) を 1 つ確保する。Docker Hub は無認証 pull が rate-limit されがちなので
-# rate-limit の無い MCR を先頭に複数 registry を試す。REDACT_DNSTEST_IMAGE で明示上書き可。
-# コンテナを起動する前にローカルへ落とす。
-IMG="${REDACT_DNSTEST_IMAGE:-}"
-if [ -z "$IMG" ]; then
-    for cand in \
-        mcr.microsoft.com/azurelinux/busybox:1.36 \
-        busybox:latest \
-        public.ecr.aws/docker/library/busybox:latest
-    do
-        if docker image inspect "$cand" >/dev/null 2>&1 || docker pull -q "$cand" >/dev/null 2>&1; then
-            IMG="$cand"; break
-        fi
-    done
-fi
-docker image inspect "$IMG" >/dev/null 2>&1 \
+# rate-limit の無い MCR を先頭に複数 registry を試す。REDACT_DNSTEST_IMAGE で明示上書き可 (その値も
+# inspect→pull を通すので、未取得の像を指定してもローカルへ落とす)。コンテナ起動前に確保する。
+IMG=""
+for cand in \
+    ${REDACT_DNSTEST_IMAGE:+"$REDACT_DNSTEST_IMAGE"} \
+    mcr.microsoft.com/azurelinux/busybox:1.36 \
+    busybox:latest \
+    public.ecr.aws/docker/library/busybox:latest
+do
+    if docker image inspect "$cand" >/dev/null 2>&1 || docker pull -q "$cand" >/dev/null 2>&1; then
+        IMG="$cand"; break
+    fi
+    # 明示上書きが取得できなかったら fallback で握りつぶさず即 FATAL (指定意図を尊重する)。
+    [ -n "${REDACT_DNSTEST_IMAGE:-}" ] \
+        && { echo "FATAL dns-egress: REDACT_DNSTEST_IMAGE=$REDACT_DNSTEST_IMAGE を取得できない" >&2; exit 1; }
+done
+[ -n "$IMG" ] \
     || { echo "FATAL dns-egress: busybox 像を用意できない (REDACT_DNSTEST_IMAGE で指定可)" >&2; exit 1; }
 
 INT_NET="redact-dnstest-int-$$"
@@ -62,14 +64,22 @@ docker network create "$EXT_NET" >/dev/null
 [ "$(docker network inspect "$INT_NET" --format '{{.Internal}}')" = "true" ] \
     || { echo "FATAL dns-egress: $INT_NET が internal でない" >&2; exit 1; }
 
-# nslookup を $1=network で実行し、解決できたら 0 を返す。
-# busybox nslookup は解決成功時だけ `Name:` 行を出す (SERVFAIL/NXDOMAIN では出さない)。
-# server 行は `Address:\t127.0.0.11:53` なので `Name:` 行で判定すれば server を誤検知しない。
-# --dns-search=. で継承 search domain を消す: host の resolv.conf に search domain があると
-# (例: kit CI の Azure runner `*.bx.internal.cloudapp.net`)、busybox nslookup は ndots:0 でも bare 名に
-# それを付けて引き SERVFAIL になり peer 名解決 (control B) が空振りする。search を外すと bare 名を
-# absolute で引く。本命の負プローブにも効く — search 付きだと外部名が search domain 経由で解決して
-# 転送の有無を覆い隠しうるが、absolute 固定ならそれが無い (kit CI docker 28.0.4 で確認)。
+# 健全性コントロール A/B が判定不能なら SKIP (任意の投入ホスト向け)。ただし daemon 前提が揃う CI では
+# 「pin が空回りしたまま緑」を許さないため、DNS_EGRESS_REQUIRE 下では SKIP を FATAL に昇格する
+# (Makefile 方針「green = 全 check が実際に走った」を CI で担保。check.yml が env を立てる)。
+skip_unless_required() {  # $1=理由
+    if [ -n "${DNS_EGRESS_REQUIRE:-}" ]; then
+        echo "FATAL dns-egress: $1 (DNS_EGRESS_REQUIRE 下では SKIP 不可)" >&2
+        exit 1
+    fi
+    echo "SKIP dns-egress: $1"
+    exit 0
+}
+
+# $1=net $2=name で nslookup し、解決できたら 0。busybox nslookup は解決成功時だけ `Name:` 行を出す
+# (SERVFAIL/NXDOMAIN では出さない)。server 行 (`Address: 127.0.0.11:53`) は `Name:` 判定なら誤検知しない。
+# --dns-search=. は host 継承の search domain を外す誤修正ガード (外すと peer 名が空振りし本命も
+# 覆い隠される。理由は docs/verified-facts/docker.md「internal network の DNS」)。
 resolves_on() {  # $1=net $2=name
     local out
     out="$(timeout 15 docker run --rm --dns-search=. --network "$1" "$IMG" nslookup "$2" 2>&1 || true)"
@@ -89,22 +99,33 @@ resolves_soon() {  # $1=net $2=name
 }
 
 # A) 健全性: 通常 net で外部名が解決できる = この環境に転送可能な upstream が在る。
-if ! resolves_soon "$EXT_NET" "$EXT_NAME"; then
-    echo "SKIP dns-egress: 通常 net でも $EXT_NAME を解決できない (この環境に外部 DNS 経路が無い) → 転送是非を検査不能"
-    exit 0
-fi
+resolves_soon "$EXT_NET" "$EXT_NAME" \
+    || skip_unless_required "通常 net でも $EXT_NAME を解決できない (外部 DNS 経路が無い) → 転送是非を検査不能"
 
 # B) 健全性: internal net で peer 名は解決できる = 埋め込み DNS 自体は生きている。
 docker run -d --rm --name "$PEER" --network "$INT_NET" "$IMG" sleep 120 >/dev/null
-if ! resolves_soon "$INT_NET" "$PEER"; then
-    echo "SKIP dns-egress: internal net で peer 名すら解決できない (埋め込み DNS 不調?) → 判定不能"
-    exit 0
-fi
+resolves_soon "$INT_NET" "$PEER" \
+    || skip_unless_required "internal net で peer 名すら解決できない (埋め込み DNS 不調?) → 判定不能"
 
 # 本命 (fail-closed の負プローブ): internal net で外部名は解決できてはいけない。
-if resolves_on "$INT_NET" "$EXT_NAME"; then
+# ただし「解決しなかった」を無条件に合格にしない: プローブ自体が走らなかった (daemon 故障 / timeout /
+# nslookup 欠落 = docker rc 124/125+) 場合を「転送なし」と誤読すると fail-open になる。よって
+#   - `Name:` 行が出た            → 転送が生きている = exfil 穴 (FATAL)
+#   - プローブが走らなかった      → 判定不能 (FATAL)
+#   - nslookup が DNS 否定を返した → 目的どおり (ok)
+# の 3 分岐で、最後だけを合格にする。
+main_out="$(timeout 15 docker run --rm --dns-search=. --network "$INT_NET" "$IMG" nslookup "$EXT_NAME" 2>&1)" \
+    && main_rc=0 || main_rc=$?
+if printf '%s\n' "$main_out" | grep -qE '^Name:[[:space:]]'; then
     echo "FATAL dns-egress: internal net が $EXT_NAME を解決した = 外部 DNS 転送が生きている (exfil 穴)" >&2
     exit 1
 fi
+case "$main_rc" in
+    124)     echo "FATAL dns-egress: 本命プローブが 15s で timeout — 転送が生きて遅い可能性、判定不能" >&2; exit 1;;
+    12[5-9]) echo "FATAL dns-egress: 本命プローブの docker 実行失敗 (rc=$main_rc) — 判定不能" >&2; exit 1;;
+esac
+printf '%s\n' "$main_out" | grep -qiE "can't (find|resolve)|SERVFAIL|NXDOMAIN|no answer" \
+    || { echo "FATAL dns-egress: 本命プローブが nslookup の DNS 否定を示さない (rc=$main_rc) — 判定不能:" >&2
+         printf '%s\n' "$main_out" >&2; exit 1; }
 
 echo "ok  dns-egress (internal net: peer 名は解決 / 外部名は転送せず SERVFAIL) [img=$IMG]"
