@@ -9,6 +9,18 @@ updates:
       - "/core/secrets-proxy"
     schedule:
       interval: "weekly"
+    ignore:
+      # ignore は該当 dependency の版上げ PR を止めるだけ: 同一 tag の digest 更新や node 24.x 内の
+      # minor/patch (24.18.0 等) は引き続き流れる。
+      - dependency-name: "node"
+        versions: [">= 25"]
+        # ユーザーポリシー = 最新 LTS のみ。26 は Current (LTS 化 2026-10-28)。LTS 化したら範囲を
+        # ">= 27" に上げ、26 へ手動 bump する。LTS/範囲の意味論は core/docs/verified-facts/dependabot.md
+        # 「ignore」節。
+      - dependency-name: "python"
+        versions: [">= 3.13"]
+        # ユーザーポリシー = bugfix 期間を終えた最新 (現在 3.12 / security phase)。3.13 の bugfix
+        # 終了 (2026-10-07) 後に範囲を ">= 3.14" へ上げ、3.13 へ手動 bump する。
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

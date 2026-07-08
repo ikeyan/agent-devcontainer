@@ -52,3 +52,25 @@ devcontainer の image を `image:tag@sha256:<digest>` で固定しつつ Depend
   に `FROM scratch` 版があり libc 無しで動く = 完全 static が根拠)。よって musl (alpine) 版を
   glibc/trixie の image へ `COPY --from` してもそのまま動く。上流での配置は 0777 なので、焼く側で
   `--chmod=0755` に締める (同 uid の上書きを防ぐ)。 `[docs(source)]`
+
+## `ignore:` で base image の版ポリシー (node=最新LTS / python=bugfix終了済み最新) を止める
+
+- `ignore.versions` は Dependabot 全 ecosystem 共通で **Bundler の Gemfile 風 semver 範囲文字列**
+  (`">= 25"` 等) を取る。docker ecosystem も例外ではなく、`.github/dependabot.yml` の docker block に
+  `ignore: [{dependency-name, versions}]` を書けば該当 image の版上げ PR を止められる。出典: GitHub
+  Docs `dependabot-options-reference` の `ignore` / `versions` フィールド記述
+  (https://docs.github.com/en/code-security/dependabot/dependabot-options-reference)。 `[docs]`
+- 一方、`FROM node:24.17.0-trixie` のような **suffix 付き tag (`-trixie` / `-slim` 等) が具体的にどう
+  semver 範囲へマッピングされるか** は同ドキュメントに記載がない (`update-types` の説明も
+  major/minor/patch の一般論のみで、tag の非数値 suffix をどう剥がして比較するかには触れない)。
+  `[docs-silent]`
+- 実機で確認した挙動 (本 kit): Dependabot は `node:24.17.0-trixie` → `node:26.4.0-trixie`
+  (ikeyan/agent-devcontainer PR #6) および `python:3.12-slim` → `python:3.14-slim` (同 PR #8) を
+  「バージョン更新」として自律的に提案した。つまり suffix (`-trixie`, `-slim`) は固定文字列として
+  保持したまま、tag 先頭の数値部分 (`24.17.0` → `26.4.0` / `3.12` → `3.14`) だけを semver として
+  数値的に比較している。 `[empirical]`
+- house choice: suffix 付き tag の semver 意味論が非公開 (`[docs-silent]`) である以上、
+  `update-types: ["version-update:semver-major"]` のような **update-types による粒度指定には
+  依拠しない**。代わりに `ignore.versions` の **明示的な数値範囲** (`">= 25"` / `">= 3.13"`) で
+  止める方式を採る。範囲文字列の構文自体は `[docs]` の保証内だが、それが「tag 先頭の数値部分」に
+  効くという前提は `[empirical]` (PR #6/#8 の実測) にのみ依存していることを忘れないこと。
