@@ -1,0 +1,26 @@
+# 観測 (discovery) 専用 rules — allowlist を実トラフィックから割り出すための「全許可 + 記録」設定。
+# 本番 (redact / dev) では使わない。block も inject も capture もせず、ただ MITM して素通しする。
+# SECRETS_PROXY_LOG_REQUESTS=1 と併用し、本物の claude OAuth セッションを通して
+# api.anthropic.com / 認証系へ実際に当たるエンドポイント (method host path) を docker logs に出す。
+# その結果から「認証系 + /v1/messages だけ」等の最小 allowlist を確定し、本番 rules.yaml を作る。
+#
+# 使い方 (discovery):
+#   1) build:   docker build -t secrets-proxy:observe .devcontainer/core/secrets-proxy
+#   2) run:     docker run --rm --name sp-observe -p 8080:8080 \
+#                 -e SECRETS_PROXY_LOG_REQUESTS=1 \
+#                 -e SECRETS_PROXY_RULES_SRCDIR=/observe \
+#                 -v "$PWD/.devcontainer/core/secrets-proxy/rules.observe-anthropic.yaml:/observe/rules.yaml:ro" \
+#                 -v sp-observe-ca:/ca  secrets-proxy:observe
+#   3) CA 取得: docker run --rm -v sp-observe-ca:/ca alpine cat /ca/proxy-ca-cert.pem > /tmp/observe-ca.pem
+#   4) 本物の claude を proxy 経由・CA 信頼で回す (OAuth 済みのセッションをそのまま使う):
+#        HTTPS_PROXY=http://localhost:8080 HTTP_PROXY=http://localhost:8080 \
+#        NO_PROXY=localhost,127.0.0.1 NODE_EXTRA_CA_CERTS=/tmp/observe-ca.pem  claude
+#      (token の refresh も発生させたいので、しばらく使うか、期限間際のセッションで回す。)
+#   5) 当たったエンドポイント集合を抽出:
+#        docker logs sp-observe 2>&1 | grep -oE 'REQ [A-Z]+ [^ ]+ [^ ]+' | sort -u
+#      → host/path の一覧を見て、認証 (token refresh) と推論 (/v1/messages) に要る最小集合を選ぶ。
+#
+# 注意: block_unlisted: false は **何も遮断しない** = 封じ込めが無い。discovery 用の一時設定であり、
+# 本番では絶対に使わない (本番は host+path を絞った rules.yaml + 子の egress を internal net で封じる)。
+block_unlisted: false
+detect_leaks: false

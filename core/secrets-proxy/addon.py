@@ -107,6 +107,12 @@ class SecretsProxy:
         self.block_rules = []       # [dict]
         self.block_unlisted = True
         self.detect_leaks = True
+        # 観測モード (allowlist 割り出し用)。真なら全リクエストの `method host path` を INFO で
+        # 記録する。block 判定より前に出すので許可も拒否も漏れなく残る。query は秘密 (token 等) が
+        # 載りうるので落とす。既定 off で dev/redact の挙動は一切変えない。env で切り替える
+        # (rules ではなく運用フラグなので RULES_PATH と同じく外から渡す)。
+        self.log_requests = os.environ.get(
+            "SECRETS_PROXY_LOG_REQUESTS", "").strip().lower() in ("1", "true", "yes", "on")
 
         self._static = {}           # (item, field) -> value  (Vaultwarden キャッシュ)
         self.salt = pysecrets.token_hex(4)   # プレースホルダの予測困難化 (起動ごと)
@@ -433,6 +439,11 @@ class SecretsProxy:
     def request(self, flow: http.HTTPFlow):
         req = flow.request
         host = req.pretty_host
+
+        # 0) 観測ログ。block より前に置き、許可も拒否も全部記録する (allowlist 割り出し +
+        #    監査)。query は秘密が載りうるので落とす (path だけ残す)。
+        if self.log_requests:
+            log.info("secrets-proxy: REQ %s %s %s", req.method, host, req.path.split("?", 1)[0])
 
         # 1) 危険エンドポイントの遮断
         reason = self._blocked(req, host)
