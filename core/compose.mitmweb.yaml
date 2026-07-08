@@ -6,7 +6,7 @@
 #   project 名は project/compose.yaml の `name: tools` で VS Code と共有する。戻すのは make proxy-web-off。
 #
 # 脅威モデル (redact/SECURITY-MODEL.md 不変条件 1/4): mitmweb のフロー画面には proxy が
-# substitute した平文 cred が on-wire で映るので、敵対的 dev (同一 tools-net, NET_ADMIN 持ち) や
+# substitute した平文 cred が on-wire で映るので、敵対的 dev (同一 devnet, NET_ADMIN 持ち) や
 # LAN に晒せない。防御は 2 段で、経路と token の両方で締め出す:
 #   - 経路: mitmweb の Web UI を container の loopback (127.0.0.1) にだけ bind する (entrypoint 既定)。
 #     dev は別コンテナなので route_localnet=0 の下で他コンテナの loopback へ到達できない

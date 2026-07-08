@@ -17,8 +17,8 @@ pin する条件 (§10):
   B. dev の cap_add がちょうど {NET_ADMIN, NET_RAW, SETUID, SETGID}。project 層が cap を追記して
      権限を広げていないこと (list は追記マージなので後勝ちで守れない)。
   C. dev に privileged: true が無い。
-  D. dev の networks が tools-net のみ (proxy-upstream に居ない = dev に v6 egress 経路が無い)。
-     tools-net は core/compose.yaml が宣言する固定のネットワーク名 (project 名とは無関係) なので
+  D. dev の networks が devnet のみ (proxy-upstream に居ない = dev に v6 egress 経路が無い)。
+     devnet は core/compose.yaml が宣言する固定のネットワーク名 (project 名とは無関係) なので
      consumer が変わっても値は変化しない。
   E. proxy-confdir / proxy-bw volume が secrets-proxy 以外のサービスに mount されない
      (CA 秘密鍵 / BW_SESSION が dev 等へ漏れない)。
@@ -93,8 +93,8 @@ def check_dev_not_privileged(cfg: dict) -> list[str]:
 def check_dev_networks(cfg: dict) -> list[str]:
     dev = (cfg.get("services") or {}).get("dev") or {}
     nets = _net_keys(dev.get("networks"))
-    if nets != {"tools-net"}:
-        return [f"D: dev の networks が {{tools-net}} でない (実際: {sorted(nets)})。proxy-upstream 所属は v6 経路を開く"]
+    if nets != {"devnet"}:
+        return [f"D: dev の networks が {{devnet}} でない (実際: {sorted(nets)})。proxy-upstream 所属は v6 経路を開く"]
     return []
 
 
@@ -156,7 +156,7 @@ def _mut_networks(cfg: dict) -> None:
     if isinstance(nets, dict):
         nets["proxy-upstream"] = None
     else:
-        cfg["services"]["dev"]["networks"] = {"tools-net": None, "proxy-upstream": None}
+        cfg["services"]["dev"]["networks"] = {"devnet": None, "proxy-upstream": None}
 
 
 def _mut_secret_volume(cfg: dict) -> None:

@@ -24,10 +24,10 @@ confidence tag の凡例: [README](README.md)。
   userns 内のみ有効なので同 uid プロセスは依然 chroot 不可)。 `[empirical]`
 - **`docker compose -f a.yml -f b.yml config` のマージは各ファイルを個別に canonical 形へ正規化してから
   合成する** (先に生の YAML 同士をマージしてから正規化、ではない)。よって base 側 service が
-  `networks:` を短縮形 (list, 例 `- tools-net`) で書き、override 側が同じキーを長縮形 (mapping, 例
-  `tools-net: {}` / `proxy-admin: {ipv4_address: ...}`) で書いても、両者とも合成前に長縮形へ正規化
+  `networks:` を短縮形 (list, 例 `- devnet`) で書き、override 側が同じキーを長縮形 (mapping, 例
+  `devnet: {}` / `proxy-admin: {ipv4_address: ...}`) で書いても、両者とも合成前に長縮形へ正規化
   済みなのでキー単位の mapping マージ (欠けているキーを追加、重複キーは値をマージ) が効き、
-  型不一致エラーにはならない。`.devcontainer/core/compose.mitmweb.yaml` が base の list 形 `tools-net`/
+  型不一致エラーにはならない。`.devcontainer/core/compose.mitmweb.yaml` が base の list 形 `devnet`/
   `proxy-upstream` に `proxy-admin: {ipv4_address: ...}` を mapping 形で足す override はこの挙動が前提。
   出典: compose-go `loader/loader.go` の `Load()` — 各 `ConfigFile` ごとに `parseConfig` → `schema.Validate`
   → `loadSections` (`transformServiceNetworkMap` 等の canonical 変換を含む) を通してから、全ファイル分

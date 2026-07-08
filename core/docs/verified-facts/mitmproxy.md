@@ -60,10 +60,10 @@ def running(self):
 
 ## dev(NET_ADMIN) は admin IP bind でも :8081 に到達し得る (weak host model)
 
-secrets-proxy は tools-net と proxy-admin にマルチホームする。mitmweb を admin IP (172.31.242.2) に
-bind し dev を proxy-admin に載せなくても、**NET_ADMIN を持つ dev は経路隔離を迂回できる**: tools-net 上で
-見える secrets-proxy の IP を next-hop に `ip route add 172.31.242.2/32 via <secrets-proxy の tools-net IP>`
-すると、パケットは secrets-proxy の tools-net インターフェースに届き、Linux の **weak host model** (宛先が
+secrets-proxy は devnet と proxy-admin にマルチホームする。mitmweb を admin IP (172.31.242.2) に
+bind し dev を proxy-admin に載せなくても、**NET_ADMIN を持つ dev は経路隔離を迂回できる**: devnet 上で
+見える secrets-proxy の IP を next-hop に `ip route add 172.31.242.2/32 via <secrets-proxy の devnet IP>`
+すると、パケットは secrets-proxy の devnet インターフェースに届き、Linux の **weak host model** (宛先が
 自分のローカルアドレスなら別 IF 着でも受理。rp_filter も source が正当なら通す) で `172.31.242.2:8081` の
 listener に配送される。mitmweb は IP bind であって device bind ではない (`SO_BINDTODEVICE` を使わない) ので
 着信 IF を絞れない。addon の allowlist/403 は proxy(:8080) にしか効かず :8081 には効かない。
@@ -74,7 +74,7 @@ listener に配送される。mitmweb は IP bind であって device bind で�
 ## admin IP 限定 bind は Docker Desktop の publish と食い違い Empty reply になる (実測)
 
 上記に加え運用上の問題として、mitmweb を admin IP (172.31.242.2) だけに bind すると **host からも届かない**。
-Docker Desktop (Mac) の `127.0.0.1:8081:8081` publish は container の別 IP (eth0 = tools-net 側 172.22.0.2)
+Docker Desktop (Mac) の `127.0.0.1:8081:8081` publish は container の別 IP (eth0 = devnet 側 172.22.0.2)
 へ転送し、そこには listener が無いため docker-proxy が受理後に上流接続失敗 → `curl: (52) Empty reply from
 server`。実測: dev から `--noproxy` 直叩きで `172.22.0.2:8081` は connection refused (mitmweb は admin IP に
 しか bind していない) を確認。→ admin ネット (proxy-admin/静的 IP) は隔離にも寄与せず publish も壊すだけ。
@@ -91,5 +91,5 @@ server`。実測: dev から `--noproxy` 直叩きで `172.22.0.2:8081` は conn
   中継する。host は docker socket を持つのでこれが打てるが、dev は docker socket を持たず `docker exec` できない。
   接続毎に exec を起こすので多少もたつくが debug 用途には十分。
 - token (web_password 固定) は defense-in-depth として残す。
-- 参考: `SO_BINDTODEVICE` で着信 IF を絞る案は、Docker Desktop では publish も dev も同じ tools-net IF から
+- 参考: `SO_BINDTODEVICE` で着信 IF を絞る案は、Docker Desktop では publish も dev も同じ devnet IF から
   入るため区別できず不成立 (かつ CAP_NET_RAW が要る)。loopback bind はこの問題を回避する。(2026-07-05)

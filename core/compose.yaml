@@ -78,7 +78,7 @@ services:
       # proxy が publish する CA 公開証明書 (read-only)
       - proxy-ca:/etc/secrets-proxy-ca:ro
     networks:
-      - tools-net
+      - devnet
     depends_on:
       secrets-proxy:
         condition: service_healthy
@@ -105,7 +105,7 @@ services:
       - proxy-confdir:/home/mitm/.mitmproxy # CA 秘密鍵はこの proxy 専用 volume に留まる
       - proxy-bw:/home/mitm/.bw             # == $BITWARDENCLI_APPDATA_DIR; bw のログイン状態を `session.key` に永続化
     networks:
-      - tools-net          # dev からの :8080 を受ける (v4)
+      - devnet              # dev からの :8080 を受ける (v4)
       - proxy-upstream     # Vaultwarden 等 upstream への egress (v4,v6)
     # CA を publish 済みかつ proxy から HTTP 応答が返ることを確認する。curl exits 0 <=> 応答あり
     # 未登録ホスト宛は addon が遮断して 403 を返す。
@@ -120,7 +120,7 @@ services:
 
 networks:
   # dev <-> proxy の v4 ブリッジ。dev の egress 制限は init-firewall.sh (iptables/v4) が担う。
-  tools-net:
+  devnet:
     enable_ipv6: false  # IPv6 を有効にすると dev が v6 で egress 制限を迂回できてしまう。
   # secrets-proxy 専用の upstream。IPv6 を有効化する。dev は排除 => dev に v6 経路は存在しない。
   proxy-upstream:
