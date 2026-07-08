@@ -1,0 +1,213 @@
+name: version-policy-watch
+
+# base image の版ポリシー (node=最新 active LTS / python=bugfix 終了済み最新) を一次資料で週次確認し、
+# 手動 promotion が必要になったら issue を自動起票する。ポリシーの根拠は
+# .github/dependabot.yml の ignore コメントと core/docs/verified-facts/dependabot.md「ignore」節。
+#
+# 判定は日付をハードコードせず、毎回一次資料 (nodejs/Release schedule.json / peps.python.org
+# release-cycle.json) を読んで行う。Dependabot 自体は ignore 範囲内の版上げ PR を出さないので、
+# 「今が昇格期か」を検知する役目をこの workflow が担う (起票のみ。実際の bump は人手 + Dependabot)。
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      simulate_pinned:
+        description: >-
+          テスト専用: pinned 版を上書きして issue 起票パスを動作確認する (例 "node=22 python=3.11")。
+          Dockerfile は書き換えない。空なら通常どおり Dockerfile から実際の pinned 版を読む。
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 一次資料を読み、昇格期が来ていれば issue を起票する
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIMULATE_PINNED: ${{ inputs.simulate_pinned }}
+        run: |
+          set -euo pipefail
+
+          today=$(date -u +%Y-%m-%d)
+
+          # --- 1. Dockerfile から pinned 版を抽出する (grep/sed。空なら Dockerfile の形が変わった
+          #        ということなので fail-closed で止める) ---
+          node_pinned=$(grep -m1 -oP '^FROM\s+node:\K[0-9]+' core/Dockerfile || true)
+          [ -n "$node_pinned" ] || { echo "::error::core/Dockerfile の FROM node: 行から major を抽出できなかった (Dockerfile の形が変わった?)"; exit 1; }
+
+          py_pinned=$(grep -m1 -oP '^FROM\s+python:\K[0-9]+\.[0-9]+' core/secrets-proxy/Dockerfile || true)
+          [ -n "$py_pinned" ] || { echo "::error::core/secrets-proxy/Dockerfile の FROM python: 行から maj.min を抽出できなかった (Dockerfile の形が変わった?)"; exit 1; }
+
+          echo "pinned (Dockerfile 実値): node=${node_pinned} python=${py_pinned}"
+
+          # --- workflow_dispatch のテスト入力で pinned 値を上書きする (issue 起票パスの動作確認専用。
+          #     Dockerfile は変更しない) ---
+          if [ -n "${SIMULATE_PINNED:-}" ]; then
+            for kv in $SIMULATE_PINNED; do
+              key=${kv%%=*}
+              val=${kv#*=}
+              case "$key" in
+                node)
+                  [[ "$val" =~ ^[0-9]+$ ]] || { echo "::error::simulate_pinned の node 値が数値でない: $val"; exit 1; }
+                  node_pinned="$val"
+                  ;;
+                python)
+                  [[ "$val" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "::error::simulate_pinned の python 値が maj.min でない: $val"; exit 1; }
+                  py_pinned="$val"
+                  ;;
+                *)
+                  echo "::error::simulate_pinned に不明なキー: $key (node= / python= のみ)"
+                  exit 1
+                  ;;
+              esac
+            done
+            echo "pinned (simulate_pinned で上書き): node=${node_pinned} python=${py_pinned}"
+          fi
+
+          # --- 2. 一次資料を取得して判定する。fetch/parse 失敗はすべて job 失敗にする (silent skip 禁止) ---
+          node_json=$(curl -fsSL https://raw.githubusercontent.com/nodejs/Release/main/schedule.json)
+          node_info=$(NODE_JSON="$node_json" TODAY="$today" python3 - <<'PY'
+          import json, os
+          data = json.loads(os.environ["NODE_JSON"])
+          today = os.environ["TODAY"]
+          # active LTS = lts <= today < end。該当する最大 major が追従対象。
+          best = None
+          for key, info in data.items():
+              if not key.startswith("v"):
+                  continue
+              lts = info.get("lts")
+              end = info.get("end")
+              if not lts or not end:
+                  continue
+              if lts <= today < end:
+                  major = int(key[1:])
+                  if best is None or major > best[0]:
+                      best = (major, lts, end)
+          if best is None:
+              raise SystemExit("active LTS な node major が schedule.json から見つからなかった")
+          print(f"{best[0]}\t{best[1]}\t{best[2]}")
+          PY
+          )
+          IFS=$'\t' read -r node_target node_lts_date node_end_date <<<"$node_info"
+          echo "node: 一次資料上の対象 = ${node_target} (lts=${node_lts_date} end=${node_end_date}, 判定日=${today})"
+
+          py_json=$(curl -fsSL https://peps.python.org/api/release-cycle.json)
+          py_info=$(PY_JSON="$py_json" python3 - <<'PY'
+          import json, os
+          data = json.loads(os.environ["PY_JSON"])
+          # bugfix 終了済み最新 = status == "security" の中で maj.min が最大のもの。
+          best = None
+          for key, info in data.items():
+              if info.get("status") != "security":
+                  continue
+              parts = key.split(".")
+              if len(parts) != 2 or not all(p.isdigit() for p in parts):
+                  continue
+              ver = tuple(int(p) for p in parts)
+              if best is None or ver > best[0]:
+                  best = (ver, info.get("end_of_life", ""))
+          if best is None:
+              raise SystemExit("status=security な python 版が release-cycle.json から見つからなかった")
+          print(f"{best[0][0]}.{best[0][1]}\t{best[1]}")
+          PY
+          )
+          IFS=$'\t' read -r py_target py_eol <<<"$py_info"
+          echo "python: 一次資料上の対象 = ${py_target} (status=security, end_of_life=${py_eol})"
+
+          # --- 3. pinned より新しければ issue を起票する (既存 open issue があれば重複させない) ---
+          version_gt() {
+            # maj.min 文字列 2 つを数値として比較する ($1 > $2 なら真)
+            local a_maj=${1%%.*} a_min=${1#*.}
+            local b_maj=${2%%.*} b_min=${2#*.}
+            if [ "$a_maj" -gt "$b_maj" ]; then return 0; fi
+            if [ "$a_maj" -lt "$b_maj" ]; then return 1; fi
+            [ "$a_min" -gt "$b_min" ]
+          }
+
+          if [ "$node_target" -gt "$node_pinned" ]; then
+            title="version-policy: node を ${node_target} (新 LTS) へ昇格"
+            number=$(gh issue list --state open --json number,title | jq -r --arg t "$title" '.[] | select(.title == $t) | .number' | head -1)
+            if [ -n "$number" ]; then
+              echo "node: issue exists (#${number})"
+            else
+              body=$(cat <<EOF
+          ## 概要
+          node の active LTS が更新された。base image の major を追従させる。
+
+          - 現在の pin: node ${node_pinned} (core/Dockerfile)
+          - 新しい対象: node ${node_target} (新 LTS)
+
+          ## 一次資料と判定根拠
+          - https://raw.githubusercontent.com/nodejs/Release/main/schedule.json
+          - v${node_target}: lts=${node_lts_date}, end=${node_end_date} (判定式: lts <= 判定日 < end)
+          - 判定日 (UTC): ${today}
+
+          ## 手順
+          1. .github/dependabot.yml の docker ignore (node) の範囲を上げる (\`>= ${node_target}\` を
+             \`>= $((node_target + 1))\` へ) — Dependabot が tag+digest 込みの更新 PR を出せるようにする。
+          2. Dependabot の週次 PR (または手動) で core/Dockerfile の \`FROM node:...\` 行を
+             ${node_target} 系の tag+digest に更新する。
+          3. \`make -C core check\` および kit CI を通す。
+          4. core/docs/verified-facts/dependabot.md の ignore 節のコメントを更新する。
+
+          このIssueは \`.github/workflows/version-policy-watch.yml\` が一次資料を毎週読んで自動起票した。
+          昇格が完了したら closeすること。
+          EOF
+          )
+              issue_url=$(gh issue create --title "$title" --body "$body")
+              echo "node: issue created (${issue_url})"
+            fi
+          else
+            echo "node: up-to-date (pinned=${node_pinned} target=${node_target})"
+          fi
+
+          if version_gt "$py_target" "$py_pinned"; then
+            title="version-policy: python を ${py_target} (bugfix 終了済み最新) へ昇格"
+            number=$(gh issue list --state open --json number,title | jq -r --arg t "$title" '.[] | select(.title == $t) | .number' | head -1)
+            if [ -n "$number" ]; then
+              echo "python: issue exists (#${number})"
+            else
+              body=$(cat <<EOF
+          ## 概要
+          python の bugfix フェーズが終了し、新しい security 版が最新になった。base image の
+          maj.min を追従させる。
+
+          - 現在の pin: python ${py_pinned} (core/secrets-proxy/Dockerfile)
+          - 新しい対象: python ${py_target} (bugfix 終了済み最新)
+
+          ## 一次資料と判定根拠
+          - https://peps.python.org/api/release-cycle.json
+          - ${py_target}: status=security, end_of_life=${py_eol}
+          - 判定日 (UTC): ${today}
+
+          ## 手順
+          1. **先に** mitmproxy が python ${py_target} に対応しているか確認する (mitmproxy の対応 python
+             版情報 / リリースノート。core/secrets-proxy/Dockerfile は mitmproxy を pip install するため
+             未対応だと壊れる)。未対応なら mitmproxy 側の対応を待ち、このIssueは open のまま残してよい。
+          2. 対応確認が取れたら .github/dependabot.yml の docker ignore (python) の範囲を上げる
+             (\`>= ${py_target}\` を次の bugfix 版以上へ) — Dependabot が tag+digest 込みの更新 PR を
+             出せるようにする。
+          3. Dependabot の週次 PR (または手動) で core/secrets-proxy/Dockerfile の \`FROM python:...\`
+             行を ${py_target} 系の tag+digest に更新する。
+          4. \`make -C core check\` および kit CI を通す。
+          5. core/docs/verified-facts/dependabot.md の ignore 節のコメントを更新する。
+
+          このIssueは \`.github/workflows/version-policy-watch.yml\` が一次資料を毎週読んで自動起票した。
+          昇格が完了したら closeすること。
+          EOF
+          )
+              issue_url=$(gh issue create --title "$title" --body "$body")
+              echo "python: issue created (${issue_url})"
+            fi
+          else
+            echo "python: up-to-date (pinned=${py_pinned} target=${py_target})"
+          fi
