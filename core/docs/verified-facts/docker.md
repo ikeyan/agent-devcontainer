@@ -86,6 +86,30 @@ confidence tag の凡例: [README](README.md)。
   -f compose.yaml config` を実行するため、kit ローカル検証パイプライン (Step 7: scaffold → gen →
   `make -C core check`) が壊れれば即座に検出できる (常時 pin)。
 
+## internal network の DNS
+
+- `internal: true` の network 上のコンテナは、埋め込み DNS (`127.0.0.11`) で **コンテナ/サービス名は
+  解決できる** が、**外部名は転送されず `SERVFAIL`** を返す (通常 bridge net では同じ名前が解決できる)。
+  resolv.conf 側には `ExtServers: [host(8.8.8.8)]` が載るが、internal net では実際には転送しない。
+  → redact を proxy 中継 + `internal: true` net へ移すと、**internal net 自体が DNS exfil 経路を塞ぐ**
+  ので、子に `iptables`/`dnsmasq` (NET_ADMIN) を持たせずに DNS 持ち出しを断てる。子は proxy を
+  サービス名で引けるまま (proxy だけが外向き net で upstream を解決する)。 `[empirical]`
+  - 確認 (docker 29.3.1, iptables firewall backend):
+    `docker run --rm --network <internal> busybox nslookup example.com` → SERVFAIL、
+    同 net で peer コンテナ名 → 解決、通常 net で `example.com` → 解決。
+  - 回帰 pin: `redact/dns_egress_test.sh` (`make -C .devcontainer/core check-redact-dns-egress`;
+    kit CI が毎 PR で当時最新の docker に対し実行)。二重コントロール (通常 net で外部名が解決する
+    有意性 + internal net で peer 名が解決する機能性) が成立した時だけ「internal net で外部名が
+    解決しない」を assert する fail-closed 設計。転送が復活したら FAIL。
+  - podman は DNS 実装が別物 (aardvark-dns) のためこの pin の対象外。internal net 設計を podman 実行に
+    載せる場合は別途実機 pin が要る。
+  - 罠 (テスト実装上): host の resolv.conf に search domain があると (例: kit CI の Azure runner
+    `*.bx.internal.cloudapp.net`) docker が container へ継承させ、busybox nslookup は `ndots:0` でも
+    bare の container 名にそれを付けて引き `<name>.<search>` が SERVFAIL になる (peer 名が引けず
+    control B が空振り)。`docker run --dns-search=.` で継承 search を消すと bare 名を absolute で
+    引いて解決する。負プローブ側でも search 付きは外部名を search domain 経由で解決して転送有無を
+    覆い隠しうるので、`--dns-search=.` は健全性・本命の両方に効く。 `[empirical]` (kit CI docker 28.0.4)
+
 ## Docker /proc マスク (systempaths)
 
 - Docker は既定で `/proc` 上に **locked なオーバーレイ**を張る: readonly-paths (`/proc/sys`・`/proc/bus`・

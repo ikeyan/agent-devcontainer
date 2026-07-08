@@ -58,6 +58,10 @@ jobs:
           ! grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile
       - run: make -C core check
 
+      # internal net の DNS 無転送 (redact を proxy 中継 + internal net へ移す設計の要石) を実機 pin する。
+      # docker daemon が要るので既定の make check には含めず、daemon のあるここで明示的に走らせる。
+      - run: make -C core check-redact-dns-egress
+
   install-idempotency:
     runs-on: ubuntu-latest
     steps:
