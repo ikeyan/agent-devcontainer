@@ -54,8 +54,8 @@ CHECKS := \
 	check-proxychains \
 	check-seccomp
 
-# check-redact-image は重い/ネット要のため check 集約には入れず明示実行する (下記)。
-.PHONY: help check gh-seed proxy-web proxy-web-off check-redact-image gen-seccomp gen-dockerfile $(CHECKS)
+# check-redact-image / check-redact-dns-egress は重い/ネット要のため check 集約には入れず明示実行する (下記)。
+.PHONY: help check gh-seed proxy-web proxy-web-off check-redact-image check-redact-dns-egress gen-seccomp gen-dockerfile $(CHECKS)
 
 help: ## 一覧
 	@sed -nE 's/^([a-zA-Z_-]+):.*## (.*)$$/  \1\t\2/p' $(MAKEFILE_LIST) | expand -t 20
@@ -274,6 +274,14 @@ check-redact-image: ## redact イメージを実ビルドし node 子の python3
 		'python3 -c "import sys, mitmproxy; assert sys.version_info >= (3, 12), sys.version"' \
 		|| { echo "redact-image: node 子が python3>=3.12 + mitmproxy を使えない" >&2; exit 1; }; \
 	echo "ok  redact-image ($(ENGINE); node python3>=3.12 + mitmproxy import)"
+
+# Docker `internal:` network が外部 DNS を転送しない (= internal net 自体が DNS exfil を塞ぐ) ことを
+# 実機で pin する。redact を proxy 中継 + internal net へ移す設計の要石を回帰で守る
+# (docs/verified-facts/docker.md「internal network の DNS」参照)。pin 対象は docker の埋め込み DNS —
+# podman (aardvark-dns) は対象外なので $(ENGINE) でなく docker 固定。daemon + busybox 系イメージ +
+# 外部 DNS が要るので check 集約には入れず、kit CI (.github/workflows/check.yml) と投入ホストで明示実行する。
+check-redact-dns-egress: ## internal net が外部 DNS を転送しないことを実機 pin (docker+ネット必須; 重いので明示実行)
+	@bash redact/dns_egress_test.sh
 
 # addon.py の単体/property テスト (mitmproxy の test ヘルパで hook を駆動。実ネットワーク不要)。
 # mitmproxy + hypothesis は kit venv ($(PY)) に入っている。__pycache__ を残さない。
