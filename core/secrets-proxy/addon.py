@@ -107,10 +107,8 @@ class SecretsProxy:
         self.block_rules = []       # [dict]
         self.block_unlisted = True
         self.detect_leaks = True
-        # 観測モード (allowlist 割り出し用)。真なら全リクエストの `method host path` を INFO で
-        # 記録する。block 判定より前に出すので許可も拒否も漏れなく残る。query は秘密 (token 等) が
-        # 載りうるので落とす。既定 off で dev/redact の挙動は一切変えない。env で切り替える
-        # (rules ではなく運用フラグなので RULES_PATH と同じく外から渡す)。
+        # 観測モード (allowlist 割り出し用)。既定 off = dev/redact の挙動は一切変えない。rules ではなく
+        # 運用フラグなので RULES_PATH と同じく env で渡す。記録内容と位置は request() を参照。
         self.log_requests = os.environ.get(
             "SECRETS_PROXY_LOG_REQUESTS", "").strip().lower() in ("1", "true", "yes", "on")
 
