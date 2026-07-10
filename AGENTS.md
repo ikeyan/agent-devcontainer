@@ -1,6 +1,6 @@
 # このリポジトリでの作業規則
 
-この repo (devcontainer kit) の `core/` は installer で各 consumer repo に同期される source of truth — ここでの変更が下流全部に効く。consumer 側の「`core/` 手編集禁止」の裏返しで、kit 由来物の修正はすべてここで行う。redact サンドボックスの脅威モデルは `core/redact/SECURITY-MODEL.md`、外部ツールの確定仕様は verified-facts ledger (`core/docs/verified-facts/`) を参照 (必要時に読む)。
+この repo の `core/` は installer で各 consumer repo に同期される source of truth — ここでの変更が下流全部に効く。consumer 側の「`core/` 手編集禁止」の裏返しで、kit 由来物の修正はすべてここで行う。redact サンドボックスの脅威モデルは `core/redact/SECURITY-MODEL.md`、外部ツールの確定仕様は verified-facts ledger (`core/docs/verified-facts/`) を参照 (必要時に読む)。
 
 ## ワークフロー
 
@@ -12,10 +12,10 @@
   - fail-open な既定は fail-closed にする
 - コメントや文字列で自然言語を書く場合、その読者を想定して書く。
 
-## 検証 (make -C core check / core/Makefile)
+## 検証 (make check / Makefile)
 
-- `make -C core check` が全検証を集約する。CI (`.github/workflows/check.yml`) が自動実行する。
-- 変更後は `make -C core check` を緑にしてから done と言う — ここでの「緑」は、今回の変更が生む新しい不変条件・失敗様式まで検査が捕まえることを含む。既存検査が捕まえないなら検査が漏れており、その場で `core/Makefile` かその配下の class の合う検査 (例: `core/bin/redact_invariants_check.sh`) に足す。
+- `make check` が全検証を集約する (core の検査は consumer 相当の project 層前提 — fresh clone では先に `make scaffold`)。CI (`.github/workflows/check.yml`) が自動実行する。CI 限定でここに入らない検査はルート Makefile 冒頭コメント参照。
+- 変更後は `make check` を緑にしてから done と言う — ここでの「緑」は、今回の変更が生む新しい不変条件・失敗様式まで検査が捕まえることを含む。既存検査が捕まえないなら検査が漏れており、その場でルート Makefile か `core/Makefile` の合う class の検査 (例: `core/bin/redact_invariants_check.sh`) に足す。
 - 検証・調査・実験は、その場限りのワンライナーでなく Makefile のターゲットとして定着させ、次回から最小コマンドで再利用できるようにする。Makefile を検証・調査のアーミーナイフとして育て、重複・陳腐化したターゲットは整理して切れ味を保つ。
 - Makefile 経由かアドホックかに関わらず、環境に副作用を残さない。
   - 例: `python3 -m py_compile` は `__pycache__` を残す → 文字列を `compile()` する。
