@@ -38,12 +38,6 @@ jobs:
           ./actionlint .github/workflows/*.yml templates/github/workflows/*.yml
       - name: Setup (kit CI 用 consumer 相当の project 層 + kit venv)
         run: make setup
-      - name: 置換漏れ placeholder が無いこと (置換漏れの devcontainer.json は silent に出荷されるため pin — AGENTS.md 再発防止の規律「既定は fail-closed」)
-        # run 先頭の bare `!` は YAML の non-specific tag indicator として解釈され消える
-        # (plain scalar の先頭では tag 指定子として食われる。実測: yaml.safe_load で `!` が
-        # 消失し `grep ...` だけが残ることを確認済み) ため、block scalar (|) にして安全にする。
-        run: |
-          ! grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile
       - run: make check
 
       # internal net の DNS 無転送 (redact を proxy 中継 + internal net へ移す設計の要石) を実機 pin する。

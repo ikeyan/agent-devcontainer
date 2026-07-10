@@ -11,7 +11,7 @@ MAKEFLAGS += --output-sync=target
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
 
-CHECKS := check-core check-install-sh check-templates
+CHECKS := check-core check-install-sh check-templates check-placeholder
 .PHONY: help check setup $(CHECKS)
 
 help: ## 一覧
@@ -29,6 +29,13 @@ check-templates: ## templates と .github の JSON/YAML が parse 可能か (kit
 	@python3 -c 'import json; json.load(open("templates/claude/settings.json")); json.load(open("templates/devcontainer.json"))' \
 	&& $(PY) -c 'import yaml; yaml.safe_load(open("templates/github/dependabot.yml")); yaml.safe_load(open(".github/dependabot.yml"))' \
 	&& echo "ok  templates (json/yaml)"
+
+# 置換漏れの devcontainer.json 等は silent に出荷されるため pin (AGENTS.md 再発防止の規律「既定は fail-closed」)。
+# 1 行目は negative probe — 検出対象の token が templates で実際に使われていることを確認し、
+# templates 側の placeholder 改名で検査が空回りするのを防ぐ。
+check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無いか (要 setup 済み)
+	@grep -rq '@@PROJECT_NAME@@' templates || { echo "negative probe: templates に @@PROJECT_NAME@@ が無い — 検査対象の token が drift" >&2; exit 1; }
+	@! grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile && echo "ok  placeholder (@@PROJECT_NAME@@ 置換済み)"
 
 PROJECT_NAME ?= kitci
 setup: ## fresh clone を検査可能にする: consumer 相当の project 層 (既存ファイルは触らない) + kit venv
