@@ -50,7 +50,7 @@ jobs:
           cp -p templates/devcontainer.json devcontainer.json
           sed -i 's/@@PROJECT_NAME@@/kitci/' project/compose.yaml devcontainer.json
           bash core/bin/gen-dockerfile.sh > Dockerfile
-      - name: 置換漏れ placeholder が無いこと (置換漏れの devcontainer.json は silent に出荷されるため pin — CLAUDE.md 規則 5 相当)
+      - name: 置換漏れ placeholder が無いこと (置換漏れの devcontainer.json は silent に出荷されるため pin — AGENTS.md 再発防止の規律「既定は fail-closed」)
         # run 先頭の bare `!` は YAML の non-specific tag indicator として解釈され消える
         # (plain scalar の先頭では tag 指定子として食われる。実測: yaml.safe_load で `!` が
         # 消失し `grep ...` だけが残ることを確認済み) ため、block scalar (|) にして安全にする。
