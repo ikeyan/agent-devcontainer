@@ -9,6 +9,9 @@
 # docs/verified-facts/network.md「uv / sfw の CA 結合」。
 set -euo pipefail
 
+# sfw の無い環境 (kit CI 等、MITM proxy なし) では CA 結合は不要 — 素の uv をそのまま使う。
+command -v sfw >/dev/null || exec uv sync "$@"
+
 # $SSL_CERT_FILE / $@ は内側の sfw bash で展開させたいので単一引用符のまま (SC2016 は意図通り)
 # shellcheck disable=SC2016
 exec sfw bash -c '

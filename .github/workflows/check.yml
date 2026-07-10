@@ -31,17 +31,13 @@ jobs:
           sudo curl -fsSL -o /usr/local/bin/hadolint \
             https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64
           sudo chmod +x /usr/local/bin/hadolint
-      - name: uv sync (kit venv)
-        env:
-          UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
-        run: uv sync --project core --frozen
       - name: lint (workflow のみ — actionlint は CI でだけ取得。残る lint は make check 配下)
         run: |
           set -euo pipefail
           curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz | tar xz actionlint
           ./actionlint .github/workflows/*.yml templates/github/workflows/*.yml
-      - name: Scaffold project layer (kit CI 用 consumer 相当物)
-        run: make scaffold
+      - name: Setup (kit CI 用 consumer 相当の project 層 + kit venv)
+        run: make setup
       - name: 置換漏れ placeholder が無いこと (置換漏れの devcontainer.json は silent に出荷されるため pin — AGENTS.md 再発防止の規律「既定は fail-closed」)
         # run 先頭の bare `!` は YAML の non-specific tag indicator として解釈され消える
         # (plain scalar の先頭では tag 指定子として食われる。実測: yaml.safe_load で `!` が

@@ -14,7 +14,7 @@
 
 ## 検証 (make check / Makefile)
 
-- `make check` が全検証を集約する (core の検査は consumer 相当の project 層前提 — fresh clone では先に `make scaffold`)。CI (`.github/workflows/check.yml`) が自動実行する。CI 限定でここに入らない検査はルート Makefile 冒頭コメント参照。
+- `make check` が全検証を集約する (fresh clone では先に `make setup`)。CI (`.github/workflows/check.yml`) が自動実行する。CI 限定でここに入らない検査はルート Makefile 冒頭コメント参照。
 - 変更後は `make check` を緑にしてから done と言う — ここでの「緑」は、今回の変更が生む新しい不変条件・失敗様式まで検査が捕まえることを含む。既存検査が捕まえないなら検査が漏れており、その場でルート Makefile か `core/Makefile` の合う class の検査 (例: `core/bin/redact_invariants_check.sh`) に足す。
 - 検証・調査・実験は、その場限りのワンライナーでなく Makefile のターゲットとして定着させ、次回から最小コマンドで再利用できるようにする。Makefile を検証・調査のアーミーナイフとして育て、重複・陳腐化したターゲットは整理して切れ味を保つ。
 - Makefile 経由かアドホックかに関わらず、環境に副作用を残さない。
