@@ -39,6 +39,8 @@ jobs:
       - name: Setup (kit CI 用 consumer 相当の project 層 + kit venv)
         run: make setup
       - run: make check
+      # ネット要のため check 集約外 (ルート Makefile 冒頭コメント)。正本 drift を CI 赤で検出する。
+      - run: make check-review-md
 
       # internal net の DNS 無転送 (redact を proxy 中継 + internal net へ移す設計の要石) を実機 pin する。
       # docker daemon が要るので既定の make check には含めず、daemon のあるここで明示的に走らせる。
