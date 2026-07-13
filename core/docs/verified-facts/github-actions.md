@@ -13,3 +13,12 @@ confidence tag の凡例: [README](README.md)。
     `check-redact-image` (`ENGINE` 変数) は CI で「docker/podman が無い」を skip する分岐を持つ必要が
     ない (Task 9b「Makefile 検査基盤の整理」)。CI で compose エンジンが無い状態は本来あり得ないので、
     無ければ `command -v docker`/`podman compose` 相当の呼び出しがそのまま自然にエラーになる設計にする。
+
+## `run:` の plain scalar で先頭の bare `!` は消える (YAML tag indicator)
+
+- YAML の plain scalar 先頭の `!` は **non-specific tag の指定子として解釈され、値から消える**。
+  `run: ! grep ...` と書くと step には `grep ...` だけが渡り、否定 (`!`) が silent に脱落する。
+  実測: `yaml.safe_load` で `!` が消失し `grep ...` だけが残ることを確認済み。`[empirical]`
+- 対処: `!` 先頭のコマンドは block scalar (`run: |`) にするか、引用する。より良いのは、否定 grep の
+  ような検査を workflow の run に直書きせず Makefile ターゲットに置くこと (レシピ内では YAML の
+  制約が消える。例: ルート `Makefile` の `check-placeholder`)。
