@@ -37,11 +37,17 @@ check-online: check-review-md ## ネット必須の検証 (REVIEW.md 正本一�
 REVIEW_MD_UPSTREAM := https://raw.githubusercontent.com/ikeyan/agent-files/main/REVIEW.md
 
 # 正本は外部 repo の main なので、drift は PR の内容と無関係に発生し得る。PR の CI は DRIFT_CHECK=warn で
-# 警告 (GitHub annotation) に降格する (check.yml)。既定は fail。
-check-review-md: ## REVIEW.md が正本 (ikeyan/agent-files) の最新版と一致するか (ネット要。DRIFT_CHECK=warn で警告降格)
-	@set -o pipefail; curl -fsSL $(REVIEW_MD_UPSTREAM) | diff - REVIEW.md \
-	  && echo "ok  REVIEW.md (agent-files 正本と一致)" \
-	  || { [ "$$DRIFT_CHECK" = warn ] && echo "::warning::REVIEW.md が agent-files 正本から drift — make sync-review-md で追従"; }
+# 警告 (GitHub annotation) に降格する (check.yml)。既定は fail。降格するのは「比較が成立して不一致
+# (diff exit 1)」のみ — 取得失敗・比較不能は warn でも fail (未検査を緑にしない)。
+check-review-md: ## REVIEW.md が正本 (ikeyan/agent-files) の最新版と一致するか (ネット要。DRIFT_CHECK=warn で drift を警告降格)
+	@tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	curl -fsSL $(REVIEW_MD_UPSTREAM) -o "$$tmp" || exit; \
+	diff "$$tmp" REVIEW.md; st=$$?; \
+	case $$st in \
+	  0) echo "ok  REVIEW.md (agent-files 正本と一致)";; \
+	  1) [ "$$DRIFT_CHECK" = warn ] && echo "::warning::REVIEW.md が agent-files 正本から drift — make sync-review-md で追従";; \
+	  *) exit $$st;; \
+	esac
 
 sync-review-md: ## REVIEW.md を正本 (ikeyan/agent-files) の最新版で上書き (ネット要)
 	@curl -fsSL $(REVIEW_MD_UPSTREAM) -o REVIEW.md
