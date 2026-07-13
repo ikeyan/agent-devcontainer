@@ -39,9 +39,10 @@ check-review-md: ## REVIEW.md が正本 (ikeyan/agent-files) の最新版と一�
 # 置換漏れの devcontainer.json 等は silent に出荷されるため pin (AGENTS.md 再発防止の規律「既定は fail-closed」)。
 # 1 行目は negative probe — 検出対象の token が templates で実際に使われていることを確認し、
 # templates 側の placeholder 改名で検査が空回りするのを防ぐ。
+# 2 行目を `! grep` に戻さない: 対象欠落 (grep exit 2) まで成功に反転する。不一致 (exit 1) だけが成功。
 check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無いか (要 setup 済み)
 	@grep -rq '@@PROJECT_NAME@@' templates || { echo "negative probe: templates に @@PROJECT_NAME@@ が無い — 検査対象の token が drift" >&2; exit 1; }
-	@! grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile && echo "ok  placeholder (@@PROJECT_NAME@@ 置換済み)"
+	@grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile; [ $$? -eq 1 ] && echo "ok  placeholder (@@PROJECT_NAME@@ 置換済み)"
 
 PROJECT_NAME ?= kitci
 setup: ## fresh clone を検査可能にする: consumer 相当の project 層 (既存ファイルは触らない) + kit venv
