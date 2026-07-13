@@ -50,7 +50,7 @@ check-review-md: ## REVIEW.md が正本 (ikeyan/agent-files) の最新版と一�
 	esac
 
 sync-review-md: ## REVIEW.md を正本 (ikeyan/agent-files) の最新版で上書き (ネット要)
-	@curl -fsSL $(REVIEW_MD_UPSTREAM) -o REVIEW.md
+	@curl -fsSL --remove-on-error $(REVIEW_MD_UPSTREAM) -o REVIEW.md
 
 # 置換漏れの devcontainer.json 等は silent に出荷されるため pin (AGENTS.md 再発防止の規律「既定は fail-closed」)。
 # 1 行目は negative probe — 検出対象の token が templates で実際に使われていることを確認し、
