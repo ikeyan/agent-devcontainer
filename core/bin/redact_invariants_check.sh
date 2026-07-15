@@ -240,9 +240,12 @@ PY=.venv/bin/python
 # 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。
 EXPECTED_NAME=$("$PY" -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["name"])' "$P/compose.yaml") \
     || fail "§10: project/compose.yaml から name: を読めない"
-merged=$(mktemp)
-"${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>/dev/null \
-    || { rm -f "$merged"; fail "§10: compose config が失敗 (${COMPOSE[*]} 未導入 or compose.yaml 不正)"; }
+merged=$(mktemp); mergederr=$(mktemp)
+# stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
+# PROJECT_GH_USER 不足の interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
+"${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>"$mergederr" \
+    || { cat "$mergederr" >&2; rm -f "$merged" "$mergederr"; fail "§10: compose config が失敗 (原因は直上の stderr)"; }
+rm -f "$mergederr"
 "$PY" "$POSTURE" "$EXPECTED_NAME" < "$merged" \
     || { rm -f "$merged"; fail "§10: マージ済み compose のセキュリティ姿勢に違反 (上の NG 行を参照)"; }
 "$PY" "$POSTURE" "$EXPECTED_NAME" --selftest < "$merged" \

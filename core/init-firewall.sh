@@ -23,7 +23,6 @@ ALLOWED_DOMAINS=(
     "jsr.io"
     "api.jsr.io"
     "npm.jsr.io"
-    "ikeyan.github.io"
     # --- Socket Firewall (sfw) ---
     "api.socket.dev"
     "firewall-api.socket.dev"

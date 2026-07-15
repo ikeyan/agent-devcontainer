@@ -11,7 +11,7 @@ MAKEFLAGS += --output-sync=target
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
 
-OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder
+OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination
 .PHONY: help check check-offline check-online setup check-review-md sync-review-md $(OFFLINE_CHECKS)
 
 help: ## 一覧
@@ -60,9 +60,47 @@ check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無い�
 	@grep -rq '@@PROJECT_NAME@@' templates || { echo "negative probe: templates に @@PROJECT_NAME@@ が無い — 検査対象の token が drift" >&2; exit 1; }
 	@grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile; [ $$? -eq 1 ] && echo "ok  placeholder (@@PROJECT_NAME@@ 置換済み)"
 
+# consumer 固有値の core/templates への再混入を防ぐ (kit issue #10 の再発防止)。禁止 token は
+# `ikeyan` (kit 自身の canonical 参照だけ allowlist: repo slug / tarball top-dir / agent-files 出典) と
+# 旧 project 名の残滓 `tools-redact` / `tools_`。`ikeyan.github.io` / `ikeyan/tools` は `ikeyan` 規則が
+# 包含する。allowlist は行単位でなく token 単位 (sed で無害化してから再 grep) — 同一行に allowlist
+# 対象と違反が同居しても違反が残って検出される。core/docs/verified-facts/ は実測記録の歴史的台帳なので
+# 対象外。fail-closed: grep の走査エラー (exit>1 = 読めないファイル等) を「クリーン」へ反転させず
+# 明示 fail し (-a で binary も本文走査)、ファイル/ディレクトリ名への混入も find で走査する。
+# negative probe: 各禁止 token + allowlist 同居行の fixture を同じ scan にかけ、全 token を実際に
+# 弾くことを確認してから本走査する (token 追加時は fixture too — probe が drift を検出する)。
+FORBIDDEN_RE := ikeyan|tools-redact|tools_
+check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / tools-redact / tools_) が混入していないか
+	@[ -d core ] && [ -d templates ] || { echo "core/ か templates/ が無い (走査対象欠落)" >&2; exit 1; }; \
+	scan() { local raw st; raw=$$(grep -rnaE '$(FORBIDDEN_RE)' --exclude-dir=verified-facts "$$@"); st=$$?; \
+		[ $$st -le 1 ] || return 2; \
+		printf '%s\n' "$$raw" | sed -e 's#ikeyan/agent-devcontainer#ALLOWED#g' \
+			-e 's#ikeyan-agent-devcontainer#ALLOWED#g' -e 's#ikeyan/agent-files#ALLOWED#g' \
+			| grep -E '$(FORBIDDEN_RE)'; }; \
+	probe=$$(mktemp -d); \
+	printf 'a ikeyan/agent-devcontainer と ikeyan.github.io の同居\nb tools-redact\nc tools_proxy-bw\n' > "$$probe/f"; \
+	hits=$$(scan "$$probe"); \
+	for tok in ikeyan.github.io tools-redact tools_proxy-bw; do \
+		echo "$$hits" | grep -q "$$tok" \
+			|| { echo "negative: 混入検出器が fixture の $$tok を素通し" >&2; rm -rf "$$probe"; exit 1; }; \
+	done; rm -rf "$$probe"; \
+	hits=$$(scan core templates); st=$$?; \
+	[ $$st -ne 2 ] || { echo "混入走査が grep エラーで不完全 (読めないファイル?)" >&2; exit 1; }; \
+	[ $$st -eq 1 ] || { echo "consumer 固有値が core/templates に混入 (project 層へ移すか allowlist を見直す):" >&2; \
+		echo "$$hits" >&2; exit 1; }; \
+	names=$$(find core templates -path '*/verified-facts' -prune -o -print | grep -E '$(FORBIDDEN_RE)'); \
+	[ -z "$$names" ] || { echo "consumer 固有値がファイル/ディレクトリ名に混入:" >&2; echo "$$names" >&2; exit 1; }; \
+	echo "ok  contamination (core/templates に consumer 固有値なし)"
+
+# PROJECT_NAME は compose project 名 ([a-z0-9][a-z0-9_-]*)、GH_USER は GitHub user 名 ([A-Za-z0-9-]+、
+# Dockerfile が assert)。charset が異なる別概念なので変数を分ける (例: PROJECT_NAME=my_proj は valid
+# だが gh user としては invalid — 混用すると image build まで失敗が遅延する)。
 PROJECT_NAME ?= kitci
+GH_USER ?= kitci
 setup: ## fresh clone を検査可能にする: consumer 相当の project 層 (既存ファイルは触らない) + kit venv
-	@[ -e project ] || { cp -Rp templates/project project && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' project/compose.yaml; }
+	@[ -e project ] || { cp -Rp templates/project project \
+		&& sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' project/compose.yaml \
+		&& sed -i 's/^PROJECT_GH_USER=$$/PROJECT_GH_USER=$(GH_USER)/' project/.env; }
 	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' devcontainer.json; }
 	@[ -e Dockerfile ] || bash core/bin/gen-dockerfile.sh > Dockerfile
 	@UV_PROJECT=$(CURDIR)/core UV_PROJECT_ENVIRONMENT=$(CURDIR)/.venv core/uv-sync.sh --frozen

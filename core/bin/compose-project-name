@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# project 層 compose ファイルが宣言する top-level `name:` を stdout へ出す。
+#   usage: compose-project-name <project/compose.yaml>
+# redact-flow (ホスト側) と make check-redact-config (CI/devcontainer) が同じ導出経路を共有する。
+#
+# `compose config` を使わず file の literal を読む理由 (どれも fail-closed 側の選択):
+#   - config の project 名は ambient な COMPOSE_PROJECT_NAME に黙って上書きされる
+#     (docs/verified-facts/docker.md「project 名の優先順位」) — 導出値が環境依存になる。
+#   - config は merged 形でしか valid でなく (同「最小 template 形」)、merge には project/.env の
+#     全必須変数が要る — redact と無関係な変数 (PROJECT_GH_USER 等) に導出が結合してしまう。
+# file 形式は kit が scaffold する `name: "<project>"` (installer が置換)。check-redact-config が
+# この parse と PyYAML parse の一致を pin する (形式 drift は check で捕まる)。
+# fail-closed: name: 未宣言 (compose なら directory 名へ fallback して全 consumer が 'project' 等に
+# 縮退する) と、compose の名前制約 [a-z0-9][a-z0-9_-]* 外は拒否する。
+set -euo pipefail
+[ $# -eq 1 ] || { echo "usage: compose-project-name <project/compose.yaml>" >&2; exit 2; }
+name="$(sed -n 's/^name:[[:space:]]*//p' "$1" | head -1)"
+name="${name%%#*}"                      # 行内コメント除去
+name="${name//[\"\']/}"                 # quote 除去
+name="${name%"${name##*[![:space:]]}"}" # 末尾空白 trim
+[[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+    || { echo "project 名を導出できない ($1 の top-level name: が未宣言か不正): '$name'" >&2; exit 1; }
+printf '%s\n' "$name"

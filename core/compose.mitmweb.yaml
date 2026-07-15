@@ -3,7 +3,7 @@
 #   make -C .devcontainer/core proxy-web
 #   (実体: up -d --build --no-deps secrets-proxy → host 踏み台トンネルを foreground で開く)
 #   dev は VS Code 管理 (overrideCommand) なので touch せず secrets-proxy だけ差し替える。
-#   project 名は project/compose.yaml の `name: tools` で VS Code と共有する。戻すのは make proxy-web-off。
+#   project 名は project/compose.yaml の `name:` で VS Code と共有する。戻すのは make proxy-web-off。
 #
 # 脅威モデル (redact/SECURITY-MODEL.md 不変条件 1/4): mitmweb のフロー画面には proxy が
 # substitute した平文 cred が on-wire で映るので、敵対的 dev (同一 devnet, NET_ADMIN 持ち) や

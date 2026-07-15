@@ -86,6 +86,8 @@ jobs:
       - name: Build dev / redact / secrets-proxy
         run: |
           set -euo pipefail
-          docker build --target dev -f Dockerfile .
+          # PROJECT_GH_USER: 通常は compose の build.args が project/.env から渡す (ここは compose を
+          # 経ない直 build なので明示)。dev ステージの生成+assert (gh seed) がこの値で実際に走る。
+          docker build --target dev --build-arg PROJECT_GH_USER=kitci -f Dockerfile .
           docker build --target redact -f Dockerfile .
           docker build core/secrets-proxy

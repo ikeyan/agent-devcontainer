@@ -10,8 +10,9 @@ SHELL := /bin/bash
 # 走った」ことを意味するようにする)。python 依存 target は kit 専用 venv ($(PY)、後述) に一元化する。
 MAKEFLAGS += --output-sync=target
 
-# shebang ではなく拡張子で走査 (この配下の .sh は全て bash)。redact-flow は拡張子なしのため明示。
-SHELL_SRCS := $(wildcard *.sh bin/*.sh secrets-proxy/*.sh redact/*.sh) bin/redact-flow
+# shebang ではなく拡張子で走査 (この配下の .sh は全て bash)。redact-flow / compose-project-name は
+# 拡張子なしのため明示。
+SHELL_SRCS := $(wildcard *.sh bin/*.sh secrets-proxy/*.sh redact/*.sh) bin/redact-flow bin/compose-project-name
 
 # kit 専用 python (uv sync で作る venv。CI (.github/workflows/check.yml) と devcontainer
 # (Dockerfile の UV_PROJECT_ENVIRONMENT) の両方が $(CURDIR)/../.venv = .devcontainer/.venv に作る
@@ -103,7 +104,7 @@ check-proxy-web-config: ## compose.mitmweb.yaml 合成の妥当性 & 既定へ�
 # その override は VS Code の compose 呼び出しにしか無い。plain な `up` で dev を作り直すと
 # ベース CMD が headless 実行され即 exit する (= 「devcontainer 起動直後に exit」の原因)。よって
 # override 合成は secrets-proxy 1 本だけに適用する (--no-deps + サービス名明示 + detached)。
-# project 名は compose の `name: tools` で VS Code と共有するので、稼働中の secrets-proxy を
+# project 名は project/compose.yaml の `name:` で VS Code と共有するので、稼働中の secrets-proxy を
 # その場で mitmweb に差し替えられる。起動ログの `?token=...` を拾って表示する。戻すのは proxy-web-off。
 # --build 必須: entrypoint.sh / tcp-bridge.py は image に COPY される (bind mount ではない) ので、
 # 変更を反映するには再ビルドが要る (キャッシュが効くので通常は一瞬)。
@@ -126,7 +127,7 @@ proxy-web-off: ## secrets-proxy を既定 (mitmdump) に戻す (dev 無停止)
 	$(COMPOSE) $(COMPOSE_FILES) up -d --build --no-deps secrets-proxy
 
 # secrets-proxy の初回対話認証。bw login/unlock で得た BW_SESSION を `proxy-bw` volume (session.key) へ
-# 保存する (README「セットアップ (初回 1 回)」)。project 層 (name: tools) 込みで compose を呼ぶので、
+# 保存する (README「セットアップ (初回 1 回)」)。project 層 (name: 宣言元) 込みで compose を呼ぶので、
 # 通常の up/exec と同じ project namespace の secrets-proxy に対して実行される。
 bootstrap: ## secrets-proxy の初回対話認証 (BW_SESSION を proxy-bw volume へ保存)
 	$(COMPOSE) $(COMPOSE_FILES) run --rm -it secrets-proxy bootstrap
@@ -198,22 +199,42 @@ check-dockerfile-deps: ## Dockerfile 外部 image の digest 固定 / COPY --fro
 	@$(PY) bin/check_dockerfile_deps.py Dockerfile ../Dockerfile secrets-proxy/Dockerfile
 
 # redact サンドボックスの構成を検証する。compose は必須 env をダミーで与えて config 検証
-# (negative: REDACT_APP 欠落で弾けること)。dnsmasq.conf は placeholder を埋めて --test
-# (dnsmasq は CI/devcontainer に在る)。settings.json は JSON として読めることを確認。
-# compose config は CI/devcontainer とも docker/podman compose が必須。
-check-redact-config: ## redact/ の compose/dnsmasq/settings を検証 (docker/podman compose 必須)
+# (negative: REDACT_APP / REDACT_PROJECT 欠落で弾けること。probe は env -u で ambient export から隔離 —
+# 手動運転で export した変数が残った shell でも偽赤/偽緑にしない)。project 名導出 (bin/compose-project-name
+# = redact-flow が使う実経路) は、実 project 層で PyYAML parse と一致すること (literal parse の形式
+# drift 検知) + unquoted/コメント付き fixture を読めること + name: 無し fixture を弾くことを pin。
+# dnsmasq.conf は placeholder を埋めて --test (dnsmasq は CI/devcontainer に在る)。settings.json は
+# JSON として読めることを確認。compose config は CI/devcontainer とも docker/podman compose が必須。
+check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出を検証 (docker/podman compose 必須)
 	@python3 -c 'import json;json.load(open("redact/settings.json"))' \
 		|| { echo "redact/settings.json が不正 JSON" >&2; exit 1; }; \
-	REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+	REDACT_PROJECT=demo-redact REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
 		|| { echo "redact/compose.yaml が不正" >&2; exit 1; }; \
-	REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+	env -u REDACT_APP REDACT_PROJECT=demo-redact REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
 		&& { echo "negative: redact compose が REDACT_APP 欠落を素通し" >&2; exit 1; } || true; \
+	env -u REDACT_PROJECT REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
+		&& { echo "negative: redact compose が REDACT_PROJECT 欠落を素通し" >&2; exit 1; } || true; \
+	derived=$$(bash bin/compose-project-name ../project/compose.yaml) \
+		|| { echo "project 名を導出できない (redact-flow が壊れる)" >&2; exit 1; }; \
+	expected=$$($(PY) -c 'import yaml; print(yaml.safe_load(open("../project/compose.yaml"))["name"])') \
+		|| { echo "PyYAML で ../project/compose.yaml の name: を読めない" >&2; exit 1; }; \
+	[ "$$derived" = "$$expected" ] \
+		|| { echo "compose-project-name の導出 '$$derived' が PyYAML parse '$$expected' と不一致 (literal parse の形式 drift)" >&2; exit 1; }; \
+	fx=$$(mktemp); printf 'name: plainprobe # comment\nservices: {dev: {}}\n' > "$$fx"; \
+	[ "$$(bash bin/compose-project-name "$$fx")" = plainprobe ] \
+		|| { echo "compose-project-name が unquoted/コメント付き name: を読めない" >&2; rm -f "$$fx"; exit 1; }; \
+	rm -f "$$fx"; \
+	noname=$$(mktemp); printf 'services:\n  dev: {image: busybox}\n' > "$$noname"; \
+	bash bin/compose-project-name "$$noname" >/dev/null 2>&1 \
+		&& { echo "negative: compose-project-name が name: 無し (directory fallback) を素通し" >&2; rm -f "$$noname"; exit 1; }; \
+	rm -f "$$noname"; \
 	t=$$(mktemp); sed 's/__UPSTREAM_DNS__/127.0.0.11/g' redact/dnsmasq.conf > "$$t"; \
 	dnsmasq --test --conf-file="$$t" >/dev/null 2>&1 \
 		|| { echo "redact/dnsmasq.conf が不正" >&2; rm -f "$$t"; exit 1; }; \
-	rm -f "$$t"; echo "ok  redact-config (settings/compose/dnsmasq)"
+	rm -f "$$t"; echo "ok  redact-config (settings/compose/dnsmasq/project 名導出)"
 
 # extract/*/redact_flow.py を合成 flow で round-trip し、エンジン契約 (valid NDJSON / 行数一致 /
 # 例外なし) を検査する。詳細と切り分けは bin/redact_selfcheck.py の docstring。mitmproxy は
@@ -271,9 +292,9 @@ gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh u
 # dev を既にビルド済みなら BuildKit キャッシュで再利用)。重い & ネットを使うので既定の check 集約には
 # 入れない — 投入ホストで明示的に叩く。
 check-redact-image: ## redact イメージを実ビルドし node 子の python3>=3.12+mitmproxy を検査 (要 docker/podman+ネット; 重いので明示実行)
-	@$(ENGINE) build $(BUILD_FORMAT) -q -t tools-redact-checkimg --target redact -f ../Dockerfile .. >/dev/null \
+	@$(ENGINE) build $(BUILD_FORMAT) -q -t redact-checkimg --target redact -f ../Dockerfile .. >/dev/null \
 		|| { echo "redact image build 失敗 (要ネット)" >&2; exit 1; }; \
-	$(ENGINE) run --rm --user node --entrypoint bash tools-redact-checkimg -lc \
+	$(ENGINE) run --rm --user node --entrypoint bash redact-checkimg -lc \
 		'python3 -c "import sys, mitmproxy; assert sys.version_info >= (3, 12), sys.version"' \
 		|| { echo "redact-image: node 子が python3>=3.12 + mitmproxy を使えない" >&2; exit 1; }; \
 	echo "ok  redact-image ($(ENGINE); node python3>=3.12 + mitmproxy import)"

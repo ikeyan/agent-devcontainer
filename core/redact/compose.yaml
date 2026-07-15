@@ -1,4 +1,7 @@
-name: tools-redact
+# project 名は consumer ごとに変える (固定名だと複数 consumer repo で compose namespace が衝突する)。
+# redact-flow が consumer の正式 project 名から <project>-redact を導出して export する。手動起動で
+# 未設定なら fail-closed に落ちる (top-level name の :? は docs/verified-facts/docker.md「compose 複数 -f」)。
+name: ${REDACT_PROJECT:?set REDACT_PROJECT (通常は bin/redact-flow が導出)}
 
 # redact サンドボックス。.devcontainer/core/bin/redact-flow が REDACT_* を export して
 #   docker compose -f .devcontainer/core/redact/compose.yaml run --rm redact
@@ -52,8 +55,9 @@ networks:
   redact-net: {}
 
 volumes:
-  # name を固定する。既定だと compose は project 名を冠した tools-redact_redact-claude を
-  # 作るため、ユーザーが `claude login` で認証する literal な agent-devcontainer-redact-auth volume
-  # と食い違い、/root/.claude-auth が空マウントになって未認証で起動してしまう。
+  # name を kit 名義で固定する。既定だと compose は project 名を冠した ${REDACT_PROJECT}_redact-claude
+  # を作るため、ユーザーが `claude login` で認証する literal な agent-devcontainer-redact-auth volume
+  # と食い違い、/root/.claude-auth が空マウントになって未認証で起動してしまう。固定名は意図した共有 —
+  # どの consumer repo (どの project 名) からでも 1 回の事前認証を ro マウントで使い回す。
   redact-claude:
     name: agent-devcontainer-redact-auth

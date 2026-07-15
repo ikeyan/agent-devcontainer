@@ -85,6 +85,27 @@ confidence tag の凡例: [README](README.md)。
   この形は `make -C core check` の `check-compose` / `check-compose-paths` が毎回 `-f project/compose.yaml
   -f compose.yaml config` を実行するため、kit ローカル検証パイプライン (Step 7: scaffold → gen →
   `make -C core check`) が壊れれば即座に検出できる (常時 pin)。
+- **ただし上記の最小 template 形は、単独 `-f` の `compose config` では invalid** —
+  `service "dev" has neither an image nor a build context specified: invalid compose project` (exit 1)。
+  valid なのは core と merge した後だけ。project 名を `compose config` から導出する時は必ず
+  `-f project/compose.yaml -f core/compose.yaml` の merged 形で呼ぶこと (単独 -f の導出は scaffold
+  直後の consumer で壊れる)。検証: `name: "kitmin"` + `services: {dev: {}}` だけのファイルを単独
+  `config` → 上記エラー。 (podman compose provider = docker compose v5.3.1) `[empirical]`
+- **`services.<svc>.build.args` の `${VAR}` も最初の `-f` の dir の `.env` から補間される** (interpolation
+  は変数が現れるファイル位置に依らず一様。2 番目の `-f` の中の値も 1 番目の dir の `.env` で解決)。
+  `${VAR:?msg}` は未設定でも空でも `error while interpolating services.<svc>.build.args.<VAR>: required
+  variable <VAR> is missing a value: msg` で `config` ごと exit 1 (fail-closed)。検証: 1 番目 -f の dir の
+  `.env` に `BA_PROBE=fromenv`、2 番目 -f の build.args に `BA_PROBE: ${BA_PROBE:?set BA_PROBE}` →
+  config 出力が `BA_PROBE: fromenv`。`.env` の行を消すと上記エラー。 (同 v5.3.1) `[empirical]`
+- **top-level `name:` でも `${VAR:?msg}` interpolation が効く**。設定時は展開された値になり、未設定・
+  空文字の両方で `error while interpolating name: required variable <VAR> is missing a value: msg` /
+  exit 1 (fail-closed)。 (同 v5.3.1) `[empirical]`
+- **project 名の優先順位は `-p` フラグ > `COMPOSE_PROJECT_NAME` env > top-level `name:`**。ambient な
+  `COMPOSE_PROJECT_NAME` は file の `name:` を (interpolation された `name:` でも) 黙って上書きする —
+  file 宣言を確実に効かせたい呼び出し側は `-p` を明示する。なお `name: ${VAR:?}` の interpolation 自体は
+  env override があっても評価される (= `:?` の fail-closed ガードは `COMPOSE_PROJECT_NAME` では
+  すり抜けられない)。検証: `name: filedecl` に env を与えると `name: envname`、さらに `-p flagname` で
+  `name: flagname`、`name: ${RP_PROBE:?}` + env のみ (RP_PROBE 未設定) は exit 1。 (同 v5.3.1) `[empirical]`
 
 ## internal network の DNS
 

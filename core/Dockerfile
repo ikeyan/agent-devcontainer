@@ -193,15 +193,36 @@ COPY --from=hadolint --chmod=0755 /bin/hadolint /usr/local/bin/hadolint
 # (SKIP 解消)。--chmod=0755 で 0755 root 所有に正規化する (hadolint と同様、同 uid の上書きを締める)。
 COPY --from=compose --chmod=0755 /docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 
-# gh CLI の認証は dev に実トークンを置かず secrets-proxy が substitute する。placeholder だけの
-# hosts.yml を seed する (.devcontainer/project/rules.yaml「api.github.com」)。hosts.yml は compose.yaml で ro
-# bind するので gh auth login で実トークンを焼けない (EROFS)。config.yml に version を seed して起動時
-# マイグレーションによる hosts.yml 書換も抑止する (gh/config.yml 参照)。~/.config/gh は volume でなく
-# ephemeral なのでイメージから復元される。COPY は bind の mountpoint を用意する役割も兼ねる。
-COPY --chown=node:node core/gh/hosts.yml /home/node/.config/gh/hosts.yml
-COPY --chown=node:node core/gh/config.yml /home/node/.config/gh/config.yml
-RUN chown -R node:node /home/node/.config && chmod 700 /home/node/.config/gh && \
-  chmod 600 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml
+# gh CLI の認証は dev に実トークンを置かず secrets-proxy が substitute する。token placeholder だけの
+# hosts.yml を seed する (.devcontainer/project/rules.yaml「api.github.com」)。user 名は consumer 値
+# なので core に直書きせず、テンプレート (core/gh/hosts.yml) の @@GITHUB_USER@@ を build arg
+# PROJECT_GH_USER (project/.env 所有、compose.yaml の build.args) で焼き込む。値の変更は build arg
+# 経由なので反映には dev イメージの rebuild が要る (旧 ro bind と違い起動時には追従しない)。
+# gh/ は root 所有 (dir 755 + file 644) にする: gh は読取で owner/mode を検査せず、file の root 所有が
+# in-place 書込を、dir の root 所有が unlink+再作成を塞ぐので、gh auth login の実トークン焼込
+# 「事故」を防げる (docs/verified-facts/gh.md「gh CLI / config dir の読取と書込」)。同一 uid の意図的
+# 迂回 (~/.config ごと rename / GH_CONFIG_DIR 付替え) までは封じない — 実トークンは通常 dev に存在せず
+# (proxy が egress で substitute)、ここで防ぐのは貼り付けた実トークンの durable spill 事故だけ。
+# config.yml の version seed で起動時マイグレーションによる hosts.yml 書換も抑止する (gh/config.yml
+# 参照)。~/.config/gh は volume でなく ephemeral なのでイメージから復元される。
+ARG PROJECT_GH_USER
+COPY core/gh/hosts.yml /home/node/.config/gh/hosts.yml
+COPY core/gh/config.yml /home/node/.config/gh/config.yml
+# 事後条件を明示 assert する: user 名の形 ([[ =~ ]] は値全体に一致 — 行単位 grep だと複数行値の
+# 1 行目だけで素通しする。空も弾く) / @@GITHUB_USER@@ の全展開 / @@SECRET_github_token@@ が両方の
+# oauth_token: 値として残存 (コメント内の出現では満たされない位置指定。secrets-proxy の placeholder
+# は build で消してはならない)。
+RUN [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
+    || { echo "PROJECT_GH_USER が不正 (project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定): '$PROJECT_GH_USER'" >&2; exit 1; } && \
+  sed -i "s/@@GITHUB_USER@@/$PROJECT_GH_USER/g" /home/node/.config/gh/hosts.yml && \
+  if grep -q '@@GITHUB_USER@@' /home/node/.config/gh/hosts.yml; then \
+    echo "hosts.yml に @@GITHUB_USER@@ が残った (置換漏れ)" >&2; exit 1; fi && \
+  [ "$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$' /home/node/.config/gh/hosts.yml)" -eq 2 ] \
+    || { echo "hosts.yml の oauth_token 値から @@SECRET_github_token@@ が消えた (secrets-proxy placeholder 破壊)" >&2; exit 1; } && \
+  chown node:node /home/node/.config && \
+  chown -R root:root /home/node/.config/gh && \
+  chmod 755 /home/node/.config/gh && \
+  chmod 644 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml
 
 # init-firewall.sh / install-proxy-ca.sh の再実行 (postStartCommand・CDN IP ローテーション対応) は
 # dev だけが要る。sudo ごと dev 専用にする。
