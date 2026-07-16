@@ -243,7 +243,9 @@ EXPECTED_NAME=$("$PY" -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1
 merged=$(mktemp); mergederr=$(mktemp)
 # stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
 # PROJECT_GH_USER 不足の interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
-"${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>"$mergederr" \
+# env -u COMPOSE_PROJECT_NAME: ambient な export は file の name: を黙って上書きし (docker.md
+# 「project 名の優先順位」)、EXPECTED_NAME (file を PyYAML で読む) との突合が偽赤になる。
+env -u COMPOSE_PROJECT_NAME "${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>"$mergederr" \
     || { cat "$mergederr" >&2; rm -f "$merged" "$mergederr"; fail "§10: compose config が失敗 (原因は直上の stderr)"; }
 rm -f "$mergederr"
 "$PY" "$POSTURE" "$EXPECTED_NAME" < "$merged" \

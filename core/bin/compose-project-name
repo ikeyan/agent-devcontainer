@@ -14,7 +14,9 @@
 # 縮退する) と、compose の名前制約 [a-z0-9][a-z0-9_-]* 外は拒否する。
 set -euo pipefail
 [ $# -eq 1 ] || { echo "usage: compose-project-name <project/compose.yaml>" >&2; exit 2; }
-name="$(sed -n 's/^name:[[:space:]]*//p' "$1" | head -1)"
+[ -r "$1" ] || { echo "project 層 compose が無い/読めない: $1 (consumer は installer が scaffold、kit repo は make setup)" >&2; exit 1; }
+# 最初の name: 行で s///p して即 q (head へ pipe しない — SIGPIPE で診断なしに死ぬのを避ける)。
+name="$(sed -n '/^name:/{s/^name:[[:space:]]*//p;q}' "$1")"
 name="${name%%#*}"                      # 行内コメント除去
 name="${name//[\"\']/}"                 # quote 除去
 name="${name%"${name##*[![:space:]]}"}" # 末尾空白 trim

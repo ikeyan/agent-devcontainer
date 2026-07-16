@@ -106,6 +106,16 @@ confidence tag の凡例: [README](README.md)。
   env override があっても評価される (= `:?` の fail-closed ガードは `COMPOSE_PROJECT_NAME` では
   すり抜けられない)。検証: `name: filedecl` に env を与えると `name: envname`、さらに `-p flagname` で
   `name: flagname`、`name: ${RP_PROBE:?}` + env のみ (RP_PROBE 未設定) は exit 1。 (同 v5.3.1) `[empirical]`
+- **固定名 volume と project label**: compose 管理 (`external` なし) の named volume は作成時に
+  `com.docker.compose.project: <project>` label が付き、**別の project 名から同じ volume を使うと毎回
+  warning** `volume "<name>" already exists but was created for project "<p1>" (expected "<p2>").
+  Use `` `external: true` `` to use an existing volume` が出る (動作はする)。`external: true` +
+  `name:` なら既存 volume を label 検査なしでそのまま使い、warning は出ない。ただし external は
+  compose が**作成しない**宣言で、volume 不在だと `external volume "<name>" not found` で exit 1
+  (fail-closed) — 共有 external volume は呼び出し側で冪等に用意する (`volume inspect || volume create`。
+  `volume create` 単発は既存名で失敗するエンジンがある)。検証: 手元 podman 5.4.2 + compose v5.3.1
+  (compose の label 検査はクライアント側) で、proj1 作成 → proj2 使用 = warning / external + 既存 =
+  warning なし / external + 不在 = exit 1 を再現。 (同 v5.3.1) `[empirical]`
 
 ## internal network の DNS
 

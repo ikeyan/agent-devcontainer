@@ -7,8 +7,8 @@
 # やること:
 #   1. extract/<app>/ を作り、redact_flow.py が無ければ identity テンプレから scaffold する。
 #   2. redact 派生イメージ (.devcontainer/core/Dockerfile の redact ステージ) をビルドする。
-#      dev (devcontainer。claude-code/uv/node/iptables 等を持つ) は同一 Dockerfile の
-#      ステージなので BuildKit が依存として自動ビルドする。
+#      redact は FROM base — dev とは独立で、依存として自動ビルドされるのは共通祖先 base だけ
+#      (dev イメージはここではビルドも更新もされない)。
 #   3. サンドボックスを起動する。
 # サンドボックス内の egress 封じ・書込制限の実体は .devcontainer/core/redact/ の entrypoint と
 # init-firewall.sh。生 flow はリポジトリに置かない (コミットで漏れる) 前提で、ここでは外部パスを
@@ -77,6 +77,11 @@ if [ ! -e "$OUT/redact_flow.py" ]; then
     echo "[redact-flow] scaffold extract/$APP/redact_flow.py (identity テンプレ)"
     sed "s|__APP__|$APP|g" "$HERE/redact_flow.template.py" > "$OUT/redact_flow.py"
 fi
+
+# 事前認証共有 volume (redact/compose.yaml で external 宣言 — 理由はそちらのコメント)。external は
+# compose が作らないため、ここで冪等に用意する (create は既存名で失敗するエンジンがあるので inspect || create)。
+docker volume inspect agent-devcontainer-redact-auth >/dev/null 2>&1 \
+    || docker volume create agent-devcontainer-redact-auth >/dev/null
 
 # redact 派生イメージをビルドする。compose は .devcontainer/core/Dockerfile の redact ステージを
 # target にしている (共通祖先 base は BuildKit が依存として自動でビルドする)。

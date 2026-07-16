@@ -55,9 +55,14 @@ networks:
   redact-net: {}
 
 volumes:
-  # name を kit 名義で固定する。既定だと compose は project 名を冠した ${REDACT_PROJECT}_redact-claude
-  # を作るため、ユーザーが `claude login` で認証する literal な agent-devcontainer-redact-auth volume
-  # と食い違い、/root/.claude-auth が空マウントになって未認証で起動してしまう。固定名は意図した共有 —
-  # どの consumer repo (どの project 名) からでも 1 回の事前認証を ro マウントで使い回す。
+  # name を kit 名義で固定した共有 volume。既定だと compose は project 名を冠した
+  # ${REDACT_PROJECT}_redact-claude を作るため、ユーザーが `claude login` で認証する literal な
+  # agent-devcontainer-redact-auth volume と食い違い、/root/.claude-auth が空マウントになって
+  # 未認証で起動してしまう。固定名は意図した共有 — どの consumer repo (どの project 名) からでも
+  # 1 回の事前認証を ro マウントで使い回す。external にする: compose 管理名義のままだと volume の
+  # project label と今の project 名の不一致で compose が毎回警告する (project 名が consumer ごとに
+  # 変わったため必ず起きる — docs/verified-facts/docker.md「固定名 volume と project label」)。
+  # external は compose が作成しない宣言なので、redact-flow が起動前に冪等に用意する。
   redact-claude:
+    external: true
     name: agent-devcontainer-redact-auth

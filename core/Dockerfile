@@ -198,13 +198,16 @@ COPY --from=compose --chmod=0755 /docker-compose /usr/local/lib/docker/cli-plugi
 # なので core に直書きせず、テンプレート (core/gh/hosts.yml) の @@GITHUB_USER@@ を build arg
 # PROJECT_GH_USER (project/.env 所有、compose.yaml の build.args) で焼き込む。値の変更は build arg
 # 経由なので反映には dev イメージの rebuild が要る (旧 ro bind と違い起動時には追従しない)。
-# gh/ は root 所有 (dir 755 + file 644) にする: gh は読取で owner/mode を検査せず、file の root 所有が
-# in-place 書込を、dir の root 所有が unlink+再作成を塞ぐので、gh auth login の実トークン焼込
-# 「事故」を防げる (docs/verified-facts/gh.md「gh CLI / config dir の読取と書込」)。同一 uid の意図的
-# 迂回 (~/.config ごと rename / GH_CONFIG_DIR 付替え) までは封じない — 実トークンは通常 dev に存在せず
-# (proxy が egress で substitute)、ここで防ぐのは貼り付けた実トークンの durable spill 事故だけ。
-# config.yml の version seed で起動時マイグレーションによる hosts.yml 書換も抑止する (gh/config.yml
-# 参照)。~/.config/gh は volume でなく ephemeral なのでイメージから復元される。
+# gh/ の dir と hosts.yml は root 所有 (dir 755 + file 644) にする: gh は読取で owner/mode を検査せず、
+# file の root 所有が in-place 書込を、dir の root 所有が unlink+再作成を塞ぐので、gh auth login の
+# 実トークン焼込「事故」を防げる (docs/verified-facts/gh.md「gh CLI / config dir の読取と書込」)。
+# config.yml だけは node 所有に戻す: token は hosts.yml にしか書かれず、root 所有だと正当な
+# `gh config set` / `gh alias set` まで壊す (owner 所有 file は root 所有 dir 内でも in-place 書込可 —
+# 同 gh.md)。同一 uid の意図的迂回 (~/.config ごと rename / GH_CONFIG_DIR 付替え) までは封じない —
+# 実トークンは通常 dev に存在せず (proxy が egress で substitute)、ここで防ぐのは貼り付けた実トークン
+# の durable spill 事故だけ。config.yml の version seed で起動時マイグレーションによる hosts.yml 書換
+# も抑止する (gh/config.yml 参照)。~/.config/gh は volume でなく ephemeral なのでイメージから復元される。
+# 旧イメージのまま再作成する stale 窓は core/compose.yaml の dev entrypoint (owner root 検査) が塞ぐ。
 ARG PROJECT_GH_USER
 COPY core/gh/hosts.yml /home/node/.config/gh/hosts.yml
 COPY core/gh/config.yml /home/node/.config/gh/config.yml
@@ -221,6 +224,7 @@ RUN [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
     || { echo "hosts.yml の oauth_token 値から @@SECRET_github_token@@ が消えた (secrets-proxy placeholder 破壊)" >&2; exit 1; } && \
   chown node:node /home/node/.config && \
   chown -R root:root /home/node/.config/gh && \
+  chown node:node /home/node/.config/gh/config.yml && \
   chmod 755 /home/node/.config/gh && \
   chmod 644 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml
 

@@ -122,7 +122,9 @@ installer は consumer 所有の `project/` を触らないため、core が新�
 設定すべき変数を指す)。現時点の移行点:
 
 - **`PROJECT_GH_USER`** (gh seed の GitHub user 名) を `project/.env` に設定する。build 時に image へ
-  焼き込むため、設定・変更の反映には dev イメージの rebuild が要る。
+  焼き込むため、設定・変更の反映には dev イメージの rebuild が要る。rebuild せず旧イメージのまま
+  再作成した場合は dev の起動が entrypoint の gh seed 世代検査で止まり、rebuild を促すメッセージが出る
+  (silent に旧 seed で動き続けることはない)。
 - **consumer 固有の直結ドメイン** (旧 core 直書き分、例: `ikeyan.github.io`) は core の許可リストから
   外れた。必要なら `project/allow-domains.txt` と `PROJECT_NO_PROXY` の対に追加して rebuild する
   (こちらは config エラーにならず、実行時の接続失敗として現れる点に注意)。

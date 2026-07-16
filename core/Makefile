@@ -21,7 +21,11 @@ PY := $(CURDIR)/../.venv/bin/python
 
 # compose 検証エンジン: CI は docker、devcontainer は podman (provider = docker compose plugin)。
 # docker が無ければ podman を採用する。どちらも無い環境は次の呼び出しが自然にエラーになる。
-COMPOSE := $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
+# env -u COMPOSE_PROJECT_NAME を変数自体に焼き込む: ambient な COMPOSE_PROJECT_NAME は file の name:
+# を黙って上書きする (docs/verified-facts/docker.md「project 名の優先順位」) ため、放置すると
+# bootstrap/proxy-web が稼働中 stack と別 namespace を操作し (例: BW session.key が余所の volume へ
+# 入り secrets-proxy が未認証のまま)、検査系は偽赤/偽緑になる。全 target を一律に隔離する。
+COMPOSE := env -u COMPOSE_PROJECT_NAME $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
 # compose は常に project 層 (../project/compose.yaml) を先頭に重ねる。先頭ファイルのディレクトリが
 # project directory になり project/.env が補間に効く。後勝ちで core が優先 (docs/verified-facts/docker.md)。
 COMPOSE_FILES := -f ../project/compose.yaml -f compose.yaml
@@ -259,10 +263,19 @@ check-redact-py: ## redact 系 Python (エンジン/テンプレート/selfcheck
 check-redact-invariants: ## redact の意味的不変条件を pin (bin/redact_invariants_check.sh; §10 は compose 必須)
 	@bash bin/redact_invariants_check.sh
 
-# committed の config.yml+hosts.yml を temp に渡し gh を 1 回走らせ、byte 不変なら no-op = ro 安全
-# (詳細: docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。gh は CI/devcontainer 必須。
-check-gh-seed: ## installed gh が gh/ seed を migration で書き換えないか検証 (gh 必須)
-	@tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
+# (1) 形式 pin: committed seed が Dockerfile (gh seed 節) の焼込+事後 assert の期待形式
+#     (@@GITHUB_USER@@ 残存 / double-quote な oauth_token 値 x2) を満たすか。gh-seed 再生成は gh の
+#     YAML round-trip をそのまま書き戻すため、コメントや quote が変わり得る — 形式 drift を image
+#     build の分かりにくい失敗でなくここで捕まえる (パターンは Dockerfile の assert と対応)。
+# (2) migration no-op: committed の config.yml+hosts.yml を temp に渡し gh を 1 回走らせ、byte 不変
+#     なら no-op = ro 安全 (詳細: docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。
+#     gh は CI/devcontainer 必須。
+check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き換えないか検証 (gh 必須)
+	@grep -q '@@GITHUB_USER@@' gh/hosts.yml \
+		|| { echo "gh/hosts.yml に @@GITHUB_USER@@ が無い (gh-seed 再生成で template token が消えた? Dockerfile の焼込が空回りする)" >&2; exit 1; }; \
+	[ "$$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$$' gh/hosts.yml)" -eq 2 ] \
+		|| { echo "gh/hosts.yml の oauth_token が Dockerfile の期待形式 (double-quote 値 x2) と不一致 (gh-seed 再生成が quote/構造を変えた? 手で復元して commit)" >&2; exit 1; }; \
+	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
 	before=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
 	GH_CONFIG_DIR="$$tmp" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 	after=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
@@ -273,7 +286,9 @@ check-gh-seed: ## installed gh が gh/ seed を migration で書き換えない�
 	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
 	rm -rf "$$tmp2"; echo "ok  gh-seed (installed gh は seed を no-op で読む = ro 安全)"
 
-# 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認して commit する。
+# 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認し、
+# make check (check-gh-seed が template 形式を pin) を通してから commit する (gh の round-trip は
+# コメント/quote を落とし得る — その場合 @@GITHUB_USER@@ 節と double-quote を手で復元する)。
 gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh upgrade 後に実行, ネット不要)
 	@command -v gh >/dev/null 2>&1 || { echo "gh が無い" >&2; exit 1; }; \
 	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
@@ -288,9 +303,9 @@ gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh u
 # redact イメージを実ビルドし、node へ降格した子が `python3` で mitmproxy を import でき、その
 # python が >=3.12 であることを確認する (mitmproxy 12.x の要件)。ベース OS の python が古い／子から
 # system site-packages が読めない、等の回帰を実ビルドで捕まえる (静的検査では捕まらない)。
-# Dockerfile の redact ステージを --target でビルドする (dev ステージも依存として自動ビルドされる;
-# dev を既にビルド済みなら BuildKit キャッシュで再利用)。重い & ネットを使うので既定の check 集約には
-# 入れない — 投入ホストで明示的に叩く。
+# Dockerfile の redact ステージを --target でビルドする (redact は FROM base — 依存として自動
+# ビルドされるのは共通祖先 base だけで、dev はビルドされない)。重い & ネットを使うので既定の
+# check 集約には入れない — 投入ホストで明示的に叩く。
 check-redact-image: ## redact イメージを実ビルドし node 子の python3>=3.12+mitmproxy を検査 (要 docker/podman+ネット; 重いので明示実行)
 	@$(ENGINE) build $(BUILD_FORMAT) -q -t redact-checkimg --target redact -f ../Dockerfile .. >/dev/null \
 		|| { echo "redact image build 失敗 (要ネット)" >&2; exit 1; }; \
