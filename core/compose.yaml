@@ -28,19 +28,7 @@ services:
         # 値は project/.env の PROJECT_GH_USER (project 層所有。build.args も最初の -f の dir の
         # .env から補間される: docs/verified-facts/docker.md「compose 複数 -f」)。未設定・空は
         # ここで fail-closed に落ちる。
-        PROJECT_GH_USER: ${PROJECT_GH_USER:?project/.env に PROJECT_GH_USER (GitHub user 名) を設定}
-    # gh seed の世代検査 (fail-closed): kit 更新後に rebuild せず旧イメージのまま再作成すると、
-    # 旧 hosts.yml (node 所有・旧 user 焼込) が残り、実トークン焼込封じ (root 所有) も失効する。
-    # build arg の変更は recreate では反映されないため、ここで起動を止めて rebuild を要求する。
-    # イメージ内スクリプト (postStartCommand 等) は旧イメージでは旧版が走るので検査に使えない —
-    # ホスト側定義のこの entrypoint (毎起動、command 実行前) が唯一 stale image に効く。owner root
-    # (uid 0) は新形式 seed の証左 (Dockerfile の gh seed 節が build 時に root 所有化する)。
-    # $$ は compose の $ エスケープ。末尾の exec "$0" "$@" が本来の command (VS Code の override
-    # 含む) へ引き継ぐ (bash -c では script 後の第 1 引数が $0)。
-    entrypoint:
-      - /bin/bash
-      - -c
-      - '[ "$$(stat -c %u /home/node/.config/gh/hosts.yml 2>/dev/null)" = 0 ] || { echo "dev イメージの gh seed が旧形式 (kit 更新が未反映)。dev イメージを rebuild してください (VS Code: Rebuild Container)" >&2; exit 1; }; exec "$$0" "$$@"'
+        PROJECT_GH_USER: ${PROJECT_GH_USER:?project/.env に PROJECT_GH_USER (GitHub user 名) を設定し、dev イメージを rebuild}
     cap_drop:
       - ALL
     cap_add:
@@ -66,6 +54,10 @@ services:
       NODE_OPTIONS: "--max-old-space-size=4096 --use-env-proxy"
       POWERLEVEL9K_DISABLE_GITSTATUS: "true"
       CHECKPOINT_DISABLE: "1"
+      # gh seed 整合検査用 (init-firewall.sh が焼込値と照合)。environment はコンテナ起動時に
+      # 常に現在値になる (build arg と違い recreate に追従する) ので、「.env を変えたのに
+      # rebuild していない」drift の検出源として使える。秘密ではない (GitHub user 名)。
+      PROJECT_GH_USER: ${PROJECT_GH_USER:?project/.env に PROJECT_GH_USER (GitHub user 名) を設定し、dev イメージを rebuild}
       # Web/API は secrets-proxy 経由、インフラ系は NO_PROXY で直結。
       HTTP_PROXY: *proxy
       HTTPS_PROXY: *proxy

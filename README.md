@@ -122,9 +122,11 @@ installer は consumer 所有の `project/` を触らないため、core が新�
 設定すべき変数を指す)。現時点の移行点:
 
 - **`PROJECT_GH_USER`** (gh seed の GitHub user 名) を `project/.env` に設定する。build 時に image へ
-  焼き込むため、設定・変更の反映には dev イメージの rebuild が要る。rebuild せず旧イメージのまま
-  再作成した場合は dev の起動が entrypoint の gh seed 世代検査で止まり、rebuild を促すメッセージが出る
-  (silent に旧 seed で動き続けることはない)。
+  焼き込むため、設定・変更の反映には dev イメージの rebuild が要る (未設定なら compose がエラー文言で
+  設定+rebuild を要求する)。設定「変更」後の rebuild 漏れは postStartCommand (init-firewall.sh) の
+  整合検査が起動時に止める。**kit 更新直後に旧イメージのまま再作成した場合だけは検査が旧版のため
+  検出されない** (VS Code は compose 宣言の entrypoint を使わないため、ホスト側から強制する手段が
+  無い — devcontainers-cli.md)。更新後は必ず rebuild すること。
 - **consumer 固有の直結ドメイン** (旧 core 直書き分、例: `ikeyan.github.io`) は core の許可リストから
   外れた。必要なら `project/allow-domains.txt` と `PROJECT_NO_PROXY` の対に追加して rebuild する
   (こちらは config エラーにならず、実行時の接続失敗として現れる点に注意)。

@@ -205,9 +205,13 @@ COPY --from=compose --chmod=0755 /docker-compose /usr/local/lib/docker/cli-plugi
 # `gh config set` / `gh alias set` まで壊す (owner 所有 file は root 所有 dir 内でも in-place 書込可 —
 # 同 gh.md)。同一 uid の意図的迂回 (~/.config ごと rename / GH_CONFIG_DIR 付替え) までは封じない —
 # 実トークンは通常 dev に存在せず (proxy が egress で substitute)、ここで防ぐのは貼り付けた実トークン
-# の durable spill 事故だけ。config.yml の version seed で起動時マイグレーションによる hosts.yml 書換
-# も抑止する (gh/config.yml 参照)。~/.config/gh は volume でなく ephemeral なのでイメージから復元される。
-# 旧イメージのまま再作成する stale 窓は core/compose.yaml の dev entrypoint (owner root 検査) が塞ぐ。
+# の durable spill 事故だけ。uid≠1000 の Linux ホストでは devcontainers CLI の updateRemoteUserUID が
+# home を chown -R するため root 所有が剥がれ、この封じは効かない (devcontainers-cli.md — 同じく
+# accident-grade の割切りに含める)。config.yml の version seed で起動時マイグレーションによる
+# hosts.yml 書換も抑止する (gh/config.yml 参照)。~/.config/gh は volume でなく ephemeral なので
+# イメージから復元される。「.env の値を変えたが rebuild していない」drift は init-firewall.sh
+# (postStartCommand) が env と焼込値の照合で止める。旧イメージ (検査導入前) のまま動かす窓だけは
+# 検出手段が無い — README「更新に伴う既知の移行」に文書化。
 ARG PROJECT_GH_USER
 COPY core/gh/hosts.yml /home/node/.config/gh/hosts.yml
 COPY core/gh/config.yml /home/node/.config/gh/config.yml

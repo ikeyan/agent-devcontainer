@@ -55,6 +55,10 @@ confidence tag の凡例: [README](README.md)。
     付け替える — は塞げない (旧 ro bind も `GH_CONFIG_DIR` 迂回は塞いでいなかった。mount 上の rename は
     EBUSY で塞がっていた分だけ旧構成が強い)。実トークンは通常 dev に存在しない (proxy が egress で
     substitute) ため、防ぐべきは貼り付け事故の durable spill で、そこには足りる。
+  - 範囲の注意 2: uid≠1000 の Linux ホストでは devcontainers CLI の `updateRemoteUserUID` が
+    home を丸ごと `chown -R` するため root 所有自体が剥がれる
+    (`devcontainers-cli.md`「updateRemoteUserUID」)。そのホスト群ではこの封じは効かない —
+    accident-grade の割切りに含める。
 - update-notifier 等の state は `GH_CONFIG_DIR` でなく StateDir (`XDG_STATE_HOME` 既定
   `~/.local/state/gh`) に書く (go-gh v2.6.0 `config.go` `StateDir`)。config dir を書込不可にしても
   state 書込とは干渉しない (実測: 上記読取系の実行で config dir への書込・エラーは発生しない)。 `[docs(source)][empirical]`

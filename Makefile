@@ -64,23 +64,29 @@ check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無い�
 # `ikeyan` (kit 自身の canonical 参照だけ allowlist) と旧 project 名の残滓 `tools-redact` / `tools_`。
 # `ikeyan.github.io` / `ikeyan/tools` は `ikeyan` 規則が包含する。allowlist は行単位でなく token 単位
 # (sed で無害化してから再 grep) — 同一行に allowlist 対象と違反が同居しても違反が残って検出される。
-# allowlist の sed は slug 直後の `/` まで含めて固定する: 接頭辞拡張 (例: ikeyan/agent-devcontainer-x
-# は別 repo) は無害化されず `ikeyan` が残って検出される。slug を裸で書く形 (末尾 `/` 無し) は
-# allowlist 外 = 検出される (使う場合はここへ意識的に追加する)。
+#  - repo slug は直後の `/` まで含めて固定: 接頭辞拡張 (例: ikeyan/agent-devcontainer-x = 別 repo) は
+#    無害化されず `ikeyan` が残って検出される。裸 slug (末尾 `/` 無し) も allowlist 外 = 検出される。
+#  - `tools-redact`/`tools_` は直前が英数の場合のみ無害化: 別語の部分一致 (例: wheel 正規化名の
+#    setuptools_scm) を誤検出しない。残滓の実形 (tools_proxy-bw 等) は行頭/記号の後に現れ検出が残る。
 # core/docs/verified-facts/ は実測記録の歴史的台帳なので対象外。fail-closed: 走査エラー (grep exit>1 =
-# 読めないファイル等 / find 非 0) を「クリーン」へ反転させず明示 fail し (-a で binary も本文走査)、
-# ファイル/ディレクトリ名への混入も find で走査する。
+# 読めないファイル等 / find 非 0 / sanitize sed の失敗) を「クリーン」へ反転させず PIPESTATUS で明示
+# fail し (-a で binary も本文走査)、ファイル/ディレクトリ名への混入も同じ流儀で走査する。
 # negative probe: FORBIDDEN_RE の各 token (regex の | 区切りから導出 — token 追加に fixture が自動追従。
-# token は literal 前提) + allowlist 同居行 + allowlist slug の接頭辞拡張 (行を分け、各 sed 規則の
-# 過剰無害化を独立に検出) を同じ scan にかけ、全て弾くことを確認してから本走査する。
+# token は literal 前提) + allowlist 同居行 + slug 接頭辞拡張 + ファイル名 fixture を検出でき、かつ
+# 純 allowlist/別語 fixture を誤検出しないことを確認してから本走査する。
 FORBIDDEN_RE := ikeyan|tools-redact|tools_
 check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / tools-redact / tools_) が混入していないか
 	@[ -d core ] && [ -d templates ] || { echo "core/ か templates/ が無い (走査対象欠落)" >&2; exit 1; }; \
-	scan() { local raw st; raw=$$(grep -rnaE '$(FORBIDDEN_RE)' --exclude-dir=verified-facts "$$@"); st=$$?; \
+	scan() { local raw st ps; raw=$$(grep -rnaE '$(FORBIDDEN_RE)' --exclude-dir=verified-facts "$$@"); st=$$?; \
 		[ $$st -le 1 ] || return 2; \
 		printf '%s\n' "$$raw" | sed -e 's#ikeyan/agent-devcontainer/#ALLOWED/#g' \
 			-e 's#ikeyan/agent-files/#ALLOWED/#g' \
-			| grep -E '$(FORBIDDEN_RE)'; }; \
+			-e 's#\([A-Za-z0-9]\)tools-redact#\1ALLOWED#g' \
+			-e 's#\([A-Za-z0-9]\)tools_#\1ALLOWED_#g' \
+			| grep -E '$(FORBIDDEN_RE)'; ps=("$${PIPESTATUS[@]}"); \
+		[ "$${ps[1]}" -eq 0 ] || return 2; return "$${ps[2]}"; }; \
+	name_scan() { local all ps; all=$$(find "$$@" -path '*/verified-facts' -prune -o -print) || return 2; \
+		printf '%s\n' "$$all" | grep -E '$(FORBIDDEN_RE)'; ps=("$${PIPESTATUS[@]}"); return "$${ps[1]}"; }; \
 	probe=$$(mktemp -d); \
 	toks=$$(printf '%s' '$(FORBIDDEN_RE)' | tr '|' ' '); \
 	{ for tok in $$toks; do echo "plain $$tok"; done; \
@@ -92,14 +98,21 @@ check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / to
 		echo "$$hits" | grep -qF "$$tok" \
 			|| { echo "negative: 混入検出器が fixture の $$tok を素通し" >&2; rm -rf "$$probe"; exit 1; }; \
 	done; rm -rf "$$probe"; \
+	clean=$$(mktemp -d); \
+	printf 'https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/install.sh\nsetuptools_scm-8.whl と mytools-redact-probe\n' > "$$clean/f"; \
+	scan "$$clean" >/dev/null; st=$$?; rm -rf "$$clean"; \
+	[ $$st -eq 1 ] || { echo "negative: 純 allowlist/別語 fixture を誤検出か走査エラー (st=$$st)" >&2; exit 1; }; \
+	nprobe=$$(mktemp -d); mkdir "$$nprobe/ikeyan-dir"; : > "$$nprobe/tools_probe"; \
+	nhits=$$(name_scan "$$nprobe"); \
+	{ echo "$$nhits" | grep -q 'ikeyan-dir' && echo "$$nhits" | grep -q 'tools_probe'; } \
+		|| { echo "negative: ファイル名検出器が fixture を素通し" >&2; rm -rf "$$nprobe"; exit 1; }; \
+	rm -rf "$$nprobe"; \
 	hits=$$(scan core templates); st=$$?; \
-	[ $$st -ne 2 ] || { echo "混入走査が grep エラーで不完全 (読めないファイル?)" >&2; exit 1; }; \
+	[ $$st -ne 2 ] || { echo "混入走査が走査エラーで不完全 (読めないファイル/sed 失敗?)" >&2; exit 1; }; \
 	[ $$st -eq 1 ] || { echo "consumer 固有値が core/templates に混入 (project 層へ移すか allowlist を見直す):" >&2; \
 		echo "$$hits" >&2; exit 1; }; \
-	names=$$(find core templates -path '*/verified-facts' -prune -o -print) \
-		|| { echo "ファイル名走査が find エラーで不完全 (読めないディレクトリ?)" >&2; exit 1; }; \
-	names=$$(printf '%s\n' "$$names" | grep -E '$(FORBIDDEN_RE)'); st=$$?; \
-	[ $$st -le 1 ] || { echo "ファイル名走査が grep エラーで不完全" >&2; exit 1; }; \
+	names=$$(name_scan core templates); st=$$?; \
+	[ $$st -ne 2 ] || { echo "ファイル名走査が走査エラーで不完全" >&2; exit 1; }; \
 	[ $$st -eq 1 ] || { echo "consumer 固有値がファイル/ディレクトリ名に混入:" >&2; echo "$$names" >&2; exit 1; }; \
 	echo "ok  contamination (core/templates に consumer 固有値なし)"
 
@@ -107,18 +120,26 @@ check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / to
 # Dockerfile が assert)。charset が異なる別概念なので変数を分ける (例: PROJECT_NAME=my_proj は valid
 # だが gh user としては invalid — 混用すると image build まで失敗が遅延する)。
 # charset は sed 実行前に検証する (どちらの charset も sed 特殊文字 / & \ を含まない = 置換が安全)。
-# PROJECT_GH_USER の置換は grep で事後 assert する — sed の s/// は pattern 不一致でも exit 0 なので、
-# template 側の行 drift だと silent no-op になり、setup は [ -e project ] ガードで再実行が効かないため
-# 失敗を compose/build まで遅延させない (@@PROJECT_NAME@@ 側の残存は check-placeholder が pin 済み)。
+# scaffold は project.tmp に組み立ててから mv する — 途中失敗の半端な project/ を残すと存在ガードで
+# 再実行が no-op になり回復不能になるため。置換は grep で事後 assert (sed s/// は不一致でも exit 0 —
+# @@PROJECT_NAME@@ 側の残存は check-placeholder が pin 済み)。既存 project/ は原則触らないが、
+# PROJECT_GH_USER の欠落だけは補完する — この変数の導入前に scaffold した checkout でも
+# `make setup` が文書どおりの復旧手段として機能するように (kit repo の project/ は gitignore された
+# 検査用 artifact であり consumer 所有物ではない)。
 PROJECT_NAME ?= kitci
 GH_USER ?= kitci
-setup: ## fresh clone を検査可能にする: consumer 相当の project 層 (既存ファイルは触らない) + kit venv
+setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv (既存 project は PROJECT_GH_USER 欠落だけ補完)
 	@[[ "$(PROJECT_NAME)" =~ ^[a-z0-9][a-z0-9_-]*$$ ]] || { echo "PROJECT_NAME が不正 ([a-z0-9][a-z0-9_-]*): '$(PROJECT_NAME)'" >&2; exit 1; }
 	@[[ "$(GH_USER)" =~ ^[A-Za-z0-9-]+$$ ]] || { echo "GH_USER が不正 (GitHub user 名 [A-Za-z0-9-]+): '$(GH_USER)'" >&2; exit 1; }
-	@[ -e project ] || { cp -Rp templates/project project \
-		&& sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' project/compose.yaml \
-		&& sed -i 's/^PROJECT_GH_USER=$$/PROJECT_GH_USER=$(GH_USER)/' project/.env \
-		&& grep -q '^PROJECT_GH_USER=$(GH_USER)$$' project/.env; }
+	@[ -e project ] || { rm -rf project.tmp && cp -Rp templates/project project.tmp \
+		&& sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' project.tmp/compose.yaml \
+		&& sed -i 's/^PROJECT_GH_USER=$$/PROJECT_GH_USER=$(GH_USER)/' project.tmp/.env \
+		&& grep -q '^PROJECT_GH_USER=$(GH_USER)$$' project.tmp/.env \
+		&& mv project.tmp project || { rm -rf project.tmp; exit 1; }; }
+	@grep -q '^PROJECT_GH_USER=..*' project/.env || { \
+		sed -i '/^PROJECT_GH_USER=$$/d' project/.env \
+		&& printf 'PROJECT_GH_USER=%s\n' '$(GH_USER)' >> project/.env \
+		&& echo "setup: project/.env に PROJECT_GH_USER=$(GH_USER) を補完 (この変数の導入前の scaffold を修復)"; }
 	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' devcontainer.json; }
 	@[ -e Dockerfile ] || bash core/bin/gen-dockerfile.sh > Dockerfile
 	@UV_PROJECT=$(CURDIR)/core UV_PROJECT_ENVIRONMENT=$(CURDIR)/.venv core/uv-sync.sh --frozen

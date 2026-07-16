@@ -25,6 +25,10 @@ PY := $(CURDIR)/../.venv/bin/python
 # を黙って上書きする (docs/verified-facts/docker.md「project 名の優先順位」) ため、放置すると
 # bootstrap/proxy-web が稼働中 stack と別 namespace を操作し (例: BW session.key が余所の volume へ
 # 入り secrets-proxy が未認証のまま)、検査系は偽赤/偽緑になる。全 target を一律に隔離する。
+# 前提: devcontainers CLI 側も file の name: で stack を立てていること。CLI は自プロセス環境の
+# COMPOSE_PROJECT_NAME を最優先する (devcontainers-cli.md「project 名の fallback」) ため、shell の
+# 一時 export はこの env -u で無害化できるが、.zshenv/launchctl 級の常設 export は VS Code 側の
+# stack 自体が別名になる — その変数を常設しないのが kit の前提 (file name: が唯一の正)。
 COMPOSE := env -u COMPOSE_PROJECT_NAME $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
 # compose は常に project 層 (../project/compose.yaml) を先頭に重ねる。先頭ファイルのディレクトリが
 # project directory になり project/.env が補間に効く。後勝ちで core が優先 (docs/verified-facts/docker.md)。
@@ -212,9 +216,11 @@ check-dockerfile-deps: ## Dockerfile 外部 image の digest 固定 / COPY --fro
 check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出を検証 (docker/podman compose 必須)
 	@python3 -c 'import json;json.load(open("redact/settings.json"))' \
 		|| { echo "redact/settings.json が不正 JSON" >&2; exit 1; }; \
+	cfgerr=$$(mktemp); \
 	REDACT_PROJECT=demo-redact REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
-		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
-		|| { echo "redact/compose.yaml が不正" >&2; exit 1; }; \
+		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>"$$cfgerr" \
+		|| { echo "redact/compose.yaml が不正 (原因は直下の stderr):" >&2; cat "$$cfgerr" >&2; rm -f "$$cfgerr"; exit 1; }; \
+	rm -f "$$cfgerr"; \
 	env -u REDACT_APP REDACT_PROJECT=demo-redact REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
 		&& { echo "negative: redact compose が REDACT_APP 欠落を素通し" >&2; exit 1; } || true; \
@@ -264,15 +270,18 @@ check-redact-invariants: ## redact の意味的不変条件を pin (bin/redact_i
 	@bash bin/redact_invariants_check.sh
 
 # (1) 形式 pin: committed seed が Dockerfile (gh seed 節) の焼込+事後 assert の期待形式
-#     (@@GITHUB_USER@@ 残存 / double-quote な oauth_token 値 x2) を満たすか。gh-seed 再生成は gh の
-#     YAML round-trip をそのまま書き戻すため、コメントや quote が変わり得る — 形式 drift を image
-#     build の分かりにくい失敗でなくここで捕まえる (パターンは Dockerfile の assert と対応)。
-# (2) migration no-op: committed の config.yml+hosts.yml を temp に渡し gh を 1 回走らせ、byte 不変
-#     なら no-op = ro 安全 (詳細: docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。
-#     gh は CI/devcontainer 必須。
+#     (@@GITHUB_USER@@ が users: キーと user: 値の 2 箇所 / double-quote な oauth_token 値 x2) を
+#     満たすか。gh-seed 再生成は gh の YAML round-trip をそのまま書き戻すため、コメントや quote が
+#     変わり得る — 形式 drift を image build の分かりにくい失敗でなくここで捕まえる (パターンは
+#     Dockerfile の assert と対応)。
+# (2) migration no-op: config.yml+hosts.yml を temp に渡し gh を 1 回走らせ、byte 不変なら no-op =
+#     ro 安全 (詳細: docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。committed の
+#     template 形と、@@GITHUB_USER@@ を実 user 名へ置換した runtime 形の両方で検査する — dev が
+#     実際に読むのは置換後の形であり、置換で migration 挙動が変わる回帰は template 形だけでは
+#     捕まらない。gh は CI/devcontainer 必須。
 check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き換えないか検証 (gh 必須)
-	@grep -q '@@GITHUB_USER@@' gh/hosts.yml \
-		|| { echo "gh/hosts.yml に @@GITHUB_USER@@ が無い (gh-seed 再生成で template token が消えた? Dockerfile の焼込が空回りする)" >&2; exit 1; }; \
+	@[ "$$(grep -c '@@GITHUB_USER@@' gh/hosts.yml)" -eq 2 ] \
+		|| { echo "gh/hosts.yml の @@GITHUB_USER@@ が 2 箇所 (users: キー / user: 値) に無い (gh-seed 再生成で template token が崩れた? Dockerfile の焼込が空回りする)" >&2; exit 1; }; \
 	[ "$$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$$' gh/hosts.yml)" -eq 2 ] \
 		|| { echo "gh/hosts.yml の oauth_token が Dockerfile の期待形式 (double-quote 値 x2) と不一致 (gh-seed 再生成が quote/構造を変えた? 手で復元して commit)" >&2; exit 1; }; \
 	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
@@ -281,10 +290,16 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 	after=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
 	rm -rf "$$tmp"; \
 	[ "$$before" = "$$after" ] || { echo "gh-seed: installed gh が seed を migration で書換える (ro hosts.yml だと gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
+	tmp3=$$(mktemp -d); sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
+	before=$$(cat "$$tmp3/config.yml" "$$tmp3/hosts.yml" | md5sum); \
+	GH_CONFIG_DIR="$$tmp3" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
+	after=$$(cat "$$tmp3/config.yml" "$$tmp3/hosts.yml" | md5sum); \
+	rm -rf "$$tmp3"; \
+	[ "$$before" = "$$after" ] || { echo "gh-seed: 置換後 (実 user 名) の hosts.yml を installed gh が書換える — root 所有 seed だと dev の gh が起動時に落ちる。migration 内容を確認して seed 形式を追従" >&2; exit 1; }; \
 	tmp2=$$(mktemp -d); cp gh/hosts.yml "$$tmp2/hosts.yml"; \
 	GH_CONFIG_DIR="$$tmp2" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
-	rm -rf "$$tmp2"; echo "ok  gh-seed (installed gh は seed を no-op で読む = ro 安全)"
+	rm -rf "$$tmp2"; echo "ok  gh-seed (形式 pin + template/runtime 形とも migration no-op = ro 安全)"
 
 # 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認し、
 # make check (check-gh-seed が template 形式を pin) を通してから commit する (gh の round-trip は

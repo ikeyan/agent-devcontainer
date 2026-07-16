@@ -5,7 +5,10 @@ name: ${REDACT_PROJECT:?set REDACT_PROJECT (通常は bin/redact-flow が導出)
 
 # redact サンドボックス。.devcontainer/core/bin/redact-flow が REDACT_* を export して
 #   docker compose -f .devcontainer/core/redact/compose.yaml run --rm redact
-# で起動する。dev の compose とは別物 (secrets-proxy も HTTP_PROXY も持たない。
+# で起動する。この compose を直に叩く場合は external volume を先に用意すること:
+#   docker volume create agent-devcontainer-redact-auth
+# (redact-flow 経由なら自動で用意される。無いと compose が external volume not found で止まる)。
+# dev の compose とは別物 (secrets-proxy も HTTP_PROXY も持たない。
 # egress は entrypoint+init-firewall.sh が Anthropic (api.anthropic.com + platform.claude.com):443
 # + dnsmasq DNS に固める。後者は claude の Console 認証で必須)。
 
