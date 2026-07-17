@@ -21,15 +21,17 @@ PY := $(CURDIR)/../.venv/bin/python
 
 # compose 検証エンジン: CI は docker、devcontainer は podman (provider = docker compose plugin)。
 # docker が無ければ podman を採用する。どちらも無い環境は次の呼び出しが自然にエラーになる。
-# env -u COMPOSE_PROJECT_NAME を変数自体に焼き込む: ambient な COMPOSE_PROJECT_NAME は file の name:
-# を黙って上書きする (docs/verified-facts/docker.md「project 名の優先順位」) ため、放置すると
-# bootstrap/proxy-web が稼働中 stack と別 namespace を操作し (例: BW session.key が余所の volume へ
-# 入り secrets-proxy が未認証のまま)、検査系は偽赤/偽緑になる。全 target を一律に隔離する。
+# env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES を変数自体に焼き込む: ambient な
+# COMPOSE_PROJECT_NAME は file の name: を黙って上書きし (docs/verified-facts/docker.md「project 名の
+# 優先順位」)、COMPOSE_ENV_FILES は --env-file 不在時の既定として project/.env の代わりに余所の
+# .env を補間に使わせる (同「補間に使う .env の差替え」)。放置すると bootstrap/proxy-web が稼働中
+# stack と別 namespace を操作し (例: BW session.key が余所の volume へ入り secrets-proxy が未認証の
+# まま)、検査系は偽赤/偽緑になる。全 target を一律に隔離する。
 # 前提: devcontainers CLI 側も file の name: で stack を立てていること。CLI は自プロセス環境の
 # COMPOSE_PROJECT_NAME を最優先する (devcontainers-cli.md「project 名の fallback」) ため、shell の
 # 一時 export はこの env -u で無害化できるが、.zshenv/launchctl 級の常設 export は VS Code 側の
 # stack 自体が別名になる — その変数を常設しないのが kit の前提 (file name: が唯一の正)。
-COMPOSE := env -u COMPOSE_PROJECT_NAME $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
+COMPOSE := env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
 # compose は常に project 層 (../project/compose.yaml) を先頭に重ねる。先頭ファイルのディレクトリが
 # project directory になり project/.env が補間に効く。後勝ちで core が優先 (docs/verified-facts/docker.md)。
 COMPOSE_FILES := -f ../project/compose.yaml -f compose.yaml
@@ -209,10 +211,8 @@ check-dockerfile-deps: ## Dockerfile 外部 image の digest 固定 / COPY --fro
 # redact サンドボックスの構成を検証する。compose は必須 env をダミーで与えて config 検証
 # (negative: REDACT_APP / REDACT_PROJECT 欠落で弾けること。probe は env -u で ambient export から隔離 —
 # 手動運転で export した変数が残った shell でも偽赤/偽緑にしない)。project 名導出 (bin/compose-project-name
-# = redact-flow が使う実経路) は、実 project 層で PyYAML parse と一致すること (literal parse の形式
-# drift 検知) + unquoted/コメント付き fixture を読めること + name: 無し fixture を弾くことを pin。
-# PyYAML 側は BaseLoader (全 scalar を str) で読む — safe_load は YAML 1.1 解決で unquoted の
-# no/010 等を bool/int にし、compose (yaml.v3 ≒ str) と食い違って偽赤になる (Norway problem)。
+# = redact-flow が使う実経路) の parity + fixture 群は bin/check_projectname.sh (検査本体が複雑な
+# bash なので Makefile 埋込でなくスクリプトにして shellcheck の圏内に置く — SHELL_SRCS が lint)。
 # dnsmasq.conf は placeholder を埋めて --test (dnsmasq は CI/devcontainer に在る)。settings.json は
 # JSON として読めることを確認。compose config は CI/devcontainer とも docker/podman compose が必須。
 check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出を検証 (docker/podman compose 必須)
@@ -229,28 +229,7 @@ check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出�
 	env -u REDACT_PROJECT REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
 		&& { echo "negative: redact compose が REDACT_PROJECT 欠落を素通し" >&2; exit 1; } || true; \
-	derived=$$(bash bin/compose-project-name ../project/compose.yaml) \
-		|| { echo "project 名を導出できない (redact-flow が壊れる)" >&2; exit 1; }; \
-	expected=$$($(PY) -c 'import yaml; print(yaml.load(open("../project/compose.yaml"), Loader=yaml.BaseLoader)["name"])') \
-		|| { echo "PyYAML で ../project/compose.yaml の name: を読めない" >&2; exit 1; }; \
-	[ "$$derived" = "$$expected" ] \
-		|| { echo "compose-project-name の導出 '$$derived' が PyYAML parse '$$expected' と不一致 (literal parse の形式 drift)" >&2; exit 1; }; \
-	fx=$$(mktemp); printf 'name: plainprobe # comment\nservices: {dev: {}}\n' > "$$fx"; \
-	[ "$$(bash bin/compose-project-name "$$fx")" = plainprobe ] \
-		|| { echo "compose-project-name が unquoted/コメント付き name: を読めない" >&2; rm -f "$$fx"; exit 1; }; \
-	rm -f "$$fx"; \
-	bom=$$(mktemp); printf '\357\273\277name: bomprobe\nservices: {dev: {}}\n' > "$$bom"; \
-	[ "$$(bash bin/compose-project-name "$$bom")" = bomprobe ] \
-		|| { echo "compose-project-name が UTF-8 BOM 付きファイルの name: を読めない" >&2; rm -f "$$bom"; exit 1; }; \
-	rm -f "$$bom"; \
-	noname=$$(mktemp); printf 'services:\n  dev: {image: busybox}\n' > "$$noname"; \
-	bash bin/compose-project-name "$$noname" >/dev/null 2>&1 \
-		&& { echo "negative: compose-project-name が name: 無し (directory fallback) を素通し" >&2; rm -f "$$noname"; exit 1; }; \
-	rm -f "$$noname"; \
-	glued=$$(mktemp); printf 'name: glued#tag\n' > "$$glued"; \
-	bash bin/compose-project-name "$$glued" >/dev/null 2>&1 \
-		&& { echo "negative: compose-project-name が値密着の # (YAML ではコメントでない) を黙って切り落とした" >&2; rm -f "$$glued"; exit 1; }; \
-	rm -f "$$glued"; \
+	bash bin/check_projectname.sh $(PY) ../project/compose.yaml || exit 1; \
 	t=$$(mktemp); sed 's/__UPSTREAM_DNS__/127.0.0.11/g' redact/dnsmasq.conf > "$$t"; \
 	dnsmasq --test --conf-file="$$t" >/dev/null 2>&1 \
 		|| { echo "redact/dnsmasq.conf が不正" >&2; rm -f "$$t"; exit 1; }; \

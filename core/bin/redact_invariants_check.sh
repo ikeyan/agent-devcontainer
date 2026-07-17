@@ -248,9 +248,10 @@ EXPECTED_NAME=$(bash "$DC/bin/compose-project-name" "$P/compose.yaml") \
 merged=$(mktemp); mergederr=$(mktemp)
 # stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
 # PROJECT_GH_USER 不足の interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
-# env -u COMPOSE_PROJECT_NAME: ambient な export は file の name: を黙って上書きし (docker.md
-# 「project 名の優先順位」)、EXPECTED_NAME (file を PyYAML で読む) との突合が偽赤になる。
-env -u COMPOSE_PROJECT_NAME "${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>"$mergederr" \
+# env -u: ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きし (docker.md「project 名の
+# 優先順位」) EXPECTED_NAME との突合が偽赤になる。COMPOSE_ENV_FILES は補間に使う .env を余所へ
+# 差し替える (同「補間に使う .env の差替え」)。
+env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES "${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>"$mergederr" \
     || { cat "$mergederr" >&2; rm -f "$merged" "$mergederr"; fail "§10: compose config が失敗 (原因は直上の stderr)"; }
 rm -f "$mergederr"
 "$PY" "$POSTURE" "$EXPECTED_NAME" < "$merged" \
@@ -260,24 +261,33 @@ rm -f "$mergederr"
 rm -f "$merged"
 
 # --- 11. 複数ファイル literal 結合の配線 pin (§9 と同じ fail-silent 防止クラス) -----
-# (a) PROJECT_GH_USER は sudoers env_keep (Dockerfile) / compose environment / init-firewall.sh の
-#     reader の 3 点が同名で揃って初めて postStart の整合検査が機能する。1 点だけ改名すると CI 緑の
-#     まま全 consumer の起動が「PROJECT_GH_USER が sudo 環境に無い」で止まる。sudoers の束縛先パスが
-#     COPY 先と一致することも pin する (Defaults! はパス完全一致)。
+# (a) PROJECT_GH_USER は sudoers env_keep (Dockerfile) / compose (build.args と environment の 2 箇所) /
+#     init-firewall.sh の reader が同名で揃って初めて postStart の整合検査が機能する。片側だけの
+#     改名・削除は CI 緑のまま全 consumer の起動が「PROJECT_GH_USER が sudo 環境に無い」で止まる。
+#     compose は 2 箇所を数で pin (片方だけの削除を素通ししない)、reader はコメントでなく実際の
+#     展開形 (${PROJECT_GH_USER) で pin する。sudoers の束縛先パスが COPY 先と一致することも pin
+#     (Defaults! はパス完全一致)。
 grep -qF 'env_keep += "PROJECT_GH_USER"' "$DC/Dockerfile" \
     || fail "§11: core/Dockerfile の sudoers に PROJECT_GH_USER の env_keep が無い"
 grep -qF 'Defaults!/usr/local/bin/init-firewall.sh' "$DC/Dockerfile" \
     || fail "§11: sudoers の Defaults! が init-firewall.sh の COPY 先パスを指していない"
 grep -q 'COPY core/init-firewall.sh /usr/local/bin/' "$DC/Dockerfile" \
     || fail "§11: core/Dockerfile が init-firewall.sh を /usr/local/bin へ COPY していない"
-grep -qE '^ +PROJECT_GH_USER:' "$DC/compose.yaml" \
-    || fail "§11: core/compose.yaml の environment/build.args に PROJECT_GH_USER が無い"
-grep -q 'PROJECT_GH_USER' "$DC/init-firewall.sh" \
-    || fail "§11: init-firewall.sh が PROJECT_GH_USER を読んでいない"
+[ "$(grep -cE '^ +PROJECT_GH_USER:' "$DC/compose.yaml")" -eq 2 ] \
+    || fail "§11: core/compose.yaml の PROJECT_GH_USER が 2 箇所 (build.args + environment) に無い"
+grep -qF '${PROJECT_GH_USER' "$DC/init-firewall.sh" \
+    || fail "§11: init-firewall.sh が PROJECT_GH_USER を展開形で読んでいない (コメントだけでは不可)"
+# (a') gh seed のパス literal も同じ結合: Dockerfile (COPY 先 + sed/assert 対象) と init-firewall.sh
+#      (awk reader) の両方に /home/node/.config/gh/hosts.yml が現れて初めて検査が成立する。
+grep -qF '/home/node/.config/gh/hosts.yml' "$DC/Dockerfile" \
+    || fail "§11: core/Dockerfile に gh seed パス /home/node/.config/gh/hosts.yml が無い"
+grep -qF '/home/node/.config/gh/hosts.yml' "$DC/init-firewall.sh" \
+    || fail "§11: init-firewall.sh が gh seed パス /home/node/.config/gh/hosts.yml を読んでいない"
 # (b) redact の共有 auth volume は external (compose は作らない) — redact-flow が事前作成する名前と
 #     compose.yaml の name: が食い違うと、事前作成が空振りして run 時に external volume not found。
-vol_flow=$(sed -n 's/.*docker volume create \([A-Za-z0-9-]*\).*/\1/p' "$DC/bin/redact-flow" | head -1)
-vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9-]*\)$/\1/p' "$DC/redact/compose.yaml" | head -1)
+#     charset は compose の volume 名に合わせ '_' も含める (欠くと正しい underscore 改名が偽赤になる)。
+vol_flow=$(sed -n 's/.*docker volume create \([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow" | head -1)
+vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.yaml" | head -1)
 [ -n "$vol_flow" ] || fail "§11: redact-flow に auth volume の事前作成が無い"
 [ "$vol_flow" = "$vol_compose" ] \
     || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"

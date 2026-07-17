@@ -106,6 +106,12 @@ confidence tag の凡例: [README](README.md)。
   env override があっても評価される (= `:?` の fail-closed ガードは `COMPOSE_PROJECT_NAME` では
   すり抜けられない)。検証: `name: filedecl` に env を与えると `name: envname`、さらに `-p flagname` で
   `name: flagname`、`name: ${RP_PROBE:?}` + env のみ (RP_PROBE 未設定) は exit 1。 (同 v5.3.1) `[empirical]`
+- **補間に使う .env の差替え (`COMPOSE_ENV_FILES`)**: `--env-file` を渡さない compose 呼び出しでは、
+  環境変数 `COMPOSE_ENV_FILES` (comma 区切り) が env file の既定になる — ambient に設定されていると
+  project directory の `.env` の代わりに余所のファイルが補間に使われる。出典: docker/compose
+  `cmd/compose/compose.go` (`ComposeEnvFiles` 定数と `--env-file` の default 束縛)。
+  → `COMPOSE_PROJECT_NAME` と同じ「ambient 変数が file 宣言を黙って差し替える」クラスとして、
+  kit の compose 呼び出しは両方を env -u で隔離する。 `[docs(source)]`
 - **固定名 volume と project label**: compose 管理 (`external` なし) の named volume は作成時に
   `com.docker.compose.project: <project>` label が付き、**別の project 名から同じ volume を使うと毎回
   warning** `volume "<name>" already exists but was created for project "<p1>" (expected "<p2>").

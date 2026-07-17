@@ -18,28 +18,30 @@
 # 「クリーン」へ反転させず PIPESTATUS で明示 fail し (-a で binary も本文走査)、
 # ファイル/ディレクトリ名への混入も同じ流儀 (probe 付き) で走査する。
 # negative probe: FORBIDDEN_RE の各 token (regex の | 区切りから導出 — token 追加に fixture が
-# 自動追従。token は literal 前提) + allowlist 同居行 + slug の左右接頭辞拡張 + ファイル名 fixture
-# を検出でき、かつ純 allowlist/別語 fixture を誤検出しないことを確認してから本走査する。
-# probe は fixture ディレクトリへ cd して相対パスで走査する — mktemp の絶対パス (TMPDIR) に
-# 禁止 token が含まれる環境でもパス由来の誤検出をしない。
+# 自動追従。token は literal 前提) + allowlist 同居行 + slug の左右接頭辞拡張 + 大小文字変種 +
+# ファイル名 fixture を検出でき、かつ純 allowlist/別語 fixture を誤検出しないことを確認してから
+# 本走査する。probe も本走査も対象ディレクトリへ cd して相対パスで走査する — mktemp (TMPDIR) や
+# checkout の絶対パスに禁止 token が含まれる環境でもパス由来の誤検出をしない。
+# 大小文字は無視する (GitHub user 名も DNS ホスト名も case-insensitive — Ikeyan 等の変種も混入):
+# grep は -i、allowlist sed は GNU の I flag (この検査は kit repo 専用 = GNU sed 前提)。
 set -uo pipefail # -e は使わない: grep の exit 1 (= no match) を制御フローに使う
 
 FORBIDDEN_RE='ikeyan|tools-redact|tools_'
 
 sanitize() {
-    sed -e 's#\([^A-Za-z0-9-]\)ikeyan/agent-devcontainer/#\1ALLOWED/#g' \
-        -e 's#\([^A-Za-z0-9-]\)ikeyan/agent-files/#\1ALLOWED/#g' \
-        -e 's#\([A-Za-z0-9]\)tools-redact#\1ALLOWED#g' \
-        -e 's#\([A-Za-z0-9]\)tools_#\1ALLOWED_#g'
+    sed -e 's#\([^A-Za-z0-9-]\)ikeyan/agent-devcontainer/#\1ALLOWED/#gI' \
+        -e 's#\([^A-Za-z0-9-]\)ikeyan/agent-files/#\1ALLOWED/#gI' \
+        -e 's#\([A-Za-z0-9]\)tools-redact#\1ALLOWED#gI' \
+        -e 's#\([A-Za-z0-9]\)tools_#\1ALLOWED_#gI'
 }
 
 # 本文走査。exit: 0 = 残余あり (stdout に hits) / 1 = クリーン / 2 = 走査エラー
 scan() {
     local raw st ps
-    raw=$(grep -rnaE "$FORBIDDEN_RE" --exclude-dir=verified-facts "$@")
+    raw=$(grep -rnaiE "$FORBIDDEN_RE" --exclude-dir=verified-facts "$@")
     st=$?
     [ $st -le 1 ] || return 2
-    printf '%s\n' "$raw" | sanitize | grep -E "$FORBIDDEN_RE"
+    printf '%s\n' "$raw" | sanitize | grep -iE "$FORBIDDEN_RE"
     ps=("${PIPESTATUS[@]}")
     [ "${ps[1]}" -eq 0 ] || return 2
     return "${ps[2]}"
@@ -49,7 +51,7 @@ scan() {
 name_scan() {
     local all ps
     all=$(find "$@" -path '*/verified-facts' -prune -o -print) || return 2
-    printf '%s\n' "$all" | grep -E "$FORBIDDEN_RE"
+    printf '%s\n' "$all" | grep -iE "$FORBIDDEN_RE"
     ps=("${PIPESTATUS[@]}")
     return "${ps[1]}"
 }
@@ -69,11 +71,12 @@ probe=$(mktemp -d)
     echo "prefix1 ikeyan/agent-devcontainer-x"
     echo "prefix2 ikeyan/agent-files-x"
     echo "prefix3 myikeyan/agent-devcontainer/x"
+    echo "case IkEyAn variant"
 } > "$probe/f"
 hits=$(cd "$probe" && scan .)
 st=$?
 [ $st -eq 0 ] || { echo "negative: 検出 probe が走査エラー/空振り (st=$st)" >&2; rm -rf "$probe"; exit 1; }
-for tok in "${TOKS[@]}" ikeyan.github.io agent-devcontainer-x agent-files-x myikeyan; do
+for tok in "${TOKS[@]}" ikeyan.github.io agent-devcontainer-x agent-files-x myikeyan IkEyAn; do
     echo "$hits" | grep -qF "$tok" \
         || { echo "negative: 混入検出器が fixture の $tok を素通し" >&2; rm -rf "$probe"; exit 1; }
 done
@@ -100,17 +103,23 @@ st=$?
     || { echo "negative: ファイル名検出器が fixture を素通し" >&2; rm -rf "$nprobe"; exit 1; }
 rm -rf "$nprobe"
 
-# --- 本走査 -----------------------------------------------------------------------------
-hits=$(scan "$@")
-st=$?
-[ $st -ne 2 ] || { echo "混入走査が走査エラーで不完全 (読めないファイル/sed 失敗?)" >&2; exit 1; }
-[ $st -eq 1 ] || {
-    echo "consumer 固有値が core/templates に混入 (project 層へ移すか allowlist を見直す):" >&2
-    echo "$hits" >&2
-    exit 1
-}
-names=$(name_scan "$@")
-st=$?
-[ $st -ne 2 ] || { echo "ファイル名走査が走査エラーで不完全" >&2; exit 1; }
-[ $st -eq 1 ] || { echo "consumer 固有値がファイル/ディレクトリ名に混入:" >&2; echo "$names" >&2; exit 1; }
+# --- 本走査 (対象ごとに cd して相対走査 — checkout 自体の絶対パスに token を含む環境でも偽赤にしない) ---
+for d in "$@"; do
+    hits=$(cd "$d" && scan .)
+    st=$?
+    [ $st -ne 2 ] || { echo "混入走査が走査エラーで不完全 (読めないファイル/sed 失敗?): $d" >&2; exit 1; }
+    [ $st -eq 1 ] || {
+        echo "consumer 固有値が $d に混入 (project 層へ移すか allowlist を見直す):" >&2
+        echo "$hits" | sed "s#^\./#$d/#" >&2
+        exit 1
+    }
+    names=$(cd "$d" && name_scan .)
+    st=$?
+    [ $st -ne 2 ] || { echo "ファイル名走査が走査エラーで不完全: $d" >&2; exit 1; }
+    [ $st -eq 1 ] || {
+        echo "consumer 固有値がファイル/ディレクトリ名に混入 ($d):" >&2
+        echo "$names" | sed "s#^\./#$d/#" >&2
+        exit 1
+    }
+done
 echo "ok  contamination ($* に consumer 固有値なし)"

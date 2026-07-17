@@ -194,42 +194,37 @@ COPY --from=hadolint --chmod=0755 /bin/hadolint /usr/local/bin/hadolint
 COPY --from=compose --chmod=0755 /docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 
 # gh CLI の認証は dev に実トークンを置かず secrets-proxy が substitute する。token placeholder だけの
-# hosts.yml を seed する (.devcontainer/project/rules.yaml「api.github.com」)。user 名は consumer 値
-# なので core に直書きせず、テンプレート (core/gh/hosts.yml) の @@GITHUB_USER@@ を build arg
-# PROJECT_GH_USER (project/.env 所有、compose.yaml の build.args) で焼き込む。値の変更は build arg
-# 経由なので反映には dev イメージの rebuild が要る (旧 ro bind と違い起動時には追従しない)。
-# gh/ の dir と hosts.yml は root 所有 (dir 755 + file 644) にする: gh は読取で owner/mode を検査せず、
-# file の root 所有が in-place 書込を、dir の root 所有が unlink+再作成を塞ぐので、gh auth login の
-# 実トークン焼込「事故」を防げる (docs/verified-facts/gh.md「gh CLI / config dir の読取と書込」)。
-# config.yml だけは node 所有に戻す: token は hosts.yml にしか書かれず、root 所有だと正当な
-# `gh config set` / `gh alias set` まで壊す (owner 所有 file は root 所有 dir 内でも in-place 書込可 —
-# 同 gh.md)。同一 uid の意図的迂回 (~/.config ごと rename / GH_CONFIG_DIR 付替え) までは封じない —
-# 実トークンは通常 dev に存在せず (proxy が egress で substitute)、ここで防ぐのは貼り付けた実トークン
-# の durable spill 事故だけ。uid≠1000 の Linux ホストでは devcontainers CLI の updateRemoteUserUID が
-# home を chown -R するため root 所有が剥がれ、この封じは効かない (devcontainers-cli.md — 同じく
-# accident-grade の割切りに含める)。config.yml の version seed で起動時マイグレーションによる
-# hosts.yml 書換も抑止する (gh/config.yml 参照)。~/.config/gh は volume でなく ephemeral なので
-# イメージから復元される。「.env の値を変えたが rebuild していない」drift は init-firewall.sh
-# (postStartCommand) が env と焼込値の照合で止める。旧イメージ (検査導入前) のまま動かす窓だけは
-# 検出手段が無い — README「更新に伴う既知の移行」に文書化。
+# hosts.yml を seed し (.devcontainer/project/rules.yaml「api.github.com」)、user 名 (consumer 値) は
+# テンプレート (core/gh/hosts.yml) の @@GITHUB_USER@@ へ build arg PROJECT_GH_USER で焼き込む。
+# 所有権の設計 (根拠と防御範囲: docs/verified-facts/gh.md「gh CLI / config dir の読取と書込」、
+# updateRemoteUserUID の制約: devcontainers-cli.md):
+#   - dir と hosts.yml (token の書込先) は root 所有 = gh auth login の実トークン焼込事故を封じる
+#   - config.yml は node 所有のまま = 正当な gh config set / gh alias set を壊さない
+#   - config.yml の version seed が起動時マイグレーションの hosts.yml 書換を抑止 (gh/config.yml)
+# 値の変更は rebuild が要る (build arg)。「値を変えたが rebuild していない」drift は init-firewall.sh
+# が起動時に照合して止める (旧イメージ窓は README「更新に伴う既知の移行」)。~/.config/gh は volume
+# でなく ephemeral なのでイメージから復元される。
 ARG PROJECT_GH_USER
 COPY core/gh/hosts.yml /home/node/.config/gh/hosts.yml
 COPY core/gh/config.yml /home/node/.config/gh/config.yml
 # 事後条件を明示 assert する: user 名の形 ([[ =~ ]] は値全体に一致 — 行単位 grep だと複数行値の
 # 1 行目だけで素通しする。空も弾く) / @@GITHUB_USER@@ の全展開 / @@SECRET_github_token@@ が両方の
 # oauth_token: 値として残存 (コメント内の出現では満たされない位置指定。secrets-proxy の placeholder
-# は build で消してはならない)。
-RUN [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
-    || { echo "PROJECT_GH_USER が不正 (project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定): '$PROJECT_GH_USER'" >&2; exit 1; } && \
-  sed -i "s/@@GITHUB_USER@@/$PROJECT_GH_USER/g" /home/node/.config/gh/hosts.yml && \
-  if grep -q '@@GITHUB_USER@@' /home/node/.config/gh/hosts.yml; then \
-    echo "hosts.yml に @@GITHUB_USER@@ が残った (置換漏れ)" >&2; exit 1; fi && \
+# は build で消してはならない)。set -e + 各段に専用の || ハンドラ — && と || を混ぜて連結すると
+# 前段の失敗が後段の無関係な診断へ流れ込む (左結合)。
+RUN set -e; \
+  [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
+    || { echo "PROJECT_GH_USER が不正 (project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定): '$PROJECT_GH_USER'" >&2; exit 1; }; \
+  sed -i "s/@@GITHUB_USER@@/$PROJECT_GH_USER/g" /home/node/.config/gh/hosts.yml \
+    || { echo "hosts.yml への user 名焼込 (sed) が失敗" >&2; exit 1; }; \
+  ! grep -q '@@GITHUB_USER@@' /home/node/.config/gh/hosts.yml \
+    || { echo "hosts.yml に @@GITHUB_USER@@ が残った (置換漏れ)" >&2; exit 1; }; \
   [ "$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$' /home/node/.config/gh/hosts.yml)" -eq 2 ] \
-    || { echo "hosts.yml の oauth_token 値から @@SECRET_github_token@@ が消えた (secrets-proxy placeholder 破壊)" >&2; exit 1; } && \
-  chown node:node /home/node/.config && \
-  chown -R root:root /home/node/.config/gh && \
-  chown node:node /home/node/.config/gh/config.yml && \
-  chmod 755 /home/node/.config/gh && \
+    || { echo "hosts.yml の oauth_token 値から @@SECRET_github_token@@ が消えた (secrets-proxy placeholder 破壊)" >&2; exit 1; }; \
+  chown node:node /home/node/.config; \
+  chown -R root:root /home/node/.config/gh; \
+  chown node:node /home/node/.config/gh/config.yml; \
+  chmod 755 /home/node/.config/gh; \
   chmod 644 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml
 
 # init-firewall.sh / install-proxy-ca.sh の再実行 (postStartCommand・CDN IP ローテーション対応) は
@@ -239,6 +234,9 @@ COPY core/install-proxy-ca.sh /usr/local/bin/
 # env_keep: init-firewall.sh の gh seed 整合検査は現在の PROJECT_GH_USER (compose environment) を
 # 見る必要があるが、sudo の env_reset が剥がし、cap_drop:ALL の root は /proc/1/environ も読めない
 # (node 所有 0400 + CAP_DAC_OVERRIDE/CAP_SYS_PTRACE 無し — docs/verified-facts/capabilities.md)。
+# 検査は root 不要 (hosts.yml は 644) だが root スクリプト内に置く: 既存 consumer の postStartCommand
+# 配線 (sudo 2 コマンド) が全 consumer に届く唯一の実行点で、node 実行の別スクリプトに分けると
+# devcontainer.json 未更新の consumer で検査だけが silent に消える (fail-open)。
 # per-command Defaults の文法と env_keep の semantics は docs/verified-facts/sudo.md。
 # visudo -c で構文を build 時に検証する — sudoers の構文エラーは sudo 全体を無効化し、
 # postStartCommand ごと devcontainer 起動を壊すため fail-closed に build で止める。

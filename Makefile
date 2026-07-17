@@ -71,12 +71,12 @@ check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / to
 # だが gh user としては invalid — 混用すると image build まで失敗が遅延する)。
 # charset は sed 実行前に検証する (どちらの charset も sed 特殊文字 / & \ を含まない = 置換が安全)。
 # scaffold は project.tmp に組み立ててから mv する — 途中失敗の半端な project/ を残すと存在ガードで
-# 再実行が no-op になり回復不能になるため。置換は grep で事後 assert (sed s/// は不一致でも exit 0 —
-# @@PROJECT_NAME@@ 側の残存は check-placeholder が pin 済み)。既存 project/ は原則触らないが、
-# PROJECT_GH_USER の欠落だけは補完する — この変数の導入前に scaffold した checkout でも
-# `make setup` が文書どおりの復旧手段として機能するように (kit repo の project/ は gitignore された
-# 検査用 artifact であり consumer 所有物ではない)。補完は .env の実在と末尾改行を保証してから
-# 追記する (改行なし末尾に >> すると前の変数に癒着して静かに壊す) + 追記結果を grep で assert。
+# 再実行が no-op になり回復不能になるため (@@PROJECT_NAME@@ の残存は check-placeholder が pin 済み)。
+# PROJECT_GH_USER の書込は後段の補完 (backfill) に一本化する — 新規 scaffold (template の空行を
+# 置換) も、この変数の導入前に scaffold した既存 checkout の修復も同じ経路を通す。既存 project/ は
+# それ以外触らない (kit repo の project/ は gitignore された検査用 artifact であり consumer 所有物
+# ではない)。補完は .env の実在と末尾改行を保証してから追記する (改行なし末尾に >> すると前の変数に
+# 癒着して静かに壊す) + 追記結果を grep で assert (sed s/// は不一致でも exit 0 のため)。
 PROJECT_NAME ?= kitci
 GH_USER ?= kitci
 setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv (既存 project は PROJECT_GH_USER 欠落だけ補完)
@@ -84,8 +84,6 @@ setup: ## fresh clone を検査可能にする: consumer 相当の project 層 +
 	@[[ "$(GH_USER)" =~ ^[A-Za-z0-9-]+$$ ]] || { echo "GH_USER が不正 (GitHub user 名 [A-Za-z0-9-]+): '$(GH_USER)'" >&2; exit 1; }
 	@[ -e project ] || { rm -rf project.tmp && cp -Rp templates/project project.tmp \
 		&& sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' project.tmp/compose.yaml \
-		&& sed -i 's/^PROJECT_GH_USER=$$/PROJECT_GH_USER=$(GH_USER)/' project.tmp/.env \
-		&& grep -q '^PROJECT_GH_USER=$(GH_USER)$$' project.tmp/.env \
 		&& mv project.tmp project || { rm -rf project.tmp; exit 1; }; }
 	@[ -f project/.env ] || : > project/.env
 	@grep -q '^PROJECT_GH_USER=..*' project/.env || { \
@@ -93,7 +91,7 @@ setup: ## fresh clone を検査可能にする: consumer 相当の project 層 +
 		&& { [ -z "$$(tail -c1 project/.env)" ] || echo >> project/.env; } \
 		&& printf 'PROJECT_GH_USER=%s\n' '$(GH_USER)' >> project/.env \
 		&& grep -q '^PROJECT_GH_USER=$(GH_USER)$$' project/.env \
-		&& echo "setup: project/.env に PROJECT_GH_USER=$(GH_USER) を補完 (この変数の導入前の scaffold を修復)"; }
+		&& echo "setup: project/.env に PROJECT_GH_USER=$(GH_USER) を設定"; }
 	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' devcontainer.json; }
 	@[ -e Dockerfile ] || bash core/bin/gen-dockerfile.sh > Dockerfile
 	@UV_PROJECT=$(CURDIR)/core UV_PROJECT_ENVIRONMENT=$(CURDIR)/.venv core/uv-sync.sh --frozen
