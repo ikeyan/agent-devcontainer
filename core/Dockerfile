@@ -236,12 +236,19 @@ RUN [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
 # dev だけが要る。sudo ごと dev 専用にする。
 COPY core/init-firewall.sh /usr/local/bin/
 COPY core/install-proxy-ca.sh /usr/local/bin/
+# env_keep: init-firewall.sh の gh seed 整合検査は現在の PROJECT_GH_USER (compose environment) を
+# 見る必要があるが、sudo の env_reset が剥がし、cap_drop:ALL の root は /proc/1/environ も読めない
+# (node 所有 0400 + CAP_DAC_OVERRIDE/CAP_SYS_PTRACE 無し — docs/verified-facts/capabilities.md)。
+# visudo -c で構文を build 時に検証する — sudoers の構文エラーは sudo 全体を無効化し、
+# postStartCommand ごと devcontainer 起動を壊すため fail-closed に build で止める。
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/install-proxy-ca.sh && \
-  printf '%s\n%s\n' \
+  printf '%s\n%s\n%s\n' \
+    'Defaults!/usr/local/bin/init-firewall.sh env_keep += "PROJECT_GH_USER"' \
     "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" \
     "node ALL=(root) NOPASSWD: /usr/local/bin/install-proxy-ca.sh" \
     > /etc/sudoers.d/node-firewall && \
-  chmod 0440 /etc/sudoers.d/node-firewall
+  chmod 0440 /etc/sudoers.d/node-firewall && \
+  visudo -c -f /etc/sudoers.d/node-firewall
 
 # project 層の直結許可ドメイン (init-firewall.sh が読む)。project/allow-domains.txt が編集点。
 COPY project/allow-domains.txt /etc/agent-devcontainer/allow-domains.txt

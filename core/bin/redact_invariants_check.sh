@@ -237,8 +237,9 @@ POSTURE=core/bin/check_compose_posture.py
 PY=.venv/bin/python
 # 期待する project 名は project/compose.yaml 自身の name: から読む (kit 化により @@PROJECT_NAME@@ 置換後の
 # 値は consumer ごとに違うのでリテラル固定できない。ここで読んだ値と、マージ済み compose config が
-# 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。
-EXPECTED_NAME=$("$PY" -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["name"])' "$P/compose.yaml") \
+# 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。BaseLoader で読む —
+# safe_load は unquoted の no/010 等を bool/int にし compose (yaml.v3 ≒ str) と食い違う (Norway problem)。
+EXPECTED_NAME=$("$PY" -c 'import sys, yaml; print(yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)["name"])' "$P/compose.yaml") \
     || fail "§10: project/compose.yaml から name: を読めない"
 merged=$(mktemp); mergederr=$(mktemp)
 # stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数

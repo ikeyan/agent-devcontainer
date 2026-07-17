@@ -90,8 +90,10 @@ stdout に表示する)。更新実行 (core が既にある) は glue を一切
 - **`project/compose.yaml`** — project 固有の compose 層。追加 volume / build args / 環境変数は
   `services.dev` 以下に足す。`name:` (compose project 名) は scaffold 時にカレントディレクトリ名から
   自動設定される。
-- **`project/.env`** — compose の変数補間専用 (`PROJECT_NO_PROXY`, secrets-proxy bootstrap 用の
-  `PROJECT_BW_SERVER`, gh seed 用の `PROJECT_GH_USER`)。dev コンテナのプロセス環境には渡らない。
+- **`project/.env`** — compose の変数補間用 (`PROJECT_NO_PROXY`, secrets-proxy bootstrap 用の
+  `PROJECT_BW_SERVER`, gh seed 用の `PROJECT_GH_USER`)。原則 dev コンテナのプロセス環境には渡らない —
+  例外は `PROJECT_GH_USER` で、rebuild 漏れ検査 (init-firewall.sh) のため environment 経由でも渡る
+  (GitHub user 名であり秘密ではない。秘密はそもそも .env に置かない設計)。
   `PROJECT_GH_USER` (認証に使う GitHub user 名) は必須 — 未設定だと compose が fail-closed に落ちる。
 
 ## 検証

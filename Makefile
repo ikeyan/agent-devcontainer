@@ -125,7 +125,8 @@ check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / to
 # @@PROJECT_NAME@@ 側の残存は check-placeholder が pin 済み)。既存 project/ は原則触らないが、
 # PROJECT_GH_USER の欠落だけは補完する — この変数の導入前に scaffold した checkout でも
 # `make setup` が文書どおりの復旧手段として機能するように (kit repo の project/ は gitignore された
-# 検査用 artifact であり consumer 所有物ではない)。
+# 検査用 artifact であり consumer 所有物ではない)。補完は .env の実在と末尾改行を保証してから
+# 追記する (改行なし末尾に >> すると前の変数に癒着して静かに壊す) + 追記結果を grep で assert。
 PROJECT_NAME ?= kitci
 GH_USER ?= kitci
 setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv (既存 project は PROJECT_GH_USER 欠落だけ補完)
@@ -136,9 +137,12 @@ setup: ## fresh clone を検査可能にする: consumer 相当の project 層 +
 		&& sed -i 's/^PROJECT_GH_USER=$$/PROJECT_GH_USER=$(GH_USER)/' project.tmp/.env \
 		&& grep -q '^PROJECT_GH_USER=$(GH_USER)$$' project.tmp/.env \
 		&& mv project.tmp project || { rm -rf project.tmp; exit 1; }; }
+	@[ -f project/.env ] || : > project/.env
 	@grep -q '^PROJECT_GH_USER=..*' project/.env || { \
 		sed -i '/^PROJECT_GH_USER=$$/d' project/.env \
+		&& { [ -z "$$(tail -c1 project/.env)" ] || echo >> project/.env; } \
 		&& printf 'PROJECT_GH_USER=%s\n' '$(GH_USER)' >> project/.env \
+		&& grep -q '^PROJECT_GH_USER=$(GH_USER)$$' project/.env \
 		&& echo "setup: project/.env に PROJECT_GH_USER=$(GH_USER) を補完 (この変数の導入前の scaffold を修復)"; }
 	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' devcontainer.json; }
 	@[ -e Dockerfile ] || bash core/bin/gen-dockerfile.sh > Dockerfile

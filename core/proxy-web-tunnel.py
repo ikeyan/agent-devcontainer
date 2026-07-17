@@ -25,6 +25,9 @@ import threading
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PROXY_WEB_TUNNEL_PORT", "8081"))
+# ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きし、exec が別 project を指す
+# (core/Makefile の COMPOSE と同じ隔離。make 経由でなく直接実行した場合もここで揃える)。
+os.environ.pop("COMPOSE_PROJECT_NAME", None)
 COMPOSE = shlex.split(os.environ.get("COMPOSE", "docker compose -f ../project/compose.yaml -f compose.yaml"))
 EXEC_CMD = COMPOSE + [
     "exec", "-T", "secrets-proxy",

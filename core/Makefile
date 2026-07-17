@@ -211,6 +211,8 @@ check-dockerfile-deps: ## Dockerfile 外部 image の digest 固定 / COPY --fro
 # 手動運転で export した変数が残った shell でも偽赤/偽緑にしない)。project 名導出 (bin/compose-project-name
 # = redact-flow が使う実経路) は、実 project 層で PyYAML parse と一致すること (literal parse の形式
 # drift 検知) + unquoted/コメント付き fixture を読めること + name: 無し fixture を弾くことを pin。
+# PyYAML 側は BaseLoader (全 scalar を str) で読む — safe_load は YAML 1.1 解決で unquoted の
+# no/010 等を bool/int にし、compose (yaml.v3 ≒ str) と食い違って偽赤になる (Norway problem)。
 # dnsmasq.conf は placeholder を埋めて --test (dnsmasq は CI/devcontainer に在る)。settings.json は
 # JSON として読めることを確認。compose config は CI/devcontainer とも docker/podman compose が必須。
 check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出を検証 (docker/podman compose 必須)
@@ -229,7 +231,7 @@ check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出�
 		&& { echo "negative: redact compose が REDACT_PROJECT 欠落を素通し" >&2; exit 1; } || true; \
 	derived=$$(bash bin/compose-project-name ../project/compose.yaml) \
 		|| { echo "project 名を導出できない (redact-flow が壊れる)" >&2; exit 1; }; \
-	expected=$$($(PY) -c 'import yaml; print(yaml.safe_load(open("../project/compose.yaml"))["name"])') \
+	expected=$$($(PY) -c 'import yaml; print(yaml.load(open("../project/compose.yaml"), Loader=yaml.BaseLoader)["name"])') \
 		|| { echo "PyYAML で ../project/compose.yaml の name: を読めない" >&2; exit 1; }; \
 	[ "$$derived" = "$$expected" ] \
 		|| { echo "compose-project-name の導出 '$$derived' が PyYAML parse '$$expected' と不一致 (literal parse の形式 drift)" >&2; exit 1; }; \
@@ -289,7 +291,7 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 	GH_CONFIG_DIR="$$tmp" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 	after=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
 	rm -rf "$$tmp"; \
-	[ "$$before" = "$$after" ] || { echo "gh-seed: installed gh が seed を migration で書換える (ro hosts.yml だと gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
+	[ "$$before" = "$$after" ] || { echo "gh-seed: installed gh が seed を migration で書換える (root 所有 seed だと dev の gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
 	tmp3=$$(mktemp -d); sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
 	before=$$(cat "$$tmp3/config.yml" "$$tmp3/hosts.yml" | md5sum); \
 	GH_CONFIG_DIR="$$tmp3" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
