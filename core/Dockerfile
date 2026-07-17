@@ -239,8 +239,13 @@ COPY core/install-proxy-ca.sh /usr/local/bin/
 # env_keep: init-firewall.sh の gh seed 整合検査は現在の PROJECT_GH_USER (compose environment) を
 # 見る必要があるが、sudo の env_reset が剥がし、cap_drop:ALL の root は /proc/1/environ も読めない
 # (node 所有 0400 + CAP_DAC_OVERRIDE/CAP_SYS_PTRACE 無し — docs/verified-facts/capabilities.md)。
+# per-command Defaults の文法と env_keep の semantics は docs/verified-facts/sudo.md。
 # visudo -c で構文を build 時に検証する — sudoers の構文エラーは sudo 全体を無効化し、
 # postStartCommand ごと devcontainer 起動を壊すため fail-closed に build で止める。
+# 続く probe は「per-command env_keep が env_reset を実際に貫通する」semantics 自体を毎 build で
+# 実測する (本命 entry は init-firewall.sh 束縛で build 中に実行できないため、probe 用 sudoers を
+# 一時的に置いて /usr/bin/env で検証し、消す)。3 点 (sudoers/compose/reader) の名前一致は
+# bin/redact_invariants_check.sh §11 が pin する。
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/install-proxy-ca.sh && \
   printf '%s\n%s\n%s\n' \
     'Defaults!/usr/local/bin/init-firewall.sh env_keep += "PROJECT_GH_USER"' \
@@ -248,7 +253,15 @@ RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/install-proxy-ca.sh 
     "node ALL=(root) NOPASSWD: /usr/local/bin/install-proxy-ca.sh" \
     > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall && \
-  visudo -c -f /etc/sudoers.d/node-firewall
+  visudo -c -f /etc/sudoers.d/node-firewall && \
+  printf '%s\n%s\n' \
+    'Defaults!/usr/bin/env env_keep += "KIT_ENVKEEP_PROBE"' \
+    "node ALL=(root) NOPASSWD: /usr/bin/env" \
+    > /etc/sudoers.d/kit-envkeep-probe && \
+  chmod 0440 /etc/sudoers.d/kit-envkeep-probe && \
+  [ "$(runuser -u node -- env KIT_ENVKEEP_PROBE=ok sudo -n /usr/bin/env | grep -c '^KIT_ENVKEEP_PROBE=ok$')" = 1 ] \
+    || { echo "sudoers の per-command env_keep が機能しない (init-firewall.sh への PROJECT_GH_USER 伝搬が壊れる)" >&2; exit 1; } && \
+  rm /etc/sudoers.d/kit-envkeep-probe
 
 # project 層の直結許可ドメイン (init-firewall.sh が読む)。project/allow-domains.txt が編集点。
 COPY project/allow-domains.txt /etc/agent-devcontainer/allow-domains.txt

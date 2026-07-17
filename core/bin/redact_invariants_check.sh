@@ -35,6 +35,9 @@
 #      根拠: 複数 -f の「後勝ちで core 優先」が効くのは core が明示宣言したスカラー限定で、list merge
 #      (cap_add/networks/volumes) や core 未宣言キーは project 値が通る (docs/verified-facts/docker.md
 #      「compose 複数 -f」)。ゆえに後勝ちの一般則に頼らず「マージ結果そのもの」を検査する。
+#  11. 複数ファイルに同じ literal が現れて初めて機能する配線 (PROJECT_GH_USER の sudoers env_keep /
+#      compose environment / init-firewall reader の 3 点、redact auth volume 名の redact-flow /
+#      redact/compose.yaml の 2 点) の一致。片側だけの改名は CI 緑のまま実行時に fail する (§9 と同類)。
 #
 # 方針: #1〜#9 は git と grep だけで動く。#10 だけは compose config が要る (docker/podman compose +
 # PyYAML)。CI/devcontainer には両方あるので常時走らせ、無い環境では #10 が自然エラーになる (skip しない
@@ -237,10 +240,11 @@ POSTURE=core/bin/check_compose_posture.py
 PY=.venv/bin/python
 # 期待する project 名は project/compose.yaml 自身の name: から読む (kit 化により @@PROJECT_NAME@@ 置換後の
 # 値は consumer ごとに違うのでリテラル固定できない。ここで読んだ値と、マージ済み compose config が
-# 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。BaseLoader で読む —
-# safe_load は unquoted の no/010 等を bool/int にし compose (yaml.v3 ≒ str) と食い違う (Norway problem)。
-EXPECTED_NAME=$("$PY" -c 'import sys, yaml; print(yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)["name"])' "$P/compose.yaml") \
-    || fail "§10: project/compose.yaml から name: を読めない"
+# 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。導出は redact-flow が使う
+# 実経路 (bin/compose-project-name) を通す — 独立 parser (PyYAML) との parity は check-redact-config
+# が別途 pin しており、ここで別実装を重複させない。
+EXPECTED_NAME=$(bash "$DC/bin/compose-project-name" "$P/compose.yaml") \
+    || fail "§10: project/compose.yaml から project 名を導出できない"
 merged=$(mktemp); mergederr=$(mktemp)
 # stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
 # PROJECT_GH_USER 不足の interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
@@ -255,4 +259,27 @@ rm -f "$mergederr"
     || { rm -f "$merged"; fail "§10: negative probe が違反注入を検出できない (上の NG 行を参照)"; }
 rm -f "$merged"
 
-echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10)"
+# --- 11. 複数ファイル literal 結合の配線 pin (§9 と同じ fail-silent 防止クラス) -----
+# (a) PROJECT_GH_USER は sudoers env_keep (Dockerfile) / compose environment / init-firewall.sh の
+#     reader の 3 点が同名で揃って初めて postStart の整合検査が機能する。1 点だけ改名すると CI 緑の
+#     まま全 consumer の起動が「PROJECT_GH_USER が sudo 環境に無い」で止まる。sudoers の束縛先パスが
+#     COPY 先と一致することも pin する (Defaults! はパス完全一致)。
+grep -qF 'env_keep += "PROJECT_GH_USER"' "$DC/Dockerfile" \
+    || fail "§11: core/Dockerfile の sudoers に PROJECT_GH_USER の env_keep が無い"
+grep -qF 'Defaults!/usr/local/bin/init-firewall.sh' "$DC/Dockerfile" \
+    || fail "§11: sudoers の Defaults! が init-firewall.sh の COPY 先パスを指していない"
+grep -q 'COPY core/init-firewall.sh /usr/local/bin/' "$DC/Dockerfile" \
+    || fail "§11: core/Dockerfile が init-firewall.sh を /usr/local/bin へ COPY していない"
+grep -qE '^ +PROJECT_GH_USER:' "$DC/compose.yaml" \
+    || fail "§11: core/compose.yaml の environment/build.args に PROJECT_GH_USER が無い"
+grep -q 'PROJECT_GH_USER' "$DC/init-firewall.sh" \
+    || fail "§11: init-firewall.sh が PROJECT_GH_USER を読んでいない"
+# (b) redact の共有 auth volume は external (compose は作らない) — redact-flow が事前作成する名前と
+#     compose.yaml の name: が食い違うと、事前作成が空振りして run 時に external volume not found。
+vol_flow=$(sed -n 's/.*docker volume create \([A-Za-z0-9-]*\).*/\1/p' "$DC/bin/redact-flow" | head -1)
+vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9-]*\)$/\1/p' "$DC/redact/compose.yaml" | head -1)
+[ -n "$vol_flow" ] || fail "§11: redact-flow に auth volume の事前作成が無い"
+[ "$vol_flow" = "$vol_compose" ] \
+    || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"
+
+echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10 / literal 配線 §11)"

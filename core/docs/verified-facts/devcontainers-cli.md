@@ -35,11 +35,11 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
      // ... toProjectName(cliHost.path.basename(workingDir), ...)
      ```
      出典コメントは docker の `compose/config/config.py` の同ロジックを参照している。 `[docs(source)]`
-- 含意: このリポジトリは `project/compose.yaml` の `name: tools` (上記 3) を明示宣言しているので
-  project 名は `tools` に固定される。もし `name:` を消すと fallback (上記 5) が働き、最初の `-f` =
-  `project/compose.yaml` のディレクトリ basename = `project` が project 名になり、全 named volume が
-  `project_<vol>` の別 namespace に化けて既存データから切り離される (この不変条件は
-  `bin/redact_invariants_check.sh` §10 が pin)。
+- 含意: この kit は `project/compose.yaml` の `name:` (installer が consumer ごとの値へ置換) を
+  明示宣言するので project 名はその値 (上記 3) に固定される。もし `name:` を消すと fallback
+  (上記 5) が働き、最初の `-f` = `project/compose.yaml` のディレクトリ basename = `project` が
+  project 名になり、全 named volume が `project_<vol>` の別 namespace に化けて既存データから
+  切り離される (この不変条件は `bin/redact_invariants_check.sh` §10 が pin)。
 
 ## `overrideCommand: true` は compose 宣言の entrypoint/command を捨てる
 

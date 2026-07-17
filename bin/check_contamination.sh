@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# core/ と templates/ への consumer 固有値の再混入検査 (kit issue #10 の再発防止)。
+#   usage: bin/check_contamination.sh <dir>...   (root Makefile の check-contamination が呼ぶ)
+#
+# 禁止 token は `ikeyan` (kit 自身の canonical 参照だけ allowlist) と旧 project 名の残滓
+# `tools-redact` / `tools_`。`ikeyan.github.io` / `ikeyan/tools` は `ikeyan` 規則が包含する。
+# allowlist は行単位でなく token 単位 (sed で無害化してから再 grep) — 同一行に allowlist 対象と
+# 違反が同居しても違反が残って検出される。
+#   - repo slug は左右とも境界を固定する: 右は直後の `/` まで含め (接頭辞拡張
+#     ikeyan/agent-devcontainer-x = 別 repo は `ikeyan` が残って検出)、左は直前が slug 文字
+#     [A-Za-z0-9-] でないこと (user 名拡張 myikeyan/... も検出)。裸 slug (末尾 `/` 無し) も
+#     allowlist 外 = 検出される。scan の入力は常に grep -rn の "path:行:内容" 形なので、
+#     内容先頭の token にも必ず直前文字 (`:`) がある。
+#   - `tools-redact`/`tools_` は直前が英数の場合のみ無害化: 別語の部分一致 (例: wheel 正規化名の
+#     setuptools_scm) を誤検出しない。残滓の実形 (tools_proxy-bw 等) は行頭/記号の後に現れ検出が残る。
+# core/docs/verified-facts/ は実測記録の歴史的台帳なので対象外。
+# fail-closed: 走査エラー (grep exit>1 = 読めないファイル等 / find 非 0 / sanitize sed の失敗) を
+# 「クリーン」へ反転させず PIPESTATUS で明示 fail し (-a で binary も本文走査)、
+# ファイル/ディレクトリ名への混入も同じ流儀 (probe 付き) で走査する。
+# negative probe: FORBIDDEN_RE の各 token (regex の | 区切りから導出 — token 追加に fixture が
+# 自動追従。token は literal 前提) + allowlist 同居行 + slug の左右接頭辞拡張 + ファイル名 fixture
+# を検出でき、かつ純 allowlist/別語 fixture を誤検出しないことを確認してから本走査する。
+# probe は fixture ディレクトリへ cd して相対パスで走査する — mktemp の絶対パス (TMPDIR) に
+# 禁止 token が含まれる環境でもパス由来の誤検出をしない。
+set -uo pipefail # -e は使わない: grep の exit 1 (= no match) を制御フローに使う
+
+FORBIDDEN_RE='ikeyan|tools-redact|tools_'
+
+sanitize() {
+    sed -e 's#\([^A-Za-z0-9-]\)ikeyan/agent-devcontainer/#\1ALLOWED/#g' \
+        -e 's#\([^A-Za-z0-9-]\)ikeyan/agent-files/#\1ALLOWED/#g' \
+        -e 's#\([A-Za-z0-9]\)tools-redact#\1ALLOWED#g' \
+        -e 's#\([A-Za-z0-9]\)tools_#\1ALLOWED_#g'
+}
+
+# 本文走査。exit: 0 = 残余あり (stdout に hits) / 1 = クリーン / 2 = 走査エラー
+scan() {
+    local raw st ps
+    raw=$(grep -rnaE "$FORBIDDEN_RE" --exclude-dir=verified-facts "$@")
+    st=$?
+    [ $st -le 1 ] || return 2
+    printf '%s\n' "$raw" | sanitize | grep -E "$FORBIDDEN_RE"
+    ps=("${PIPESTATUS[@]}")
+    [ "${ps[1]}" -eq 0 ] || return 2
+    return "${ps[2]}"
+}
+
+# ファイル/ディレクトリ名走査。exit 規約は scan と同じ (allowlist は名前には適用しない)。
+name_scan() {
+    local all ps
+    all=$(find "$@" -path '*/verified-facts' -prune -o -print) || return 2
+    printf '%s\n' "$all" | grep -E "$FORBIDDEN_RE"
+    ps=("${PIPESTATUS[@]}")
+    return "${ps[1]}"
+}
+
+[ $# -ge 1 ] || { echo "usage: check_contamination.sh <dir>..." >&2; exit 2; }
+for d in "$@"; do
+    [ -d "$d" ] || { echo "走査対象が無い: $d" >&2; exit 1; }
+done
+
+IFS='|' read -ra TOKS <<< "$FORBIDDEN_RE"
+
+# --- negative probe: 検出すべき fixture を実際に弾くか --------------------------------
+probe=$(mktemp -d)
+{
+    for tok in "${TOKS[@]}"; do echo "plain $tok"; done
+    echo "coexist github.com/ikeyan/agent-devcontainer/blob と ikeyan.github.io の同居"
+    echo "prefix1 ikeyan/agent-devcontainer-x"
+    echo "prefix2 ikeyan/agent-files-x"
+    echo "prefix3 myikeyan/agent-devcontainer/x"
+} > "$probe/f"
+hits=$(cd "$probe" && scan .)
+st=$?
+[ $st -eq 0 ] || { echo "negative: 検出 probe が走査エラー/空振り (st=$st)" >&2; rm -rf "$probe"; exit 1; }
+for tok in "${TOKS[@]}" ikeyan.github.io agent-devcontainer-x agent-files-x myikeyan; do
+    echo "$hits" | grep -qF "$tok" \
+        || { echo "negative: 混入検出器が fixture の $tok を素通し" >&2; rm -rf "$probe"; exit 1; }
+done
+rm -rf "$probe"
+
+# --- negative probe: 純 allowlist/別語 fixture を誤検出しないか ------------------------
+clean=$(mktemp -d)
+printf '%s\n%s\n' \
+    'https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/install.sh' \
+    'setuptools_scm-8.whl と mytools-redact-probe' > "$clean/f"
+(cd "$clean" && scan . >/dev/null)
+st=$?
+rm -rf "$clean"
+[ $st -eq 1 ] || { echo "negative: 純 allowlist/別語 fixture を誤検出か走査エラー (st=$st)" >&2; exit 1; }
+
+# --- negative probe: ファイル名検出器 ---------------------------------------------------
+nprobe=$(mktemp -d)
+mkdir "$nprobe/ikeyan-dir"
+: > "$nprobe/tools_probe"
+nhits=$(cd "$nprobe" && name_scan .)
+st=$?
+[ $st -eq 0 ] || { echo "negative: ファイル名 probe が走査エラー/空振り (st=$st)" >&2; rm -rf "$nprobe"; exit 1; }
+{ echo "$nhits" | grep -q 'ikeyan-dir' && echo "$nhits" | grep -q 'tools_probe'; } \
+    || { echo "negative: ファイル名検出器が fixture を素通し" >&2; rm -rf "$nprobe"; exit 1; }
+rm -rf "$nprobe"
+
+# --- 本走査 -----------------------------------------------------------------------------
+hits=$(scan "$@")
+st=$?
+[ $st -ne 2 ] || { echo "混入走査が走査エラーで不完全 (読めないファイル/sed 失敗?)" >&2; exit 1; }
+[ $st -eq 1 ] || {
+    echo "consumer 固有値が core/templates に混入 (project 層へ移すか allowlist を見直す):" >&2
+    echo "$hits" >&2
+    exit 1
+}
+names=$(name_scan "$@")
+st=$?
+[ $st -ne 2 ] || { echo "ファイル名走査が走査エラーで不完全" >&2; exit 1; }
+[ $st -eq 1 ] || { echo "consumer 固有値がファイル/ディレクトリ名に混入:" >&2; echo "$names" >&2; exit 1; }
+echo "ok  contamination ($* に consumer 固有値なし)"

@@ -5,6 +5,9 @@
 x-no-proxy: &no_proxy "localhost,127.0.0.1,::1,host.docker.internal,registry.npmjs.org,api.anthropic.com,docs.claude.com,code.claude.com,platform.claude.com,console.anthropic.com,claude.ai,sentry.io,statsig.com,jsr.io,api.jsr.io,npm.jsr.io,api.socket.dev,firewall-api.socket.dev,objects.githubusercontent.com,release-assets.githubusercontent.com,marketplace.visualstudio.com,vscode.blob.core.windows.net,update.code.visualstudio.com,pypi.org,files.pythonhosted.org,codeload.github.com,${PROJECT_NO_PROXY:-}"
 x-proxy: &proxy "http://secrets-proxy:8080"
 x-ca-bundle: &ca_bundle "/etc/ssl/certs/ca-certificates.crt"
+# gh seed 用 GitHub user 名 (project/.env 所有)。build.args (焼込) と environment (init-firewall.sh の
+# rebuild 漏れ整合検査 — 起動ごとに現在値) の両方が同じ値と同じ fail-closed 文言を使うので anchor で共有。
+x-gh-user: &gh_user ${PROJECT_GH_USER:?project/.env に PROJECT_GH_USER (GitHub user 名) を設定し、dev イメージを rebuild}
 
 # 相対ホストパスの基準ディレクトリ (重要 — 善意の誤修正ガード):
 #   devcontainer.json は dockerComposeFile を ["project/compose.yaml", "core/compose.yaml"] の順で
@@ -24,11 +27,10 @@ services:
       dockerfile: Dockerfile
       target: dev
       args:
-        # gh seed (core/gh/hosts.yml) の @@GITHUB_USER@@ を build 時に焼き込む GitHub user 名。
-        # 値は project/.env の PROJECT_GH_USER (project 層所有。build.args も最初の -f の dir の
-        # .env から補間される: docs/verified-facts/docker.md「compose 複数 -f」)。未設定・空は
-        # ここで fail-closed に落ちる。
-        PROJECT_GH_USER: ${PROJECT_GH_USER:?project/.env に PROJECT_GH_USER (GitHub user 名) を設定し、dev イメージを rebuild}
+        # gh seed (core/gh/hosts.yml) の @@GITHUB_USER@@ を build 時に焼き込む (build.args は
+        # 最初の -f の dir の .env から補間される: docs/verified-facts/docker.md「compose 複数 -f」)。
+        # 未設定・空は x-gh-user の :? で fail-closed に落ちる。
+        PROJECT_GH_USER: *gh_user
     cap_drop:
       - ALL
     cap_add:
@@ -57,7 +59,7 @@ services:
       # gh seed 整合検査用 (init-firewall.sh が焼込値と照合)。environment はコンテナ起動時に
       # 常に現在値になる (build arg と違い recreate に追従する) ので、「.env を変えたのに
       # rebuild していない」drift の検出源として使える。秘密ではない (GitHub user 名)。
-      PROJECT_GH_USER: ${PROJECT_GH_USER:?project/.env に PROJECT_GH_USER (GitHub user 名) を設定し、dev イメージを rebuild}
+      PROJECT_GH_USER: *gh_user
       # Web/API は secrets-proxy 経由、インフラ系は NO_PROXY で直結。
       HTTP_PROXY: *proxy
       HTTPS_PROXY: *proxy

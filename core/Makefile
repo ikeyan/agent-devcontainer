@@ -239,10 +239,18 @@ check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出�
 	[ "$$(bash bin/compose-project-name "$$fx")" = plainprobe ] \
 		|| { echo "compose-project-name が unquoted/コメント付き name: を読めない" >&2; rm -f "$$fx"; exit 1; }; \
 	rm -f "$$fx"; \
+	bom=$$(mktemp); printf '\357\273\277name: bomprobe\nservices: {dev: {}}\n' > "$$bom"; \
+	[ "$$(bash bin/compose-project-name "$$bom")" = bomprobe ] \
+		|| { echo "compose-project-name が UTF-8 BOM 付きファイルの name: を読めない" >&2; rm -f "$$bom"; exit 1; }; \
+	rm -f "$$bom"; \
 	noname=$$(mktemp); printf 'services:\n  dev: {image: busybox}\n' > "$$noname"; \
 	bash bin/compose-project-name "$$noname" >/dev/null 2>&1 \
 		&& { echo "negative: compose-project-name が name: 無し (directory fallback) を素通し" >&2; rm -f "$$noname"; exit 1; }; \
 	rm -f "$$noname"; \
+	glued=$$(mktemp); printf 'name: glued#tag\n' > "$$glued"; \
+	bash bin/compose-project-name "$$glued" >/dev/null 2>&1 \
+		&& { echo "negative: compose-project-name が値密着の # (YAML ではコメントでない) を黙って切り落とした" >&2; rm -f "$$glued"; exit 1; }; \
+	rm -f "$$glued"; \
 	t=$$(mktemp); sed 's/__UPSTREAM_DNS__/127.0.0.11/g' redact/dnsmasq.conf > "$$t"; \
 	dnsmasq --test --conf-file="$$t" >/dev/null 2>&1 \
 		|| { echo "redact/dnsmasq.conf が不正" >&2; rm -f "$$t"; exit 1; }; \
@@ -286,18 +294,19 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 		|| { echo "gh/hosts.yml の @@GITHUB_USER@@ が 2 箇所 (users: キー / user: 値) に無い (gh-seed 再生成で template token が崩れた? Dockerfile の焼込が空回りする)" >&2; exit 1; }; \
 	[ "$$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$$' gh/hosts.yml)" -eq 2 ] \
 		|| { echo "gh/hosts.yml の oauth_token が Dockerfile の期待形式 (double-quote 値 x2) と不一致 (gh-seed 再生成が quote/構造を変えた? 手で復元して commit)" >&2; exit 1; }; \
+	[ "$$(grep -c '^ *user: "@@GITHUB_USER@@"$$' gh/hosts.yml)" -eq 1 ] \
+		|| { echo "gh/hosts.yml の user: 行が double-quote 形でない (init-firewall.sh の整合検査 parser と対 — 形式を復元して commit)" >&2; exit 1; }; \
+	seed_noop() { local d=$$1 before after; \
+		before=$$(cat "$$d/config.yml" "$$d/hosts.yml" | md5sum); \
+		GH_CONFIG_DIR="$$d" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
+		after=$$(cat "$$d/config.yml" "$$d/hosts.yml" | md5sum); \
+		[ "$$before" = "$$after" ]; }; \
 	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
-	before=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
-	GH_CONFIG_DIR="$$tmp" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
-	after=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
-	rm -rf "$$tmp"; \
-	[ "$$before" = "$$after" ] || { echo "gh-seed: installed gh が seed を migration で書換える (root 所有 seed だと dev の gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
+	seed_noop "$$tmp"; st=$$?; rm -rf "$$tmp"; \
+	[ $$st -eq 0 ] || { echo "gh-seed: installed gh が seed を migration で書換える (root 所有 seed だと dev の gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
 	tmp3=$$(mktemp -d); sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
-	before=$$(cat "$$tmp3/config.yml" "$$tmp3/hosts.yml" | md5sum); \
-	GH_CONFIG_DIR="$$tmp3" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
-	after=$$(cat "$$tmp3/config.yml" "$$tmp3/hosts.yml" | md5sum); \
-	rm -rf "$$tmp3"; \
-	[ "$$before" = "$$after" ] || { echo "gh-seed: 置換後 (実 user 名) の hosts.yml を installed gh が書換える — root 所有 seed だと dev の gh が起動時に落ちる。migration 内容を確認して seed 形式を追従" >&2; exit 1; }; \
+	seed_noop "$$tmp3"; st=$$?; rm -rf "$$tmp3"; \
+	[ $$st -eq 0 ] || { echo "gh-seed: 置換後 (実 user 名) の hosts.yml を installed gh が書換える — root 所有 seed だと dev の gh が起動時に落ちる。migration 内容を確認して seed 形式を追従" >&2; exit 1; }; \
 	tmp2=$$(mktemp -d); cp gh/hosts.yml "$$tmp2/hosts.yml"; \
 	GH_CONFIG_DIR="$$tmp2" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \

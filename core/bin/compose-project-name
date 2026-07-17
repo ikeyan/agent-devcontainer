@@ -18,9 +18,10 @@ set -euo pipefail
 [ -r "$1" ] || { echo "project 層 compose が無い/読めない: $1 (consumer は installer が scaffold、kit repo は make setup)" >&2; exit 1; }
 # 最初の name: 行を awk で読む (first-match で exit — head へ pipe しない = SIGPIPE で診断なしに
 # 死なない。sed のブロック構文 {…;q} は BSD/macOS sed が受け付けないため awk: redact-flow 経由で
-# macOS ホストでも走る)。
-name="$(awk '/^name:/{sub(/^name:[ \t]*/, ""); print; exit}' "$1")"
-name="${name%%#*}"                      # 行内コメント除去
+# macOS ホストでも走る)。1 行目の UTF-8 BOM は除去する (Windows 系エディタが付け、YAML parser は
+# 許容するため name: は valid なまま先頭一致だけが外れる。\357\273\277 は octal — awk 移植形)。
+name="$(LC_ALL=C awk 'NR==1{sub(/^\357\273\277/, "")} /^name:/{sub(/^name:[ \t]*/, ""); print; exit}' "$1")"
+name="${name%%[[:space:]]#*}"           # 行内コメント除去 (YAML では空白+# のみコメント。demo#v2 の # は値の一部 → 下の charset 検査で fail-closed)
 name="${name//[\"\']/}"                 # quote 除去
 name="${name%"${name##*[![:space:]]}"}" # 末尾空白 trim
 [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
