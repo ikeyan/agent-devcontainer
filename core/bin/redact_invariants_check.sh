@@ -305,7 +305,7 @@ grep -qF 'gh-hosts-user.awk' "$DC/init-firewall.sh" \
 vol_flow=$(sed -n 's/^AUTH_VOL=\([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow"); vol_flow=${vol_flow%%$'\n'*}
 # volume の name: は字下げされている (volumes: 配下) — 先頭空白必須で top-level name: (0 字下げ、
 # ${...} 補間) と区別する。top-level を literal に戻す将来変更でも volume 名だけを拾う。
-vol_compose=$(sed -n 's/^  *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.yaml"); vol_compose=${vol_compose%%$'\n'*}
+vol_compose=$(sed -n 's/^  *name: \([A-Za-z0-9_-]*\).*/\1/p' "$DC/redact/compose.yaml"); vol_compose=${vol_compose%%$'\n'*}
 [ -n "$vol_flow" ] || fail "§11: redact-flow に AUTH_VOL (auth volume 名) の定義が無い"
 [ "$vol_flow" = "$vol_compose" ] \
     || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"
