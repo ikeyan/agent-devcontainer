@@ -19,9 +19,12 @@ set -euo pipefail
 # 最初の name: 行を awk で読む (first-match で exit — head へ pipe しない = SIGPIPE で診断なしに
 # 死なない。sed のブロック構文 {…;q} は BSD/macOS sed が受け付けないため awk: redact-flow 経由で
 # macOS ホストでも走る)。1 行目の UTF-8 BOM は除去する (Windows 系エディタが付け、YAML parser は
-# 許容するため name: は valid なまま先頭一致だけが外れる。\357\273\277 は octal — awk 移植形)。
+# 許容するため name: は valid なまま先頭一致だけが外れる)。移植性: regex 内の `\t`・`\ddd` 八進は
+# POSIX ERE で非保証 (BSD awk で挙動が変わる) ため使わない — 空白は `[[:space:]]` (POSIX 保証)、
+# BOM は printf で得たバイト列を変数→動的 regex にして escape 解釈を回避する。
 # `name:` 直後は空白必須 (YAML の block mapping — `name:demo` は mapping でなく plain scalar)。
-line="$(LC_ALL=C awk 'NR==1{sub(/^\357\273\277/, "")} /^name:[ \t]/{sub(/^name:[ \t]+/, ""); print; exit}' "$1")"
+bom="$(printf '\357\273\277')"
+line="$(LC_ALL=C awk -v bom="$bom" 'NR==1{sub("^" bom, "")} /^name:[[:space:]]/{sub(/^name:[[:space:]]+/, ""); print; exit}' "$1")"
 line="${line%"${line##*[![:space:]]}"}" # 末尾空白 trim
 # 受理する形を正規表現で明示する (strip の合成でなく grammar で判定 — 例えば name: "demo # x" の
 # ような「引用内に # を含む値」を黙って切り詰めず fail-closed に落とすため)。値の後は

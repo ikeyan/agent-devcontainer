@@ -300,6 +300,10 @@ vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.y
 # 1 つでも抜けると稼働中 stack と別 namespace/別 .env を操作する (この PR で隔離対象が 1→2 変数に
 # 増えた際、全入口を手で直す必要があった)。新しい ambient 変数はこの iso_vars に足す = 全入口の
 # 欠落が loud に出る (異なる runtime = make/bash/python に跨るため DRY でなく pin で束ねる)。
+# iso_sites は明示列挙: compose 呼び出しは make の $(COMPOSE) / redact-flow の quote 付き引数 /
+# checker の config parse 等で形が揃わず、自動 discovery は取りこぼしと誤検出を両方生む (実測)。
+# よって新しく compose を呼ぶ入口を足すときは env -u で隔離した上でここに登録する — この登録が唯一の
+# 発見面なので、iso_sites への追加漏れは code review で捕まえる (検査は登録済み入口の変数欠落を守る)。
 iso_vars=(COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES)
 iso_sites=("$DC/Makefile" "$DC/bin/redact-flow" "$DC/bin/redact_invariants_check.sh" "$DC/proxy-web-tunnel.py")
 for v in "${iso_vars[@]}"; do

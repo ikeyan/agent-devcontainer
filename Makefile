@@ -97,6 +97,6 @@ setup: ## fresh clone を検査可能にする: consumer 相当の project 層 +
 		&& printf 'PROJECT_GH_USER=%s\n' "$$GH_USER" >> project/.env \
 		&& grep -q "^PROJECT_GH_USER=$$GH_USER$$" project/.env \
 		&& echo "setup: project/.env に PROJECT_GH_USER=$$GH_USER を設定"; }
-	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' devcontainer.json; }
+	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i "s/@@PROJECT_NAME@@/$$PROJECT_NAME/" devcontainer.json; }
 	@[ -e Dockerfile ] || bash core/bin/gen-dockerfile.sh > Dockerfile
 	@UV_PROJECT=$(CURDIR)/core UV_PROJECT_ENVIRONMENT=$(CURDIR)/.venv core/uv-sync.sh --frozen

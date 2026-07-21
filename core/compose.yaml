@@ -6,8 +6,11 @@ x-no-proxy: &no_proxy "localhost,127.0.0.1,::1,host.docker.internal,registry.npm
 x-proxy: &proxy "http://secrets-proxy:8080"
 x-ca-bundle: &ca_bundle "/etc/ssl/certs/ca-certificates.crt"
 # gh seed 用 GitHub user 名 (project/.env 所有)。build.args (焼込) と environment (init-firewall.sh の
-# rebuild 漏れ整合検査 — 起動ごとに現在値) の両方が同じ値と同じ fail-closed 文言を使うので anchor で共有。
-x-gh-user: &gh_user ${PROJECT_GH_USER:?project/.env に PROJECT_GH_USER (GitHub user 名) を設定し、dev イメージを rebuild}
+# rebuild 漏れ整合検査 — 起動ごとに現在値) が同じ値を使うので anchor で共有。:- (空既定) にするのは、
+# compose が service 選択前に全体を補間するため :? だと dev と無関係な compose 呼び出し (bootstrap /
+# proxy-web の secrets-proxy) まで gate してしまうから。未設定・不正の fail-closed は dev build の
+# Dockerfile assert ([[ =~ ^[A-Za-z0-9-]+$ ]]、空も弾く) が担う。
+x-gh-user: &gh_user ${PROJECT_GH_USER:-}
 
 # 相対ホストパスの基準ディレクトリ (重要 — 善意の誤修正ガード):
 #   devcontainer.json は dockerComposeFile を ["project/compose.yaml", "core/compose.yaml"] の順で
@@ -29,7 +32,7 @@ services:
       args:
         # gh seed (core/gh/hosts.yml) の @@GITHUB_USER@@ を build 時に焼き込む (build.args は
         # 最初の -f の dir の .env から補間される: docs/verified-facts/docker.md「compose 複数 -f」)。
-        # 未設定・空は x-gh-user の :? で fail-closed に落ちる。
+        # 未設定・空・不正は Dockerfile の ARG assert が fail-closed に落とす (:- なので compose では通す)。
         PROJECT_GH_USER: *gh_user
     cap_drop:
       - ALL

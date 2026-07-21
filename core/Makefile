@@ -81,7 +81,11 @@ check-compose: ## compose.yaml を compose config で検証 (docker/podman compo
 	bad=$$(mktemp); printf 'services: [unclosed\n' > "$$bad"; \
 	$(COMPOSE) -f "$$bad" config >/dev/null 2>&1 \
 		&& { echo "negative: compose config が不正 YAML を素通し" >&2; rm -f "$$bad"; exit 1; }; \
-	rm -f "$$bad"; echo "ok  compose ($(COMPOSE_ENGINE))"
+	rm -f "$$bad"; \
+	noghu=$$(mktemp); grep -v '^PROJECT_GH_USER=' ../project/.env > "$$noghu"; \
+	$(COMPOSE) --env-file "$$noghu" $(COMPOSE_FILES) config secrets-proxy >/dev/null 2>&1 \
+		|| { echo "dev-build 変数 PROJECT_GH_USER が非 dev サービス (secrets-proxy = bootstrap/proxy-web) まで gate している。compose は service 選択前に全体補間するので :? でなく :- + Dockerfile assert にする" >&2; rm -f "$$noghu"; exit 1; }; \
+	rm -f "$$noghu"; echo "ok  compose ($(COMPOSE_ENGINE))"
 
 # マージ済み compose config のホスト側パス (build.context / type:bind の source / security_opt の
 # seccomp ファイル) が実在するかを stat で pin する。相対ホストパスは project directory (= 最初の -f =
@@ -293,8 +297,11 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 	rm -rf "$$tmp2"; echo "ok  gh-seed (形式 pin + template/runtime 形とも migration no-op = ro 安全)"
 
 # 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認し、
-# make check (check-gh-seed が template 形式を pin) を通してから commit する (gh の round-trip は
-# コメント/quote を落とし得る — その場合 @@GITHUB_USER@@ 節と double-quote を手で復元する)。
+# make check (check-gh-seed が template 形式を pin) を通してから commit する。gh の round-trip は
+# コメント/quote を落とし得る (gh 2.46 は double→single quote に再シリアライズ) — その場合
+# @@GITHUB_USER@@ 節と double-quote を手で復元する。check-gh-seed の quote 形式 fail は意図した
+# checkpoint: セキュリティ seed に gh の migration 変更を無検査で取り込ませないための人手確認点で、
+# 自動正規化はその変更を隠すので置かない (gh upgrade 時のみの稀な手作業)。
 gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh upgrade 後に実行, ネット不要)
 	@command -v gh >/dev/null 2>&1 || { echo "gh が無い" >&2; exit 1; }; \
 	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
