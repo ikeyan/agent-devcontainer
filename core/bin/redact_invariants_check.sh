@@ -247,7 +247,7 @@ EXPECTED_NAME=$(bash "$DC/bin/compose-project-name" "$P/compose.yaml") \
     || fail "§10: project/compose.yaml から project 名を導出できない"
 merged=$(mktemp); mergederr=$(mktemp)
 # stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
-# PROJECT_GH_USER 不足の interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
+# (`${VAR:?}` 宣言のもの) の不足による interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
 # env -u: ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きし (docker.md「project 名の
 # 優先順位」) EXPECTED_NAME との突合が偽赤になる。COMPOSE_ENV_FILES は補間に使う .env を余所へ
 # 差し替える (同「補間に使う .env の差替え」)。
@@ -285,12 +285,13 @@ grep -qF '/home/node/.config/gh/hosts.yml' "$DC/init-firewall.sh" \
     || fail "§11: init-firewall.sh が gh seed パス /home/node/.config/gh/hosts.yml を読んでいない"
 # (b) redact の共有 auth volume は external (compose は作らない) — redact-flow が事前作成する名前と
 #     compose.yaml の name: が食い違うと、事前作成が空振りして run 時に external volume not found。
+#     redact-flow 側は AUTH_VOL 変数に集約済み (inspect/create/案内が参照) なので代入値を突き合わせる。
 #     charset は compose の volume 名に合わせ '_' も含める (欠くと正しい underscore 改名が偽赤になる)。
 # head へ pipe しない: 2 件目以降のマッチで sed が SIGPIPE (pipefail で 141) → fail() を出さずに即死する。
 # sed は全行走査し (小さいファイル)、bash が最初の行だけ取り出す。
-vol_flow=$(sed -n 's/.*docker volume create \([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow"); vol_flow=${vol_flow%%$'\n'*}
+vol_flow=$(sed -n 's/^AUTH_VOL=\([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow"); vol_flow=${vol_flow%%$'\n'*}
 vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.yaml"); vol_compose=${vol_compose%%$'\n'*}
-[ -n "$vol_flow" ] || fail "§11: redact-flow に auth volume の事前作成が無い"
+[ -n "$vol_flow" ] || fail "§11: redact-flow に AUTH_VOL (auth volume 名) の定義が無い"
 [ "$vol_flow" = "$vol_compose" ] \
     || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"
 

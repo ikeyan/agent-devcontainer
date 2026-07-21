@@ -47,13 +47,17 @@ project_name="$("$SELF_DIR/compose-project-name" "$DEVC_DIR/project/compose.yaml
 REDACT_PROJECT="${project_name}-redact"
 export REDACT_PROJECT  # compose.yaml の name: ${REDACT_PROJECT:?} 補間用 (build/run 共通)
 
+# 事前認証共有 volume 名。inspect/create/案内で 1 箇所に集約する (literal を散らすと rename 時に
+# 取りこぼす — redact_invariants_check.sh §11 が redact/compose.yaml の name: と一致を pin)。
+AUTH_VOL=agent-devcontainer-redact-auth
+
 # 子 claude の認証。egress は Anthropic に固めてあるので、平文 API キー (api.anthropic.com を透過)
 # が一番素直。未設定だと子は agent-devcontainer-redact-auth volume の認証情報を使い、それも無ければ
 # platform.claude.com 経由のログインを促す (= 未認証だと「お住まいの国では…」風の不親切な失敗)。
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo "[redact-flow] 注意: ANTHROPIC_API_KEY 未設定。" >&2
     echo "[redact-flow]   推奨: export ANTHROPIC_API_KEY=sk-... して再実行 (api.anthropic.com を透過)。" >&2
-    echo "[redact-flow]   代替: agent-devcontainer-redact-auth volume を事前に認証しておく (claude login)。" >&2
+    echo "[redact-flow]   代替: $AUTH_VOL volume を事前に認証しておく (claude login)。" >&2
 fi
 
 OUT="$REPO/extract/$APP"
@@ -80,8 +84,8 @@ fi
 
 # 事前認証共有 volume (redact/compose.yaml で external 宣言 — 理由はそちらのコメント)。external は
 # compose が作らないため、ここで冪等に用意する (create は既存名で失敗するエンジンがあるので inspect || create)。
-docker volume inspect agent-devcontainer-redact-auth >/dev/null 2>&1 \
-    || docker volume create agent-devcontainer-redact-auth >/dev/null
+docker volume inspect "$AUTH_VOL" >/dev/null 2>&1 \
+    || docker volume create "$AUTH_VOL" >/dev/null
 
 # redact 派生イメージをビルドする。compose は .devcontainer/core/Dockerfile の redact ステージを
 # target にしている (共通祖先 base は BuildKit が依存として自動でビルドする)。
