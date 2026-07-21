@@ -230,6 +230,7 @@ RUN set -e; \
 # init-firewall.sh / install-proxy-ca.sh の再実行 (postStartCommand・CDN IP ローテーション対応) は
 # dev だけが要る。sudo ごと dev 専用にする。
 COPY core/init-firewall.sh /usr/local/bin/
+COPY core/gh-hosts-user.awk /usr/local/bin/
 COPY core/install-proxy-ca.sh /usr/local/bin/
 # env_keep: init-firewall.sh の gh seed 整合検査は現在の PROJECT_GH_USER (compose environment) を
 # 見る必要があるが、sudo の env_reset が剥がし、cap_drop:ALL の root は /proc/1/environ も読めない

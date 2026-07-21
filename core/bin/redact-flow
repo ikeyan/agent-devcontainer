@@ -87,21 +87,19 @@ fi
 docker volume inspect "$AUTH_VOL" >/dev/null 2>&1 \
     || docker volume create "$AUTH_VOL" >/dev/null
 
-# redact 派生イメージをビルドする。compose は .devcontainer/core/Dockerfile の redact ステージを
-# target にしている (共通祖先 base は BuildKit が依存として自動でビルドする)。
-# -p で project 名を固定し、ambient な COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES を env -u で無害化する
-# (どちらも file 宣言を黙って上書き/差替えする — docs/verified-facts/docker.md。他の compose 入口と同一の隔離)。
-env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES \
-    REDACT_APP="$APP" \
-    REDACT_REPO="$REPO" \
-    REDACT_RAW="$(realpath "$RAW")" \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-    docker compose -p "$REDACT_PROJECT" -f "$HERE/compose.yaml" build
+# build と run で同一の呼び出し契約 (隔離・project 固定・REDACT_* 注入) を使う。配列に集約して
+# 片方だけの drift を防ぐ (§12 は redact-flow の -u COMPOSE_* を 1 回しか grep しないので、二重定義だと
+# 片側の隔離漏れが素通りしうる)。-p で project 名を固定し、ambient な COMPOSE_PROJECT_NAME /
+# COMPOSE_ENV_FILES を env -u で無害化する (file 宣言を黙って上書き/差替えする — docs/verified-facts/docker.md)。
+redact_compose=(env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES
+    REDACT_APP="$APP"
+    REDACT_REPO="$REPO"
+    REDACT_RAW="$(realpath "$RAW")"
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+    docker compose -p "$REDACT_PROJECT" -f "$HERE/compose.yaml")
+
+# redact 派生イメージをビルドする (compose の target は redact ステージ。共通祖先 base は BuildKit が自動)。
+"${redact_compose[@]}" build
 
 echo "[redact-flow] launch sandbox (project=$REDACT_PROJECT, egress = Anthropic only: api.anthropic.com + platform.claude.com)…"
-exec env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES \
-    REDACT_APP="$APP" \
-    REDACT_REPO="$REPO" \
-    REDACT_RAW="$(realpath "$RAW")" \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-    docker compose -p "$REDACT_PROJECT" -f "$HERE/compose.yaml" run --rm redact
+exec "${redact_compose[@]}" run --rm redact

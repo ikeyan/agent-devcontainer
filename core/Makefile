@@ -294,7 +294,12 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 	tmp2=$$(mktemp -d); cp gh/hosts.yml "$$tmp2/hosts.yml"; \
 	GH_CONFIG_DIR="$$tmp2" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
-	rm -rf "$$tmp2"; echo "ok  gh-seed (形式 pin + template/runtime 形とも migration no-op = ro 安全)"
+	rm -rf "$$tmp2"; \
+	[ "$$(sed 's/@@GITHUB_USER@@/rtprobe/g' gh/hosts.yml | awk -f gh-hosts-user.awk)" = rtprobe ] \
+		|| { echo "gh-hosts-user.awk が committed hosts.yml (置換後) から user を抽出できない — init-firewall の整合検査が毎起動 誤 mismatch する" >&2; exit 1; }; \
+	[ "$$(printf "    user: 'sq-probe'\n" | awk -f gh-hosts-user.awk)" = sq-probe ] \
+		|| { echo "gh-hosts-user.awk が single-quote 形の user を抽出できない (init-firewall の quote 除去)" >&2; exit 1; }; \
+	echo "ok  gh-seed (形式 pin + template/runtime migration no-op + parser fixture)"
 
 # 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認し、
 # make check (check-gh-seed が template 形式を pin) を通してから commit する。gh の round-trip は

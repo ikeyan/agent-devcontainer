@@ -283,6 +283,19 @@ grep -qF '/home/node/.config/gh/hosts.yml' "$DC/Dockerfile" \
     || fail "§11: core/Dockerfile に gh seed パス /home/node/.config/gh/hosts.yml が無い"
 grep -qF '/home/node/.config/gh/hosts.yml' "$DC/init-firewall.sh" \
     || fail "§11: init-firewall.sh が gh seed パス /home/node/.config/gh/hosts.yml を読んでいない"
+# (a'') gh auth login の実トークン焼込を封じる唯一のバリアは gh dir/hosts.yml の root 所有 (旧 ro bind は
+#       撤去済み)。imperative な RUN 1 行なので、これが落ちても他の検査は緑のまま = silent 退行しうる。
+#       source を pin する (chown -R root:root で dir、hosts.yml は 644 で node 非所有のまま)。
+grep -qF 'chown -R root:root /home/node/.config/gh' "$DC/Dockerfile" \
+    || fail "§11: Dockerfile が gh dir を root 所有にしていない (gh auth login のトークン焼込バリアが失効)"
+grep -qF 'chmod 644 /home/node/.config/gh/hosts.yml' "$DC/Dockerfile" \
+    || fail "§11: Dockerfile が hosts.yml を 644 にしていない (node 書込可だとトークン焼込を封じられない)"
+# (a''') init-firewall.sh の user 抽出 parser は共有 awk (gh-hosts-user.awk) に切り出し、Dockerfile が
+#        image へ COPY する。実挙動は check-gh-seed の fixture が exercise する (parser↔seed 形式の結合)。
+grep -qF 'COPY core/gh-hosts-user.awk /usr/local/bin/' "$DC/Dockerfile" \
+    || fail "§11: Dockerfile が gh-hosts-user.awk を COPY していない"
+grep -qF 'gh-hosts-user.awk' "$DC/init-firewall.sh" \
+    || fail "§11: init-firewall.sh が gh-hosts-user.awk を参照していない"
 # (b) redact の共有 auth volume は external (compose は作らない) — redact-flow が事前作成する名前と
 #     compose.yaml の name: が食い違うと、事前作成が空振りして run 時に external volume not found。
 #     redact-flow 側は AUTH_VOL 変数に集約済み (inspect/create/案内が参照) なので代入値を突き合わせる。
@@ -290,7 +303,9 @@ grep -qF '/home/node/.config/gh/hosts.yml' "$DC/init-firewall.sh" \
 # head へ pipe しない: 2 件目以降のマッチで sed が SIGPIPE (pipefail で 141) → fail() を出さずに即死する。
 # sed は全行走査し (小さいファイル)、bash が最初の行だけ取り出す。
 vol_flow=$(sed -n 's/^AUTH_VOL=\([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow"); vol_flow=${vol_flow%%$'\n'*}
-vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.yaml"); vol_compose=${vol_compose%%$'\n'*}
+# volume の name: は字下げされている (volumes: 配下) — 先頭空白必須で top-level name: (0 字下げ、
+# ${...} 補間) と区別する。top-level を literal に戻す将来変更でも volume 名だけを拾う。
+vol_compose=$(sed -n 's/^  *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.yaml"); vol_compose=${vol_compose%%$'\n'*}
 [ -n "$vol_flow" ] || fail "§11: redact-flow に AUTH_VOL (auth volume 名) の定義が無い"
 [ "$vol_flow" = "$vol_compose" ] \
     || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"

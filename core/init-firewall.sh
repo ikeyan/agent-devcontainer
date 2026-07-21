@@ -224,7 +224,7 @@ fi
 # home を chown -R し root 所有が剥がれるため所有者は信号にならない (docs/verified-facts/
 # devcontainers-cli.md)。この検査より古いイメージには検査自体が入っていない — その窓の扱いは
 # README「更新に伴う既知の移行」。
-baked_gh_user=$(awk '/^[ \t]*user:/{gsub(/^[ \t]*user:[ \t]*/,""); gsub(/["'\'']/,""); print; exit}' /home/node/.config/gh/hosts.yml)
+baked_gh_user=$(awk -f /usr/local/bin/gh-hosts-user.awk /home/node/.config/gh/hosts.yml)
 current_gh_user="${PROJECT_GH_USER:-}"
 if [ -z "$current_gh_user" ]; then
     echo "ERROR: PROJECT_GH_USER が sudo 環境に無い (sudoers の env_keep と core/compose.yaml の environment が対で必要 — image と core の版ずれ?)"

@@ -94,7 +94,8 @@ stdout に表示する)。更新実行 (core が既にある) は glue を一切
   `PROJECT_BW_SERVER`, gh seed 用の `PROJECT_GH_USER`)。原則 dev コンテナのプロセス環境には渡らない —
   例外は `PROJECT_GH_USER` で、rebuild 漏れ検査 (init-firewall.sh) のため environment 経由でも渡る
   (GitHub user 名であり秘密ではない。秘密はそもそも .env に置かない設計)。
-  `PROJECT_GH_USER` (認証に使う GitHub user 名) は必須 — 未設定だと compose が fail-closed に落ちる。
+  `PROJECT_GH_USER` (認証に使う GitHub user 名) は必須 — 未設定・不正だと dev イメージ build 時に
+  Dockerfile の ARG assert が fail-closed に落とす (compose 補間は `:-` なので非 dev の compose 操作は通す)。
 
 ## 検証
 
@@ -124,8 +125,8 @@ installer は consumer 所有の `project/` を触らないため、core が新�
 設定すべき変数を指す)。現時点の移行点:
 
 - **`PROJECT_GH_USER`** (gh seed の GitHub user 名) を `project/.env` に設定する。build 時に image へ
-  焼き込むため、設定・変更の反映には dev イメージの rebuild が要る (未設定なら compose がエラー文言で
-  設定+rebuild を要求する)。設定「変更」後の rebuild 漏れは postStartCommand (init-firewall.sh) の
+  焼き込むため、設定・変更の反映には dev イメージの rebuild が要る (未設定なら dev イメージ build 時に
+  エラー文言で設定+rebuild を要求する)。設定「変更」後の rebuild 漏れは postStartCommand (init-firewall.sh) の
   整合検査が起動時に止める。**kit 更新直後に旧イメージのまま再作成した場合だけは検査が旧版のため
   検出されない** (VS Code は compose 宣言の entrypoint を使わないため、ホスト側から強制する手段が
   無い — devcontainers-cli.md)。更新後は必ず rebuild すること。
