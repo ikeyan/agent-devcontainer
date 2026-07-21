@@ -286,10 +286,27 @@ grep -qF '/home/node/.config/gh/hosts.yml' "$DC/init-firewall.sh" \
 # (b) redact の共有 auth volume は external (compose は作らない) — redact-flow が事前作成する名前と
 #     compose.yaml の name: が食い違うと、事前作成が空振りして run 時に external volume not found。
 #     charset は compose の volume 名に合わせ '_' も含める (欠くと正しい underscore 改名が偽赤になる)。
-vol_flow=$(sed -n 's/.*docker volume create \([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow" | head -1)
-vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.yaml" | head -1)
+# head へ pipe しない: 2 件目以降のマッチで sed が SIGPIPE (pipefail で 141) → fail() を出さずに即死する。
+# sed は全行走査し (小さいファイル)、bash が最初の行だけ取り出す。
+vol_flow=$(sed -n 's/.*docker volume create \([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow"); vol_flow=${vol_flow%%$'\n'*}
+vol_compose=$(sed -n 's/^ *name: \([A-Za-z0-9_-]*\)$/\1/p' "$DC/redact/compose.yaml"); vol_compose=${vol_compose%%$'\n'*}
 [ -n "$vol_flow" ] || fail "§11: redact-flow に auth volume の事前作成が無い"
 [ "$vol_flow" = "$vol_compose" ] \
     || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"
 
-echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10 / literal 配線 §11)"
+# --- 12. ambient compose 変数の隔離が全 compose 入口で揃っているか ---------------------
+# COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES は file 宣言を黙って上書き/差替えする (docker.md「project
+# 名の優先順位」「補間に使う .env の差替え」)。compose を呼ぶ入口はどれも両方を無害化する必要があり、
+# 1 つでも抜けると稼働中 stack と別 namespace/別 .env を操作する (この PR で隔離対象が 1→2 変数に
+# 増えた際、全入口を手で直す必要があった)。新しい ambient 変数はこの iso_vars に足す = 全入口の
+# 欠落が loud に出る (異なる runtime = make/bash/python に跨るため DRY でなく pin で束ねる)。
+iso_vars=(COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES)
+iso_sites=("$DC/Makefile" "$DC/bin/redact-flow" "$DC/bin/redact_invariants_check.sh" "$DC/proxy-web-tunnel.py")
+for v in "${iso_vars[@]}"; do
+    for s in "${iso_sites[@]}"; do
+        grep -Eq -- "-u $v|pop\(['\"]$v" "$s" \
+            || fail "§12: $s が ambient 変数 $v を無害化していない (env -u / os.environ.pop)"
+    done
+done
+
+echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10 / literal 配線 §11 / ambient 隔離 §12)"

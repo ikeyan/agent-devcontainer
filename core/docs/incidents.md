@@ -20,4 +20,5 @@
 
 ## 検査器自身の欠陥 (→ negative probe + fail-closed な status 処理)
 
-- 2026-07 (PR #23 レビュー): 混入検査の allowlist sed が接頭辞拡張を無害化して素通し / TMPDIR・checkout の絶対パス由来の偽赤 / `cd && scan` の失敗が「クリーン」に合流する fail-open。反映: `bin/check_contamination.sh` の probe 群と PIPESTATUS 処理 (一部は未修正 — レビュー第 7 ラウンド分)
+- 2026-07 (PR #23 レビュー): 混入検査の allowlist sed が接頭辞拡張を無害化して素通し / TMPDIR・checkout の絶対パス由来の偽赤 / `cd && scan` の失敗が「クリーン」(return 1) に合流する fail-open。反映: `bin/check_contamination.sh` の probe 群・PIPESTATUS 処理・cd 失敗を exit 2 で fail-closed 化。教訓: 検査器の制御フローで exit 1 (= grep no-match = クリーン) を多義に使うと別経路の失敗が誤って緑になる。
+- 2026-07 (PR #23 レビュー): 起動時検査の実装が実行時契約を記憶で書いて 3 実装連続で作り直し (compose entrypoint → /proc/1/environ 読取 → sudoers env_keep) は上記「契約の記憶断定」に既出。加えて `make setup` の charset gate が make のコマンドライン `$` 展開 (`$USER`→`SER`) を検証前に受ける件は、`export` でシェル injection は封じたが make 展開は inherent — 開発者自己入力なので echo 表示で足りると判断。

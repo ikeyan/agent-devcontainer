@@ -244,21 +244,24 @@ COPY core/install-proxy-ca.sh /usr/local/bin/
 # 実測する (本命 entry は init-firewall.sh 束縛で build 中に実行できないため、probe 用 sudoers を
 # 一時的に置いて /usr/bin/env で検証し、消す)。3 点 (sudoers/compose/reader) の名前一致は
 # bin/redact_invariants_check.sh §11 が pin する。
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/install-proxy-ca.sh && \
+# set -e + 各段専用ハンドラ — && 連鎖の末尾に || を混ぜると前段 (printf/chmod/visudo) の失敗が
+# 末尾の env_keep 診断へ流れ込む (左結合)。visudo 構文エラー等は各コマンドの自前 stderr で落とす。
+RUN set -e; \
+  chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/install-proxy-ca.sh; \
   printf '%s\n%s\n%s\n' \
     'Defaults!/usr/local/bin/init-firewall.sh env_keep += "PROJECT_GH_USER"' \
     "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" \
     "node ALL=(root) NOPASSWD: /usr/local/bin/install-proxy-ca.sh" \
-    > /etc/sudoers.d/node-firewall && \
-  chmod 0440 /etc/sudoers.d/node-firewall && \
-  visudo -c -f /etc/sudoers.d/node-firewall && \
+    > /etc/sudoers.d/node-firewall; \
+  chmod 0440 /etc/sudoers.d/node-firewall; \
+  visudo -c -f /etc/sudoers.d/node-firewall; \
   printf '%s\n%s\n' \
     'Defaults!/usr/bin/env env_keep += "KIT_ENVKEEP_PROBE"' \
     "node ALL=(root) NOPASSWD: /usr/bin/env" \
-    > /etc/sudoers.d/kit-envkeep-probe && \
-  chmod 0440 /etc/sudoers.d/kit-envkeep-probe && \
+    > /etc/sudoers.d/kit-envkeep-probe; \
+  chmod 0440 /etc/sudoers.d/kit-envkeep-probe; \
   [ "$(runuser -u node -- env KIT_ENVKEEP_PROBE=ok sudo -n /usr/bin/env | grep -c '^KIT_ENVKEEP_PROBE=ok$')" = 1 ] \
-    || { echo "sudoers の per-command env_keep が機能しない (init-firewall.sh への PROJECT_GH_USER 伝搬が壊れる)" >&2; exit 1; } && \
+    || { echo "sudoers の per-command env_keep が機能しない (init-firewall.sh への PROJECT_GH_USER 伝搬が壊れる)" >&2; exit 1; }; \
   rm /etc/sudoers.d/kit-envkeep-probe
 
 # project 層の直結許可ドメイン (init-firewall.sh が読む)。project/allow-domains.txt が編集点。

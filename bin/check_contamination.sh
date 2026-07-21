@@ -14,8 +14,8 @@
 #   - `tools-redact`/`tools_` は直前が英数の場合のみ無害化: 別語の部分一致 (例: wheel 正規化名の
 #     setuptools_scm) を誤検出しない。残滓の実形 (tools_proxy-bw 等) は行頭/記号の後に現れ検出が残る。
 # core/docs/verified-facts/ は実測記録の歴史的台帳なので対象外。
-# fail-closed: 走査エラー (grep exit>1 = 読めないファイル等 / find 非 0 / sanitize sed の失敗) を
-# 「クリーン」へ反転させず PIPESTATUS で明示 fail し (-a で binary も本文走査)、
+# fail-closed: 走査エラー (grep exit>1 = 読めないファイル等 / find 非 0 / sanitize sed の失敗 /
+# 対象 dir へ cd 不可) を「クリーン」へ反転させず PIPESTATUS・サブシェル exit 2 で明示 fail し (-a で binary も本文走査)、
 # ファイル/ディレクトリ名への混入も同じ流儀 (probe 付き) で走査する。
 # negative probe: FORBIDDEN_RE の各 token (regex の | 区切りから導出 — token 追加に fixture が
 # 自動追従。token は literal 前提) + allowlist 同居行 + slug の左右接頭辞拡張 + 大小文字変種 +
@@ -63,6 +63,14 @@ done
 
 IFS='|' read -ra TOKS <<< "$FORBIDDEN_RE"
 
+# 全 probe dir をスコープ終端で解放する (獲得と解放を対に。REVIEW.md 簡素化)。
+probe='' clean='' nprobe=''
+trap 'rm -rf "$probe" "$clean" "$nprobe"' EXIT
+
+# cd 失敗を scan の「クリーン」(return 1) と混同しない: サブシェルを exit 2 (走査エラー) で抜ける。
+scan_in()      { ( cd "$1" || exit 2; scan . ); }
+name_scan_in() { ( cd "$1" || exit 2; name_scan . ); }
+
 # --- negative probe: 検出すべき fixture を実際に弾くか --------------------------------
 probe=$(mktemp -d)
 {
@@ -73,47 +81,44 @@ probe=$(mktemp -d)
     echo "prefix3 myikeyan/agent-devcontainer/x"
     echo "case IkEyAn variant"
 } > "$probe/f"
-hits=$(cd "$probe" && scan .)
+hits=$(scan_in "$probe")
 st=$?
-[ $st -eq 0 ] || { echo "negative: 検出 probe が走査エラー/空振り (st=$st)" >&2; rm -rf "$probe"; exit 1; }
+[ $st -eq 0 ] || { echo "negative: 検出 probe が走査エラー/空振り (st=$st)" >&2; exit 1; }
 for tok in "${TOKS[@]}" ikeyan.github.io agent-devcontainer-x agent-files-x myikeyan IkEyAn; do
     echo "$hits" | grep -qF "$tok" \
-        || { echo "negative: 混入検出器が fixture の $tok を素通し" >&2; rm -rf "$probe"; exit 1; }
+        || { echo "negative: 混入検出器が fixture の $tok を素通し" >&2; exit 1; }
 done
-rm -rf "$probe"
 
 # --- negative probe: 純 allowlist/別語 fixture を誤検出しないか ------------------------
 clean=$(mktemp -d)
 printf '%s\n%s\n' \
     'https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/install.sh' \
     'setuptools_scm-8.whl と mytools-redact-probe' > "$clean/f"
-(cd "$clean" && scan . >/dev/null)
+scan_in "$clean" >/dev/null
 st=$?
-rm -rf "$clean"
 [ $st -eq 1 ] || { echo "negative: 純 allowlist/別語 fixture を誤検出か走査エラー (st=$st)" >&2; exit 1; }
 
 # --- negative probe: ファイル名検出器 ---------------------------------------------------
 nprobe=$(mktemp -d)
 mkdir "$nprobe/ikeyan-dir"
 : > "$nprobe/tools_probe"
-nhits=$(cd "$nprobe" && name_scan .)
+nhits=$(name_scan_in "$nprobe")
 st=$?
-[ $st -eq 0 ] || { echo "negative: ファイル名 probe が走査エラー/空振り (st=$st)" >&2; rm -rf "$nprobe"; exit 1; }
+[ $st -eq 0 ] || { echo "negative: ファイル名 probe が走査エラー/空振り (st=$st)" >&2; exit 1; }
 { echo "$nhits" | grep -q 'ikeyan-dir' && echo "$nhits" | grep -q 'tools_probe'; } \
-    || { echo "negative: ファイル名検出器が fixture を素通し" >&2; rm -rf "$nprobe"; exit 1; }
-rm -rf "$nprobe"
+    || { echo "negative: ファイル名検出器が fixture を素通し" >&2; exit 1; }
 
 # --- 本走査 (対象ごとに cd して相対走査 — checkout 自体の絶対パスに token を含む環境でも偽赤にしない) ---
 for d in "$@"; do
-    hits=$(cd "$d" && scan .)
+    hits=$(scan_in "$d")
     st=$?
-    [ $st -ne 2 ] || { echo "混入走査が走査エラーで不完全 (読めないファイル/sed 失敗?): $d" >&2; exit 1; }
+    [ $st -ne 2 ] || { echo "混入走査が走査エラーで不完全 (読めないファイル/sed 失敗/進入不可?): $d" >&2; exit 1; }
     [ $st -eq 1 ] || {
         echo "consumer 固有値が $d に混入 (project 層へ移すか allowlist を見直す):" >&2
         echo "$hits" | sed "s#^\./#$d/#" >&2
         exit 1
     }
-    names=$(cd "$d" && name_scan .)
+    names=$(name_scan_in "$d")
     st=$?
     [ $st -ne 2 ] || { echo "ファイル名走査が走査エラーで不完全: $d" >&2; exit 1; }
     [ $st -eq 1 ] || {

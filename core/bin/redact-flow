@@ -85,14 +85,17 @@ docker volume inspect agent-devcontainer-redact-auth >/dev/null 2>&1 \
 
 # redact 派生イメージをビルドする。compose は .devcontainer/core/Dockerfile の redact ステージを
 # target にしている (共通祖先 base は BuildKit が依存として自動でビルドする)。
-REDACT_APP="$APP" \
-REDACT_REPO="$REPO" \
-REDACT_RAW="$(realpath "$RAW")" \
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+# -p で project 名を固定し、ambient な COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES を env -u で無害化する
+# (どちらも file 宣言を黙って上書き/差替えする — docs/verified-facts/docker.md。他の compose 入口と同一の隔離)。
+env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES \
+    REDACT_APP="$APP" \
+    REDACT_REPO="$REPO" \
+    REDACT_RAW="$(realpath "$RAW")" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     docker compose -p "$REDACT_PROJECT" -f "$HERE/compose.yaml" build
 
 echo "[redact-flow] launch sandbox (project=$REDACT_PROJECT, egress = Anthropic only: api.anthropic.com + platform.claude.com)…"
-exec env \
+exec env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES \
     REDACT_APP="$APP" \
     REDACT_REPO="$REPO" \
     REDACT_RAW="$(realpath "$RAW")" \

@@ -31,7 +31,8 @@ PY := $(CURDIR)/../.venv/bin/python
 # COMPOSE_PROJECT_NAME を最優先する (devcontainers-cli.md「project 名の fallback」) ため、shell の
 # 一時 export はこの env -u で無害化できるが、.zshenv/launchctl 級の常設 export は VS Code 側の
 # stack 自体が別名になる — その変数を常設しないのが kit の前提 (file name: が唯一の正)。
-COMPOSE := env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
+COMPOSE_ENGINE := $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
+COMPOSE := env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES $(COMPOSE_ENGINE)
 # compose は常に project 層 (../project/compose.yaml) を先頭に重ねる。先頭ファイルのディレクトリが
 # project directory になり project/.env が補間に効く。後勝ちで core が優先 (docs/verified-facts/docker.md)。
 COMPOSE_FILES := -f ../project/compose.yaml -f compose.yaml
@@ -80,7 +81,7 @@ check-compose: ## compose.yaml を compose config で検証 (docker/podman compo
 	bad=$$(mktemp); printf 'services: [unclosed\n' > "$$bad"; \
 	$(COMPOSE) -f "$$bad" config >/dev/null 2>&1 \
 		&& { echo "negative: compose config が不正 YAML を素通し" >&2; rm -f "$$bad"; exit 1; }; \
-	rm -f "$$bad"; echo "ok  compose ($(COMPOSE))"
+	rm -f "$$bad"; echo "ok  compose ($(COMPOSE_ENGINE))"
 
 # マージ済み compose config のホスト側パス (build.context / type:bind の source / security_opt の
 # seccomp ファイル) が実在するかを stat で pin する。相対ホストパスは project directory (= 最初の -f =
@@ -97,7 +98,7 @@ check-compose-paths: ## マージ compose のホスト側 bind source/context/se
 	$(COMPOSE) $(COMPOSE_FILES) -f "$$bad" config 2>/dev/null \
 		| $(PY) bin/check_compose_paths.py --project-dir ../project >/dev/null 2>&1 \
 		&& { echo "negative: check-compose-paths が不在 bind source を素通し" >&2; rm -f "$$bad"; exit 1; }; \
-	rm -f "$$bad"; echo "ok  compose-paths ($(COMPOSE))"
+	rm -f "$$bad"; echo "ok  compose-paths ($(COMPOSE_ENGINE))"
 
 # override(compose.mitmweb.yaml) を基底に合成した compose が妥当か、かつ既定 compose に
 # Web UI が漏れていないかを検証する。config は daemon 不要。compose は CI/devcontainer 必須。
@@ -107,7 +108,7 @@ check-proxy-web-config: ## compose.mitmweb.yaml 合成の妥当性 & 既定へ�
 		     $(COMPOSE) $(COMPOSE_FILES) -f compose.mitmweb.yaml config 2>&1 >/dev/null | tail -20 >&2; exit 1; }; \
 	$(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null | grep -Eq '8081|mitmweb' \
 		&& { echo "negative: 既定 compose に Web UI が漏れている" >&2; exit 1; }; \
-	echo "ok  proxy-web-config ($(COMPOSE))"
+	echo "ok  proxy-web-config ($(COMPOSE_ENGINE))"
 
 # secrets-proxy を mitmweb (ライブ傍受 Web UI) に切替える入口 (デバッグ用)。
 # dev は絶対に touch しない: VS Code が overrideCommand で dev を無限 sleep で生かしており、

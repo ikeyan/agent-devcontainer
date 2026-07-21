@@ -21,13 +21,14 @@ confidence tag の凡例: [README](README.md)。
   sudoers に env_keep 無し) ため proxy env を見ず直結する。よって api.github.com を NO_PROXY から外しても
   firewall 構築の meta 取得には影響しない (meta は IP レンジ算出用で、DROP 適用前の開放状態で取る)。 `[empirical]`
 
-## gh CLI / config マイグレーション (hosts.yml の ro bind)
+## gh CLI / config マイグレーション (config.yml の version seed)
 
 - gh は起動時に config マイグレーションを走らせ、必要なら **hosts.yml を書き換える** (gh 2.46 で観測:
   ダブルクォート→シングルクォートの再シリアライズ)。マイグレーション済みかは **config.yml の `version`** で
-  判定し、ledger は hosts.yml でなく config.yml 側にある。よって hosts.yml を **ro bind** して `gh auth login`
-  を構造的に封じる (書込が EROFS) には、`config.yml` に現行版 (`version: "1"`) を seed してマイグレーションを
-  スキップさせる必要がある。検証 (gh 2.46.0): ① ro hosts.yml + config.yml 無し → `gh api user` が
+  判定し、ledger は hosts.yml でなく config.yml 側にある。hosts.yml を書込不可にすると (現在は root 所有 —
+  「config dir の読取と書込」節。以前は ro bind だった) この起動時マイグレーション書込が失敗して gh が
+  落ちるため、`config.yml` に現行版 (`version: "1"`) を seed してマイグレーションをスキップさせる必要がある。
+  検証 (gh 2.46.0): ① ro hosts.yml + config.yml 無し → `gh api user` が
   `failed to write config after migration` で失敗。② ro hosts.yml + `config.yml: version "1"` → `gh api user`
   が 200 (`ikeyan`)・hosts.yml は mtime 不変 (書換なし)。gh を上げてマイグレーション版が変わったら
   `make -C .devcontainer/core gh-seed` で追従する: committed の config.yml (= 現在の版) + hosts.yml を gh に渡して
