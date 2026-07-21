@@ -215,8 +215,7 @@ COPY core/gh/config.yml /home/node/.config/gh/config.yml
 RUN set -e; \
   [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
     || { echo "PROJECT_GH_USER が不正 (project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定): '$PROJECT_GH_USER'" >&2; exit 1; }; \
-  sed -i "s/@@GITHUB_USER@@/$PROJECT_GH_USER/g" /home/node/.config/gh/hosts.yml \
-    || { echo "hosts.yml への user 名焼込 (sed) が失敗" >&2; exit 1; }; \
+  sed -i "s/@@GITHUB_USER@@/$PROJECT_GH_USER/g" /home/node/.config/gh/hosts.yml; \
   ! grep -q '@@GITHUB_USER@@' /home/node/.config/gh/hosts.yml \
     || { echo "hosts.yml に @@GITHUB_USER@@ が残った (置換漏れ)" >&2; exit 1; }; \
   [ "$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$' /home/node/.config/gh/hosts.yml)" -eq 2 ] \

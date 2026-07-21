@@ -64,6 +64,18 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   → **イメージ内で root 所有にした home 配下のファイル (gh seed 等) は uid≠1000 の Linux ホスト
   では node 所有へ戻る**。所有者を前提にした防御・検査はそのホスト群では成立しない。 `[docs(source)]`
 
+## postStartCommand は起動時 env (compose `environment:`) を継承する
+
+- lifecycle command (postStartCommand 等) は稼働中コンテナへの `docker exec` で走る。`docker exec` は
+  コンテナ起動時 env (compose `environment:` が入れた Config.Env) を継承するので、compose の
+  `environment: FOO: ...` は postStart の shell で `$FOO` として読める。init-firewall.sh の gh seed
+  整合検査 (`$PROJECT_GH_USER` を sudo 経由で読む) はこの継承に依存する。
+  検証: `compose config dev` に PROJECT_GH_USER が environment として現れ (build.args と 2 箇所)、
+  `podman run -e PROBE=x … && podman exec … printenv PROBE` が値を返す (exec の env 継承)。
+  sudo の env_reset を env_keep が貫通する最終 hop は core/Dockerfile の build 時 probe が実測。
+  チェーン全体 (compose → Config.Env → CLI postStart docker exec → sudo env_keep → reader) の
+  end-to-end pin は devcontainers CLI 実行を要するため issue #25 (check-devcontainer-up) が担う。 `[empirical]`
+
 ## 出典
 
 - devcontainers/cli, `src/spec-node/dockerCompose.ts` (branch `main`)。

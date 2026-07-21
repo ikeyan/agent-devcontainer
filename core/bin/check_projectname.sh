@@ -13,8 +13,9 @@ COMPOSE_FILE=$2
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 DERIVE="$SELF_DIR/compose-project-name"
 
-derived=$(bash "$DERIVE" "$COMPOSE_FILE") \
-    || { echo "project 名を導出できない (redact-flow が壊れる)" >&2; exit 1; }
+# compose-project-name の失敗はその精密な stderr (違反行つき) をそのまま出す (set -e が止める)。
+# 汎用文言を重ねない (REVIEW.md 簡素化「基盤ツールの失敗はそのまま見せる」)。
+derived=$(bash "$DERIVE" "$COMPOSE_FILE")
 expected=$("$PY" -c 'import sys, yaml; print(yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)["name"])' "$COMPOSE_FILE") \
     || { echo "PyYAML で $COMPOSE_FILE の name: を読めない" >&2; exit 1; }
 [ "$derived" = "$expected" ] \
