@@ -76,6 +76,48 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   チェーン全体 (compose → Config.Env → CLI postStart docker exec → sudo env_keep → reader) の
   end-to-end pin は devcontainers CLI 実行を要するため issue #25 (check-devcontainer-up) が担う。 `[empirical]`
 
+## compose 経路の既存コンテナ探索は project+service ラベルだけ (idLabel 非依存)
+
+- compose 構成 (`dockerComposeFile` 指定) の `devcontainer up` は `openDockerComposeDevContainer`
+  経由で、既存コンテナを `findComposeContainer(params, projectName, service)` で探す。これは
+  ```ts
+  listContainers(params, true, [
+      `com.docker.compose.project=${projectName}`,
+      `com.docker.compose.service=${serviceName}`,
+  ])
+  ```
+  の 2 ラベルだけで照合し、`devcontainer.local_folder` / `devcontainer.config_file` (idLabel) は
+  **探索に使わない** (idLabel は `startContainer` が新規コンテナへ *付与* するだけ)。よって一意な
+  `COMPOSE_PROJECT_NAME` を与えれば同一 workspace/config の既存 devcontainer は project ラベル不一致で
+  ヒットせず、CLI は fresh な `compose up` を新しい project 名前空間で建てる。`--id-label` は
+  非 compose (image/Dockerfile) 経路の `findDevContainer` 探索にだけ効き、compose 経路の
+  `findComposeContainer` には影響しない。 `[docs(source)]`
+
+## `devcontainer up` が建てる image は 2 系統 (project 冠 compose / cwd 由来 folder) — cleanup 設計の要石
+
+- **compose 系**: service に `image:` が無い (このリポジトリの `dev` / `secrets-proxy` は `build:` のみ) と、
+  compose が建てる image 名は `getDefaultImageName = ${projectName}${sep}${service}` (`sep` は compose
+  >=2.8 で `-`、未満で `_`)。→ 一意 project 名で up する度に `<project>-dev` / `<project>-secrets-proxy`
+  が別 image として溜まる。 `[docs(source)]`
+- **folder 系**: CLI が UID 調整 (`updateRemoteUserUID`) で建てる image は
+  `getFolderImageName = vsc-${basename(cwd)}-${sha256(cwd)}` を基に `${folderImageName}-uid`
+  (`containerFeatures.ts:435`; compose 経路は `imageName.startsWith(folderImageName)` が偽なので
+  `vsc-…-uid`)。**cwd から決まる**ので project 名では隔離できず、`--workspace-folder` が同じなら実
+  devcontainer と同名になる。→ probe が同じ folder で up すると `up` 中に user の共有
+  `vsc-<folder>-<hash>-uid` を retag する副作用が起き、project scope の cleanup では防げない。 `[docs(source)]`
+  - 注: `${folderImageName}-features` (features 拡張 image) が出るのは**単一コンテナ経路のみ**
+    (`extendImage`, `containerFeatures.ts:59`)。compose 経路は `build:` service だと `overrideImageName`
+    が undefined のまま (`dockerCompose.ts:197-202`) で `-features` image は作られない。 `[docs(source)]`
+- **含意 (smoke `check_devcontainer_up.sh` の隔離設計)**: probe を **一意 basename (`dcup-smoke-<pid>`) の
+  temp workspace へ複製**して up する。folder 系も `vsc-dcup-smoke-<pid>-<hash>[-uid]` になり、compose 系
+  `dcup-smoke-<pid>-<svc>` と共に全 image が `dcup-smoke-<pid>` token を持つ = user の `vsc-<realfolder>-*`
+  とは別名 (retag も衝突も無い)。cleanup はこの token を持つ資源だけを消せば完結する。 `[docs(source)]`
+- `docker images --filter reference=<pat>` は `repository:tag` を glob 照合し `*` を許す
+  (docs 例 `busy*:*libc` が `busybox:uclibc` に一致)。tag 省略時は該当 repo の全 tag に一致。複数
+  `--filter reference=` は OR。ただし `reference=<proj>*` は右端 unanchored で `<proj>` が別 PID の prefix
+  (`dcup-smoke-700*` が `dcup-smoke-7005-dev` に一致) だと取り違えるので、separator を anchor した
+  `reference=<proj>-*` / `<proj>_*` / `vsc-<proj>-*` で消す。 `[docs]`
+
 ## 出典
 
 - devcontainers/cli, `src/spec-node/dockerCompose.ts` (branch `main`)。
@@ -84,6 +126,12 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
 - 同 repo `src/spec-node/dockerCompose.ts` (`userEntrypoint`/`overrideCommand`)、
   `src/spec-node/containerFeatures.ts` (`getRemoteUserUIDUpdateDetails` の発動条件)、
   `scripts/updateUID.Dockerfile` (`chown -R`) を取得して確認 (2026-07-17)。
+- 同 repo v0.88.0 を clone し `src/spec-node/dockerCompose.ts`
+  (`openDockerComposeDevContainer`/`findComposeContainer`/`getDefaultImageName`)、
+  `src/spec-node/containerFeatures.ts` (`updatedImageName`/`fixedImageName` = folder image 由来)、
+  `src/spec-node/utils.ts` (`getFolderImageName`) を確認 (2026-07-22)。
+- `docker image ls` の `--filter reference=` の glob 照合は Docker docs
+  (`https://docs.docker.com/reference/cli/docker/image/ls/`) の例 `busy*:*libc` で確認 (2026-07-22)。
 - 上記に対応する本リポジトリの帰結・実測 (project directory = 最初の `-f` のディレクトリ、`.env` の
   読まれ方、後勝ちマージ) は `docker.md`「compose 複数 -f / project directory / .env」。ホスト側パスの
   実在検証は `make check-compose-paths` (`bin/check_compose_paths.py`)。 `[docs(source)]`

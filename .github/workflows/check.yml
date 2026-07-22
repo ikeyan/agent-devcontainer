@@ -103,4 +103,23 @@ jobs:
           npm install -g @devcontainers/cli
           # compose build.args + postStart 照合用に PROJECT_GH_USER を project/.env に入れる。
           sed -i 's/^PROJECT_GH_USER=$/PROJECT_GH_USER=kitci/' project/.env
-          bash core/bin/check_devcontainer_up.sh . kitci
+          # probe 前の dangling image を baseline に取る (cleanup が untag 由来の <none> を残さないことの delta 用)。
+          dangling_before=$(docker images -f dangling=true -q | sort -u)
+          # probe の失敗は「最も leak しやすい経路」なので、失敗しても残留 pin を必ず走らせる (rc を捕まえて後で判定)。
+          set +e; bash core/bin/check_devcontainer_up.sh . kitci; probe_rc=$?; set -e
+          # 残留 pin: probe が作る資源は container/volume/network/image とも dcup-smoke-<pid> token を含む
+          #   (compose 系 <proj>-<svc>・folder 系 vsc-<proj>-<hash>)。名前に token を含む資源を横断 grep で数える
+          #   (^ で固定せず substring — folder image は vsc- 前置なので)。image が残れば script の name cleanup が
+          #   効いていない、も同時に炙り出す。
+          named=$( { docker ps -a --format '{{.Names}}'; docker images --format '{{.Repository}}'; \
+                     docker volume ls --format '{{.Name}}'; docker network ls --format '{{.Name}}'; } \
+                   | grep -c -- 'dcup-smoke-' || true )
+          # dangling (<none>) image は名前を持たないので baseline delta で拾う (untag 系の leak を塞ぐ)。
+          dangling_after=$(docker images -f dangling=true -q | sort -u)
+          new_dangling=$(comm -13 <(printf '%s\n' "$dangling_before") <(printf '%s\n' "$dangling_after") | grep -c . || true)
+          fail=0
+          [ "$probe_rc" -eq 0 ]     || { echo "probe 失敗 (rc=$probe_rc)" >&2; fail=1; }
+          [ "$named" -eq 0 ]        || { echo "dcup-smoke-* 名の docker 資源が $named 件残留 (cleanup が副作用を残した)" >&2; fail=1; }
+          [ "$new_dangling" -eq 0 ] || { echo "probe 由来の dangling image が $new_dangling 件残留" >&2; fail=1; }
+          [ "$fail" -eq 0 ] || exit 1
+          echo "ok  smoke cleanup — 残留なし (named dcup-smoke-* + probe 由来 dangling)"
