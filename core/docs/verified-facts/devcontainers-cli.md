@@ -130,6 +130,12 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   `-u 0` で走らせ `chown -R` してから消す。(b) 親 image を子 (`FROM` で参照する image) より先に `rmi`
   すると親が dangling `<none>` として残る → **子 (folder 系 uid image) を先、親 (compose 系) を後**に消す。
   `[empirical]`
+- **dangling cleanup は所有で限定する (時刻 delta 不可)**: untag で孤児化した probe image を掃くとき、
+  「up 前後の dangling 集合差」で拾うと、共有 daemon 上で無関係プロセスが同時に残した untag image まで
+  巻き込む (差分は *時刻* を示すが *所有* を示さない)。→ untag する前に probe token tag (`<proj>-*` /
+  `${proj}_*` / `vsc-<proj>-*`) が指す **image ID 集合を控え**、untag 後にそのうち tag を全て失った ID
+  だけを消す。user と content-ID を共有する image は user tag が残るのでスキップされ、無関係プロセスの
+  dangling は集合外なので触れない。 `[docs(source)]`
 
 ## 出典
 
