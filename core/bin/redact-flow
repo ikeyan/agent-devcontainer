@@ -7,8 +7,8 @@
 # やること:
 #   1. extract/<app>/ を作り、redact_flow.py が無ければ identity テンプレから scaffold する。
 #   2. redact 派生イメージ (.devcontainer/core/Dockerfile の redact ステージ) をビルドする。
-#      dev (devcontainer。claude-code/uv/node/iptables 等を持つ) は同一 Dockerfile の
-#      ステージなので BuildKit が依存として自動ビルドする。
+#      redact は FROM base — dev とは独立で、依存として自動ビルドされるのは共通祖先 base だけ
+#      (dev イメージはここではビルドも更新もされない)。
 #   3. サンドボックスを起動する。
 # サンドボックス内の egress 封じ・書込制限の実体は .devcontainer/core/redact/ の entrypoint と
 # init-firewall.sh。生 flow はリポジトリに置かない (コミットで漏れる) 前提で、ここでは外部パスを
@@ -37,13 +37,27 @@ HERE="$(cd "$SELF_DIR/.." && pwd)/redact"
 command -v docker >/dev/null 2>&1 || { echo "docker が無い。docker のあるホストで実行してください。" >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "docker daemon に接続できない。dockerd を起動してください。" >&2; exit 1; }
 
+# redact の compose project 名を consumer の正式 project 名から <project>-redact で導出する
+# (固定名だと複数 consumer repo で compose namespace が衝突する)。project/compose.yaml が宣言する
+# name: の literal を読む (compose config を経ない理由は compose-project-name 冒頭コメント)。
+# 名前は compose へ -p でも渡す: ambient な COMPOSE_PROJECT_NAME が file の name: を黙って上書きする
+# ため、-p (最優先) で導出値に固定する (docs/verified-facts/docker.md「project 名の優先順位」)。
+DEVC_DIR="$(cd "$SELF_DIR/../.." && pwd)"  # consumer では .devcontainer/、kit repo ではリポジトリ root
+project_name="$("$SELF_DIR/compose-project-name" "$DEVC_DIR/project/compose.yaml")"
+REDACT_PROJECT="${project_name}-redact"
+export REDACT_PROJECT  # compose.yaml の name: ${REDACT_PROJECT:?} 補間用 (build/run 共通)
+
+# 事前認証共有 volume 名。inspect/create/案内で 1 箇所に集約する (literal を散らすと rename 時に
+# 取りこぼす — redact_invariants_check.sh §11 が redact/compose.yaml の name: と一致を pin)。
+AUTH_VOL=agent-devcontainer-redact-auth
+
 # 子 claude の認証。egress は Anthropic に固めてあるので、平文 API キー (api.anthropic.com を透過)
 # が一番素直。未設定だと子は agent-devcontainer-redact-auth volume の認証情報を使い、それも無ければ
 # platform.claude.com 経由のログインを促す (= 未認証だと「お住まいの国では…」風の不親切な失敗)。
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo "[redact-flow] 注意: ANTHROPIC_API_KEY 未設定。" >&2
     echo "[redact-flow]   推奨: export ANTHROPIC_API_KEY=sk-... して再実行 (api.anthropic.com を透過)。" >&2
-    echo "[redact-flow]   代替: agent-devcontainer-redact-auth volume を事前に認証しておく (claude login)。" >&2
+    echo "[redact-flow]   代替: $AUTH_VOL volume を事前に認証しておく (claude login)。" >&2
 fi
 
 OUT="$REPO/extract/$APP"
@@ -68,18 +82,24 @@ if [ ! -e "$OUT/redact_flow.py" ]; then
     sed "s|__APP__|$APP|g" "$HERE/redact_flow.template.py" > "$OUT/redact_flow.py"
 fi
 
-# redact 派生イメージをビルドする。compose は .devcontainer/core/Dockerfile の redact ステージを
-# target にしている (dev は同一 Dockerfile のステージなので自動でビルドされる)。
-REDACT_APP="$APP" \
-REDACT_REPO="$REPO" \
-REDACT_RAW="$(realpath "$RAW")" \
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-    docker compose -f "$HERE/compose.yaml" build
+# 事前認証共有 volume (redact/compose.yaml で external 宣言 — 理由はそちらのコメント)。external は
+# compose が作らないため、ここで冪等に用意する (create は既存名で失敗するエンジンがあるので inspect || create)。
+docker volume inspect "$AUTH_VOL" >/dev/null 2>&1 \
+    || docker volume create "$AUTH_VOL" >/dev/null
 
-echo "[redact-flow] launch sandbox (egress = Anthropic only: api.anthropic.com + platform.claude.com)…"
-exec env \
-    REDACT_APP="$APP" \
-    REDACT_REPO="$REPO" \
-    REDACT_RAW="$(realpath "$RAW")" \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-    docker compose -f "$HERE/compose.yaml" run --rm redact
+# build と run で同一の呼び出し契約 (隔離・project 固定・REDACT_* 注入) を使う。配列に集約して
+# 片方だけの drift を防ぐ (§12 は redact-flow の -u COMPOSE_* を 1 回しか grep しないので、二重定義だと
+# 片側の隔離漏れが素通りしうる)。-p で project 名を固定し、ambient な COMPOSE_PROJECT_NAME /
+# COMPOSE_ENV_FILES を env -u で無害化する (file 宣言を黙って上書き/差替えする — docs/verified-facts/docker.md)。
+redact_compose=(env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES
+    REDACT_APP="$APP"
+    REDACT_REPO="$REPO"
+    REDACT_RAW="$(realpath "$RAW")"
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+    docker compose -p "$REDACT_PROJECT" -f "$HERE/compose.yaml")
+
+# redact 派生イメージをビルドする (compose の target は redact ステージ。共通祖先 base は BuildKit が自動)。
+"${redact_compose[@]}" build
+
+echo "[redact-flow] launch sandbox (project=$REDACT_PROJECT, egress = Anthropic only: api.anthropic.com + platform.claude.com)…"
+exec "${redact_compose[@]}" run --rm redact

@@ -35,6 +35,9 @@
 #      根拠: 複数 -f の「後勝ちで core 優先」が効くのは core が明示宣言したスカラー限定で、list merge
 #      (cap_add/networks/volumes) や core 未宣言キーは project 値が通る (docs/verified-facts/docker.md
 #      「compose 複数 -f」)。ゆえに後勝ちの一般則に頼らず「マージ結果そのもの」を検査する。
+#  11. 複数ファイルに同じ literal が現れて初めて機能する配線 (PROJECT_GH_USER の sudoers env_keep /
+#      compose environment / init-firewall reader の 3 点、redact auth volume 名の redact-flow /
+#      redact/compose.yaml の 2 点) の一致。片側だけの改名は CI 緑のまま実行時に fail する (§9 と同類)。
 #
 # 方針: #1〜#9 は git と grep だけで動く。#10 だけは compose config が要る (docker/podman compose +
 # PyYAML)。CI/devcontainer には両方あるので常時走らせ、無い環境では #10 が自然エラーになる (skip しない
@@ -237,16 +240,93 @@ POSTURE=core/bin/check_compose_posture.py
 PY=.venv/bin/python
 # 期待する project 名は project/compose.yaml 自身の name: から読む (kit 化により @@PROJECT_NAME@@ 置換後の
 # 値は consumer ごとに違うのでリテラル固定できない。ここで読んだ値と、マージ済み compose config が
-# 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。
-EXPECTED_NAME=$("$PY" -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["name"])' "$P/compose.yaml") \
-    || fail "§10: project/compose.yaml から name: を読めない"
-merged=$(mktemp)
-"${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>/dev/null \
-    || { rm -f "$merged"; fail "§10: compose config が失敗 (${COMPOSE[*]} 未導入 or compose.yaml 不正)"; }
+# 実際に持つ name を突き合わせるのが check_compose_posture.py の役目)。導出は redact-flow が使う
+# 実経路 (bin/compose-project-name) を通す — 独立 parser (PyYAML) との parity は check-redact-config
+# が別途 pin しており、ここで別実装を重複させない。
+EXPECTED_NAME=$(bash "$DC/bin/compose-project-name" "$P/compose.yaml") \
+    || fail "§10: project/compose.yaml から project 名を導出できない"
+merged=$(mktemp); mergederr=$(mktemp)
+# stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
+# (`${VAR:?}` 宣言のもの) の不足による interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
+# env -u: ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きし (docker.md「project 名の
+# 優先順位」) EXPECTED_NAME との突合が偽赤になる。COMPOSE_ENV_FILES は補間に使う .env を余所へ
+# 差し替える (同「補間に使う .env の差替え」)。
+env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES "${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>"$mergederr" \
+    || { cat "$mergederr" >&2; rm -f "$merged" "$mergederr"; fail "§10: compose config が失敗 (原因は直上の stderr)"; }
+rm -f "$mergederr"
 "$PY" "$POSTURE" "$EXPECTED_NAME" < "$merged" \
     || { rm -f "$merged"; fail "§10: マージ済み compose のセキュリティ姿勢に違反 (上の NG 行を参照)"; }
 "$PY" "$POSTURE" "$EXPECTED_NAME" --selftest < "$merged" \
     || { rm -f "$merged"; fail "§10: negative probe が違反注入を検出できない (上の NG 行を参照)"; }
 rm -f "$merged"
 
-echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10)"
+# --- 11. 複数ファイル literal 結合の配線 pin (§9 と同じ fail-silent 防止クラス) -----
+# (a) PROJECT_GH_USER は sudoers env_keep (Dockerfile) / compose (build.args と environment の 2 箇所) /
+#     init-firewall.sh の reader が同名で揃って初めて postStart の整合検査が機能する。片側だけの
+#     改名・削除は CI 緑のまま全 consumer の起動が「PROJECT_GH_USER が sudo 環境に無い」で止まる。
+#     compose は 2 箇所を数で pin (片方だけの削除を素通ししない)、reader はコメントでなく実際の
+#     展開形 (${PROJECT_GH_USER) で pin する。sudoers の束縛先パスが COPY 先と一致することも pin
+#     (Defaults! はパス完全一致)。
+grep -qF 'env_keep += "PROJECT_GH_USER"' "$DC/Dockerfile" \
+    || fail "§11: core/Dockerfile の sudoers に PROJECT_GH_USER の env_keep が無い"
+grep -qF 'Defaults!/usr/local/bin/init-firewall.sh' "$DC/Dockerfile" \
+    || fail "§11: sudoers の Defaults! が init-firewall.sh の COPY 先パスを指していない"
+grep -q 'COPY core/init-firewall.sh /usr/local/bin/' "$DC/Dockerfile" \
+    || fail "§11: core/Dockerfile が init-firewall.sh を /usr/local/bin へ COPY していない"
+[ "$(grep -cE '^ +PROJECT_GH_USER:' "$DC/compose.yaml")" -eq 2 ] \
+    || fail "§11: core/compose.yaml の PROJECT_GH_USER が 2 箇所 (build.args + environment) に無い"
+grep -qF '${PROJECT_GH_USER' "$DC/init-firewall.sh" \
+    || fail "§11: init-firewall.sh が PROJECT_GH_USER を展開形で読んでいない (コメントだけでは不可)"
+# (a') gh seed のパス literal も同じ結合: Dockerfile (COPY 先 + sed/assert 対象) と init-firewall.sh
+#      (awk reader) の両方に /home/node/.config/gh/hosts.yml が現れて初めて検査が成立する。
+grep -qF '/home/node/.config/gh/hosts.yml' "$DC/Dockerfile" \
+    || fail "§11: core/Dockerfile に gh seed パス /home/node/.config/gh/hosts.yml が無い"
+grep -qF '/home/node/.config/gh/hosts.yml' "$DC/init-firewall.sh" \
+    || fail "§11: init-firewall.sh が gh seed パス /home/node/.config/gh/hosts.yml を読んでいない"
+# (a'') gh auth login の実トークン焼込を封じる唯一のバリアは gh dir/hosts.yml の root 所有 (旧 ro bind は
+#       撤去済み)。imperative な RUN 1 行なので、これが落ちても他の検査は緑のまま = silent 退行しうる。
+#       source を pin する (chown -R root:root で dir、hosts.yml は 644 で node 非所有のまま)。
+grep -qF 'chown -R root:root /home/node/.config/gh' "$DC/Dockerfile" \
+    || fail "§11: Dockerfile が gh dir を root 所有にしていない (gh auth login のトークン焼込バリアが失効)"
+grep -qF 'chmod 644 /home/node/.config/gh/hosts.yml' "$DC/Dockerfile" \
+    || fail "§11: Dockerfile が hosts.yml を 644 にしていない (node 書込可だとトークン焼込を封じられない)"
+# (a''') init-firewall.sh の user 抽出 parser は共有 awk (gh-hosts-user.awk) に切り出し、Dockerfile が
+#        image へ COPY する。実挙動は check-gh-seed の fixture が exercise する (parser↔seed 形式の結合)。
+grep -qF 'COPY core/gh-hosts-user.awk /usr/local/bin/' "$DC/Dockerfile" \
+    || fail "§11: Dockerfile が gh-hosts-user.awk を COPY していない"
+grep -qF 'gh-hosts-user.awk' "$DC/init-firewall.sh" \
+    || fail "§11: init-firewall.sh が gh-hosts-user.awk を参照していない"
+# (b) redact の共有 auth volume は external (compose は作らない) — redact-flow が事前作成する名前と
+#     compose.yaml の name: が食い違うと、事前作成が空振りして run 時に external volume not found。
+#     redact-flow 側は AUTH_VOL 変数に集約済み (inspect/create/案内が参照) なので代入値を突き合わせる。
+#     charset は compose の volume 名に合わせ '_' も含める (欠くと正しい underscore 改名が偽赤になる)。
+# head へ pipe しない: 2 件目以降のマッチで sed が SIGPIPE (pipefail で 141) → fail() を出さずに即死する。
+# sed は全行走査し (小さいファイル)、bash が最初の行だけ取り出す。
+vol_flow=$(sed -n 's/^AUTH_VOL=\([A-Za-z0-9_-]*\).*/\1/p' "$DC/bin/redact-flow"); vol_flow=${vol_flow%%$'\n'*}
+# volume の name: は字下げされている (volumes: 配下) — 先頭空白必須で top-level name: (0 字下げ、
+# ${...} 補間) と区別する。top-level を literal に戻す将来変更でも volume 名だけを拾う。
+vol_compose=$(sed -n 's/^  *name: \([A-Za-z0-9_-]*\).*/\1/p' "$DC/redact/compose.yaml"); vol_compose=${vol_compose%%$'\n'*}
+[ -n "$vol_flow" ] || fail "§11: redact-flow に AUTH_VOL (auth volume 名) の定義が無い"
+[ "$vol_flow" = "$vol_compose" ] \
+    || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"
+
+# --- 12. ambient compose 変数の隔離が全 compose 入口で揃っているか ---------------------
+# COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES は file 宣言を黙って上書き/差替えする (docker.md「project
+# 名の優先順位」「補間に使う .env の差替え」)。compose を呼ぶ入口はどれも両方を無害化する必要があり、
+# 1 つでも抜けると稼働中 stack と別 namespace/別 .env を操作する (この PR で隔離対象が 1→2 変数に
+# 増えた際、全入口を手で直す必要があった)。新しい ambient 変数はこの iso_vars に足す = 全入口の
+# 欠落が loud に出る (異なる runtime = make/bash/python に跨るため DRY でなく pin で束ねる)。
+# iso_sites は明示列挙: compose 呼び出しは make の $(COMPOSE) / redact-flow の quote 付き引数 /
+# checker の config parse 等で形が揃わず、自動 discovery は取りこぼしと誤検出を両方生む (実測)。
+# よって新しく compose を呼ぶ入口を足すときは env -u で隔離した上でここに登録する — この登録が唯一の
+# 発見面なので、iso_sites への追加漏れは code review で捕まえる (検査は登録済み入口の変数欠落を守る)。
+iso_vars=(COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES)
+iso_sites=("$DC/Makefile" "$DC/bin/redact-flow" "$DC/bin/redact_invariants_check.sh" "$DC/proxy-web-tunnel.py")
+for v in "${iso_vars[@]}"; do
+    for s in "${iso_sites[@]}"; do
+        grep -Eq -- "-u $v|pop\(['\"]$v" "$s" \
+            || fail "§12: $s が ambient 変数 $v を無害化していない (env -u / os.environ.pop)"
+    done
+done
+
+echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10 / literal 配線 §11 / ambient 隔離 §12)"

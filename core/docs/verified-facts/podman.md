@@ -92,8 +92,9 @@ confidence tag の凡例: [README](README.md)。
   `short-name-aliases.conf` に alias が無ければ「どの registry から pull するか」をユーザーに**対話プロンプト**で
   尋ねる。出典: podman-pull(1) の DESCRIPTION と FILES (short-name-aliases.conf)。 `[man]`
 - つまり非対話 (スクリプト/CI) 実行では alias 未定義の short-name は失敗し得る。ホスト側で走る
-  スクリプト (`core/bin/migrate-volumes.sh` の podman fallback) は `docker.io/library/...` に完全修飾する。
-  (PR #13 Codex review 指摘 P2 由来。)
+  スクリプトが podman に image 参照を渡すときは `docker.io/library/...` に完全修飾する
+  (PR #13 Codex review 指摘 P2 由来。当時の対象 `core/bin/migrate-volumes.sh` は役目を終えて
+  削除済みだが、規約として残る)。
 
 ## podman build / SHELL (OCI vs docker フォーマット)
 

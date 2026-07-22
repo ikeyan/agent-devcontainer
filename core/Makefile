@@ -10,8 +10,9 @@ SHELL := /bin/bash
 # 走った」ことを意味するようにする)。python 依存 target は kit 専用 venv ($(PY)、後述) に一元化する。
 MAKEFLAGS += --output-sync=target
 
-# shebang ではなく拡張子で走査 (この配下の .sh は全て bash)。redact-flow は拡張子なしのため明示。
-SHELL_SRCS := $(wildcard *.sh bin/*.sh secrets-proxy/*.sh redact/*.sh) bin/redact-flow
+# shebang ではなく拡張子で走査 (この配下の .sh は全て bash)。redact-flow / compose-project-name は
+# 拡張子なしのため明示。
+SHELL_SRCS := $(wildcard *.sh bin/*.sh secrets-proxy/*.sh redact/*.sh) bin/redact-flow bin/compose-project-name
 
 # kit 専用 python (uv sync で作る venv。CI (.github/workflows/check.yml) と devcontainer
 # (Dockerfile の UV_PROJECT_ENVIRONMENT) の両方が $(CURDIR)/../.venv = .devcontainer/.venv に作る
@@ -20,7 +21,21 @@ PY := $(CURDIR)/../.venv/bin/python
 
 # compose 検証エンジン: CI は docker、devcontainer は podman (provider = docker compose plugin)。
 # docker が無ければ podman を採用する。どちらも無い環境は次の呼び出しが自然にエラーになる。
-COMPOSE := $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
+# env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES を変数自体に焼き込む: ambient な
+# COMPOSE_PROJECT_NAME は file の name: を黙って上書きし (docs/verified-facts/docker.md「project 名の
+# 優先順位」)、COMPOSE_ENV_FILES は --env-file 不在時の既定として project/.env の代わりに余所の
+# .env を補間に使わせる (同「補間に使う .env の差替え」)。放置すると bootstrap/proxy-web が稼働中
+# stack と別 namespace を操作し (例: BW session.key が余所の volume へ入り secrets-proxy が未認証の
+# まま)、検査系は偽赤/偽緑になる。全 target を一律に隔離する。
+# 前提: devcontainers CLI 側も file の name: で stack を立てていること。CLI は自プロセス環境の
+# COMPOSE_PROJECT_NAME を最優先する (devcontainers-cli.md「project 名の fallback」) ため、shell の
+# 一時 export はこの env -u で無害化できるが、.zshenv/launchctl 級の常設 export は VS Code 側の
+# stack 自体が別名になる — その変数を常設しないのが kit の前提 (file name: が唯一の正)。
+COMPOSE_ENGINE := $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
+# PROJECT_GH_USER も unset する: dev コンテナ内で make を回すと compose の environment 経由でこの変数が
+# shell env に入り、compose 補間はシェル変数を project/.env より優先する (compose docs)。unset して常に
+# project/.env を検査対象にする (init-firewall の照合は Config.Env を直読みするので影響しない)。
+COMPOSE := env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES -u PROJECT_GH_USER $(COMPOSE_ENGINE)
 # compose は常に project 層 (../project/compose.yaml) を先頭に重ねる。先頭ファイルのディレクトリが
 # project directory になり project/.env が補間に効く。後勝ちで core が優先 (docs/verified-facts/docker.md)。
 COMPOSE_FILES := -f ../project/compose.yaml -f compose.yaml
@@ -35,6 +50,7 @@ BUILD_FORMAT := $(shell [ "$(ENGINE)" = podman ] && echo "--format docker")
 CHECKS := \
 	check-compose \
 	check-compose-paths \
+	check-project-env \
 	check-proxy-web-config \
 	check-shell \
 	check-shellcheck \
@@ -62,6 +78,19 @@ help: ## 一覧
 
 check: $(CHECKS) ## .devcontainer 全体を検証
 
+# project 層の PROJECT_GH_USER を build 前に config-time で検査する。compose の :- は非 dev の操作を
+# 巻き込まないため未設定でも config を通す (accepted) が、それだと consumer CI (make check) が緑のまま
+# 初回 dev build で Dockerfile assert に落ちる。ここで早期に止める。検証値は .env を自前 parse せず
+# compose config の build.args から取る — 値を実際に焼く compose の解釈と一致させ (引用符・コメント等の
+# .env 文法差で偽陽/偽陰にしない)、これは値を読んで検証するだけで非 dev compose は gate しない。
+# charset は Dockerfile assert と同じ [A-Za-z0-9-]+。COMPOSE は -u PROJECT_GH_USER 済 = project/.env が源。
+check-project-env: ## project/.env の PROJECT_GH_USER が GitHub user 名として妥当か (dev build 前に停止)
+	@val=$$($(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null \
+		| $(PY) -c 'import sys,yaml; print((yaml.safe_load(sys.stdin)["services"]["dev"]["build"].get("args") or {}).get("PROJECT_GH_USER") or "")'); \
+	[[ "$$val" =~ ^[A-Za-z0-9-]+$$ ]] \
+		|| { echo "PROJECT_GH_USER が未設定/不正 (compose が build.args に解決した値: '$$val')。project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定" >&2; exit 1; }; \
+	echo "ok  project-env (PROJECT_GH_USER 妥当)"
+
 # config は daemon 不要 (パース + マージのみ)。docker/podman compose は CI/devcontainer 必須。
 check-compose: ## compose.yaml を compose config で検証 (docker/podman compose 必須)
 	@$(COMPOSE) $(COMPOSE_FILES) config >/dev/null 2>&1 \
@@ -69,7 +98,11 @@ check-compose: ## compose.yaml を compose config で検証 (docker/podman compo
 	bad=$$(mktemp); printf 'services: [unclosed\n' > "$$bad"; \
 	$(COMPOSE) -f "$$bad" config >/dev/null 2>&1 \
 		&& { echo "negative: compose config が不正 YAML を素通し" >&2; rm -f "$$bad"; exit 1; }; \
-	rm -f "$$bad"; echo "ok  compose ($(COMPOSE))"
+	rm -f "$$bad"; \
+	noghu=$$(mktemp); grep -v '^PROJECT_GH_USER=' ../project/.env > "$$noghu"; \
+	$(COMPOSE) --env-file "$$noghu" $(COMPOSE_FILES) config secrets-proxy >/dev/null 2>&1 \
+		|| { echo "dev-build 変数 PROJECT_GH_USER が非 dev サービス (secrets-proxy = bootstrap/proxy-web) まで gate している。compose は service 選択前に全体補間するので :? でなく :- + Dockerfile assert にする" >&2; rm -f "$$noghu"; exit 1; }; \
+	rm -f "$$noghu"; echo "ok  compose ($(COMPOSE_ENGINE))"
 
 # マージ済み compose config のホスト側パス (build.context / type:bind の source / security_opt の
 # seccomp ファイル) が実在するかを stat で pin する。相対ホストパスは project directory (= 最初の -f =
@@ -86,7 +119,7 @@ check-compose-paths: ## マージ compose のホスト側 bind source/context/se
 	$(COMPOSE) $(COMPOSE_FILES) -f "$$bad" config 2>/dev/null \
 		| $(PY) bin/check_compose_paths.py --project-dir ../project >/dev/null 2>&1 \
 		&& { echo "negative: check-compose-paths が不在 bind source を素通し" >&2; rm -f "$$bad"; exit 1; }; \
-	rm -f "$$bad"; echo "ok  compose-paths ($(COMPOSE))"
+	rm -f "$$bad"; echo "ok  compose-paths ($(COMPOSE_ENGINE))"
 
 # override(compose.mitmweb.yaml) を基底に合成した compose が妥当か、かつ既定 compose に
 # Web UI が漏れていないかを検証する。config は daemon 不要。compose は CI/devcontainer 必須。
@@ -96,14 +129,14 @@ check-proxy-web-config: ## compose.mitmweb.yaml 合成の妥当性 & 既定へ�
 		     $(COMPOSE) $(COMPOSE_FILES) -f compose.mitmweb.yaml config 2>&1 >/dev/null | tail -20 >&2; exit 1; }; \
 	$(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null | grep -Eq '8081|mitmweb' \
 		&& { echo "negative: 既定 compose に Web UI が漏れている" >&2; exit 1; }; \
-	echo "ok  proxy-web-config ($(COMPOSE))"
+	echo "ok  proxy-web-config ($(COMPOSE_ENGINE))"
 
 # secrets-proxy を mitmweb (ライブ傍受 Web UI) に切替える入口 (デバッグ用)。
 # dev は絶対に touch しない: VS Code が overrideCommand で dev を無限 sleep で生かしており、
 # その override は VS Code の compose 呼び出しにしか無い。plain な `up` で dev を作り直すと
 # ベース CMD が headless 実行され即 exit する (= 「devcontainer 起動直後に exit」の原因)。よって
 # override 合成は secrets-proxy 1 本だけに適用する (--no-deps + サービス名明示 + detached)。
-# project 名は compose の `name: tools` で VS Code と共有するので、稼働中の secrets-proxy を
+# project 名は project/compose.yaml の `name:` で VS Code と共有するので、稼働中の secrets-proxy を
 # その場で mitmweb に差し替えられる。起動ログの `?token=...` を拾って表示する。戻すのは proxy-web-off。
 # --build 必須: entrypoint.sh / tcp-bridge.py は image に COPY される (bind mount ではない) ので、
 # 変更を反映するには再ビルドが要る (キャッシュが効くので通常は一瞬)。
@@ -126,7 +159,7 @@ proxy-web-off: ## secrets-proxy を既定 (mitmdump) に戻す (dev 無停止)
 	$(COMPOSE) $(COMPOSE_FILES) up -d --build --no-deps secrets-proxy
 
 # secrets-proxy の初回対話認証。bw login/unlock で得た BW_SESSION を `proxy-bw` volume (session.key) へ
-# 保存する (README「セットアップ (初回 1 回)」)。project 層 (name: tools) 込みで compose を呼ぶので、
+# 保存する (README「セットアップ (初回 1 回)」)。project 層 (name: 宣言元) 込みで compose を呼ぶので、
 # 通常の up/exec と同じ project namespace の secrets-proxy に対して実行される。
 bootstrap: ## secrets-proxy の初回対話認証 (BW_SESSION を proxy-bw volume へ保存)
 	$(COMPOSE) $(COMPOSE_FILES) run --rm -it secrets-proxy bootstrap
@@ -198,22 +231,31 @@ check-dockerfile-deps: ## Dockerfile 外部 image の digest 固定 / COPY --fro
 	@$(PY) bin/check_dockerfile_deps.py Dockerfile ../Dockerfile secrets-proxy/Dockerfile
 
 # redact サンドボックスの構成を検証する。compose は必須 env をダミーで与えて config 検証
-# (negative: REDACT_APP 欠落で弾けること)。dnsmasq.conf は placeholder を埋めて --test
-# (dnsmasq は CI/devcontainer に在る)。settings.json は JSON として読めることを確認。
-# compose config は CI/devcontainer とも docker/podman compose が必須。
-check-redact-config: ## redact/ の compose/dnsmasq/settings を検証 (docker/podman compose 必須)
+# (negative: REDACT_APP / REDACT_PROJECT 欠落で弾けること。probe は env -u で ambient export から隔離 —
+# 手動運転で export した変数が残った shell でも偽赤/偽緑にしない)。project 名導出 (bin/compose-project-name
+# = redact-flow が使う実経路) の parity + fixture 群は bin/check_projectname.sh (検査本体が複雑な
+# bash なので Makefile 埋込でなくスクリプトにして shellcheck の圏内に置く — SHELL_SRCS が lint)。
+# dnsmasq.conf は placeholder を埋めて --test (dnsmasq は CI/devcontainer に在る)。settings.json は
+# JSON として読めることを確認。compose config は CI/devcontainer とも docker/podman compose が必須。
+check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出を検証 (docker/podman compose 必須)
 	@python3 -c 'import json;json.load(open("redact/settings.json"))' \
 		|| { echo "redact/settings.json が不正 JSON" >&2; exit 1; }; \
-	REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
-		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
-		|| { echo "redact/compose.yaml が不正" >&2; exit 1; }; \
-	REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+	cfgerr=$$(mktemp); \
+	REDACT_PROJECT=demo-redact REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>"$$cfgerr" \
+		|| { echo "redact/compose.yaml が不正 (原因は直下の stderr):" >&2; cat "$$cfgerr" >&2; rm -f "$$cfgerr"; exit 1; }; \
+	rm -f "$$cfgerr"; \
+	env -u REDACT_APP REDACT_PROJECT=demo-redact REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
 		&& { echo "negative: redact compose が REDACT_APP 欠落を素通し" >&2; exit 1; } || true; \
+	env -u REDACT_PROJECT REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
+		&& { echo "negative: redact compose が REDACT_PROJECT 欠落を素通し" >&2; exit 1; } || true; \
+	bash bin/check_projectname.sh $(PY) ../project/compose.yaml || exit 1; \
 	t=$$(mktemp); sed 's/__UPSTREAM_DNS__/127.0.0.11/g' redact/dnsmasq.conf > "$$t"; \
 	dnsmasq --test --conf-file="$$t" >/dev/null 2>&1 \
 		|| { echo "redact/dnsmasq.conf が不正" >&2; rm -f "$$t"; exit 1; }; \
-	rm -f "$$t"; echo "ok  redact-config (settings/compose/dnsmasq)"
+	rm -f "$$t"; echo "ok  redact-config (settings/compose/dnsmasq/project 名導出)"
 
 # extract/*/redact_flow.py を合成 flow で round-trip し、エンジン契約 (valid NDJSON / 行数一致 /
 # 例外なし) を検査する。詳細と切り分けは bin/redact_selfcheck.py の docstring。mitmproxy は
@@ -238,21 +280,50 @@ check-redact-py: ## redact 系 Python (エンジン/テンプレート/selfcheck
 check-redact-invariants: ## redact の意味的不変条件を pin (bin/redact_invariants_check.sh; §10 は compose 必須)
 	@bash bin/redact_invariants_check.sh
 
-# committed の config.yml+hosts.yml を temp に渡し gh を 1 回走らせ、byte 不変なら no-op = ro 安全
-# (詳細: docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。gh は CI/devcontainer 必須。
-check-gh-seed: ## installed gh が gh/ seed を migration で書き換えないか検証 (gh 必須)
-	@tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
-	before=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
-	GH_CONFIG_DIR="$$tmp" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
-	after=$$(cat "$$tmp/config.yml" "$$tmp/hosts.yml" | md5sum); \
-	rm -rf "$$tmp"; \
-	[ "$$before" = "$$after" ] || { echo "gh-seed: installed gh が seed を migration で書換える (ro hosts.yml だと gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
+# (1) 形式 pin: committed seed が Dockerfile (gh seed 節) の焼込+事後 assert の期待形式
+#     (@@GITHUB_USER@@ が users: キーと user: 値の 2 箇所 / double-quote な oauth_token 値 x2) を
+#     満たすか。gh-seed 再生成は gh の YAML round-trip をそのまま書き戻すため、コメントや quote が
+#     変わり得る — 形式 drift を image build の分かりにくい失敗でなくここで捕まえる (パターンは
+#     Dockerfile の assert と対応)。
+# (2) migration no-op: config.yml+hosts.yml を temp に渡し gh を 1 回走らせ、byte 不変なら no-op =
+#     ro 安全 (詳細: docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。committed の
+#     template 形と、@@GITHUB_USER@@ を実 user 名へ置換した runtime 形の両方で検査する — dev が
+#     実際に読むのは置換後の形であり、置換で migration 挙動が変わる回帰は template 形だけでは
+#     捕まらない。gh は CI/devcontainer 必須。
+check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き換えないか検証 (gh 必須)
+	@[ "$$(grep -c '@@GITHUB_USER@@' gh/hosts.yml)" -eq 2 ] \
+		|| { echo "gh/hosts.yml の @@GITHUB_USER@@ が 2 箇所 (users: キー / user: 値) に無い (gh-seed 再生成で template token が崩れた? Dockerfile の焼込が空回りする)" >&2; exit 1; }; \
+	[ "$$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$$' gh/hosts.yml)" -eq 2 ] \
+		|| { echo "gh/hosts.yml の oauth_token が Dockerfile の期待形式 (double-quote 値 x2) と不一致 (gh-seed 再生成が quote/構造を変えた? 手で復元して commit)" >&2; exit 1; }; \
+	[ "$$(grep -c '^ *user: "@@GITHUB_USER@@"$$' gh/hosts.yml)" -eq 1 ] \
+		|| { echo "gh/hosts.yml の user: 行が double-quote 形でない (init-firewall.sh の整合検査 parser と対 — 形式を復元して commit)" >&2; exit 1; }; \
+	seed_noop() { local d=$$1 before after; \
+		before=$$(cat "$$d/config.yml" "$$d/hosts.yml" | md5sum); \
+		GH_CONFIG_DIR="$$d" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
+		after=$$(cat "$$d/config.yml" "$$d/hosts.yml" | md5sum); \
+		[ "$$before" = "$$after" ]; }; \
+	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
+	seed_noop "$$tmp"; st=$$?; rm -rf "$$tmp"; \
+	[ $$st -eq 0 ] || { echo "gh-seed: installed gh が seed を migration で書換える (root 所有 seed だと dev の gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
+	tmp3=$$(mktemp -d); sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
+	seed_noop "$$tmp3"; st=$$?; rm -rf "$$tmp3"; \
+	[ $$st -eq 0 ] || { echo "gh-seed: 置換後 (実 user 名) の hosts.yml を installed gh が書換える — root 所有 seed だと dev の gh が起動時に落ちる。migration 内容を確認して seed 形式を追従" >&2; exit 1; }; \
 	tmp2=$$(mktemp -d); cp gh/hosts.yml "$$tmp2/hosts.yml"; \
 	GH_CONFIG_DIR="$$tmp2" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
-	rm -rf "$$tmp2"; echo "ok  gh-seed (installed gh は seed を no-op で読む = ro 安全)"
+	rm -rf "$$tmp2"; \
+	[ "$$(sed 's/@@GITHUB_USER@@/rtprobe/g' gh/hosts.yml | awk -f gh-hosts-user.awk)" = rtprobe ] \
+		|| { echo "gh-hosts-user.awk が committed hosts.yml (置換後) から user を抽出できない — init-firewall の整合検査が毎起動 誤 mismatch する" >&2; exit 1; }; \
+	[ "$$(printf "    user: 'sq-probe'\n" | awk -f gh-hosts-user.awk)" = sq-probe ] \
+		|| { echo "gh-hosts-user.awk が single-quote 形の user を抽出できない (init-firewall の quote 除去)" >&2; exit 1; }; \
+	echo "ok  gh-seed (形式 pin + template/runtime migration no-op + parser fixture)"
 
-# 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認して commit する。
+# 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認し、
+# make check (check-gh-seed が template 形式を pin) を通してから commit する。gh の round-trip は
+# コメント/quote を落とし得る (gh 2.46 は double→single quote に再シリアライズ) — その場合
+# @@GITHUB_USER@@ 節と double-quote を手で復元する。check-gh-seed の quote 形式 fail は意図した
+# checkpoint: セキュリティ seed に gh の migration 変更を無検査で取り込ませないための人手確認点で、
+# 自動正規化はその変更を隠すので置かない (gh upgrade 時のみの稀な手作業)。
 gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh upgrade 後に実行, ネット不要)
 	@command -v gh >/dev/null 2>&1 || { echo "gh が無い" >&2; exit 1; }; \
 	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
@@ -267,13 +338,13 @@ gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh u
 # redact イメージを実ビルドし、node へ降格した子が `python3` で mitmproxy を import でき、その
 # python が >=3.12 であることを確認する (mitmproxy 12.x の要件)。ベース OS の python が古い／子から
 # system site-packages が読めない、等の回帰を実ビルドで捕まえる (静的検査では捕まらない)。
-# Dockerfile の redact ステージを --target でビルドする (dev ステージも依存として自動ビルドされる;
-# dev を既にビルド済みなら BuildKit キャッシュで再利用)。重い & ネットを使うので既定の check 集約には
-# 入れない — 投入ホストで明示的に叩く。
+# Dockerfile の redact ステージを --target でビルドする (redact は FROM base — 依存として自動
+# ビルドされるのは共通祖先 base だけで、dev はビルドされない)。重い & ネットを使うので既定の
+# check 集約には入れない — 投入ホストで明示的に叩く。
 check-redact-image: ## redact イメージを実ビルドし node 子の python3>=3.12+mitmproxy を検査 (要 docker/podman+ネット; 重いので明示実行)
-	@$(ENGINE) build $(BUILD_FORMAT) -q -t tools-redact-checkimg --target redact -f ../Dockerfile .. >/dev/null \
+	@$(ENGINE) build $(BUILD_FORMAT) -q -t redact-checkimg --target redact -f ../Dockerfile .. >/dev/null \
 		|| { echo "redact image build 失敗 (要ネット)" >&2; exit 1; }; \
-	$(ENGINE) run --rm --user node --entrypoint bash tools-redact-checkimg -lc \
+	$(ENGINE) run --rm --user node --entrypoint bash redact-checkimg -lc \
 		'python3 -c "import sys, mitmproxy; assert sys.version_info >= (3, 12), sys.version"' \
 		|| { echo "redact-image: node 子が python3>=3.12 + mitmproxy を使えない" >&2; exit 1; }; \
 	echo "ok  redact-image ($(ENGINE); node python3>=3.12 + mitmproxy import)"

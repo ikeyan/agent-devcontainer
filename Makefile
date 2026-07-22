@@ -11,7 +11,7 @@ MAKEFLAGS += --output-sync=target
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
 
-OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder
+OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination
 .PHONY: help check check-offline check-online setup check-review-md sync-review-md $(OFFLINE_CHECKS)
 
 help: ## 一覧
@@ -24,8 +24,8 @@ check-offline: $(OFFLINE_CHECKS) ## ルート成果物 + core のネット不要
 check-core: ## core の検査集約を委譲実行 (要 scaffold 済み project 層)
 	@$(MAKE) -C core check
 
-check-install-sh: ## install.sh を shellcheck (shellcheck 必須)
-	@shellcheck -S warning install.sh && echo "ok  install.sh (shellcheck)"
+check-install-sh: ## install.sh と kit 補助スクリプト (bin/) を shellcheck (shellcheck 必須)
+	@shellcheck -S warning install.sh bin/*.sh && echo "ok  install.sh + bin/*.sh (shellcheck)"
 
 check-templates: ## templates と .github の JSON/YAML が parse 可能か (kit venv の PyYAML 必須)
 	@python3 -c 'import json; json.load(open("templates/claude/settings.json")); json.load(open("templates/devcontainer.json"))' \
@@ -60,9 +60,43 @@ check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無い�
 	@grep -rq '@@PROJECT_NAME@@' templates || { echo "negative probe: templates に @@PROJECT_NAME@@ が無い — 検査対象の token が drift" >&2; exit 1; }
 	@grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile; [ $$? -eq 1 ] && echo "ok  placeholder (@@PROJECT_NAME@@ 置換済み)"
 
+# 実体は bin/check_contamination.sh (設計コメント・token 定義・negative probe 群もそちら)。
+# 検出器自体が複雑な bash なので、Makefile 埋込でなくスクリプトにして shellcheck の圏内に置く
+# (check-install-sh が lint する)。
+check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / tools-redact / tools_) が混入していないか
+	@bash bin/check_contamination.sh core templates
+
+# PROJECT_NAME は compose project 名 ([a-z0-9][a-z0-9_-]*)、GH_USER は GitHub user 名 ([A-Za-z0-9-]+、
+# Dockerfile が assert)。charset が異なる別概念なので変数を分ける (例: PROJECT_NAME=my_proj は valid
+# だが gh user としては invalid — 混用すると image build まで失敗が遅延する)。
+# charset は sed 実行前に検証する (どちらの charset も sed 特殊文字 / & \ を含まない = 置換が安全)。
+# scaffold は project.tmp に組み立ててから mv する — 途中失敗の半端な project/ を残すと存在ガードで
+# 再実行が no-op になり回復不能になるため (@@PROJECT_NAME@@ の残存は check-placeholder が pin 済み)。
+# PROJECT_GH_USER の書込は後段の補完 (backfill) に一本化する — 新規 scaffold (template の空行を
+# 置換) も、この変数の導入前に scaffold した既存 checkout の修復も同じ経路を通す。既存 project/ は
+# それ以外触らない (kit repo の project/ は gitignore された検査用 artifact であり consumer 所有物
+# ではない)。補完は .env の実在と末尾改行を保証してから追記する (改行なし末尾に >> すると前の変数に
+# 癒着して静かに壊す) + 追記結果を grep で assert (sed s/// は不一致でも exit 0 のため)。
+# PROJECT_NAME / GH_USER は recipe へ export で渡す (`$(VAR)` の本文テキスト展開でなくシェル環境経由 =
+# 値はデータ扱い、シェルの再展開・quote 破壊・バッククォート実行を受けない)。gate はこの値を検証し、
+# 書込値・echo と一致する。make はコマンドライン `VAR=値` の `$` を parse 時に展開する (`$USER`→`SER`)
+# 点だけは recipe で防げない — が空白・記号を含む値は charset gate が弾き、展開後の最終値が echo に出る。
 PROJECT_NAME ?= kitci
-setup: ## fresh clone を検査可能にする: consumer 相当の project 層 (既存ファイルは触らない) + kit venv
-	@[ -e project ] || { cp -Rp templates/project project && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' project/compose.yaml; }
-	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i 's/@@PROJECT_NAME@@/$(PROJECT_NAME)/' devcontainer.json; }
+GH_USER ?= kitci
+export PROJECT_NAME GH_USER
+setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv (既存 project は PROJECT_GH_USER 欠落だけ補完)
+	@[[ "$$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$$ ]] || { echo "PROJECT_NAME が不正 ([a-z0-9][a-z0-9_-]*): '$$PROJECT_NAME'" >&2; exit 1; }
+	@[[ "$$GH_USER" =~ ^[A-Za-z0-9-]+$$ ]] || { echo "GH_USER が不正 (GitHub user 名 [A-Za-z0-9-]+): '$$GH_USER'" >&2; exit 1; }
+	@[ -e project ] || { rm -rf project.tmp && cp -Rp templates/project project.tmp \
+		&& sed -i "s/@@PROJECT_NAME@@/$$PROJECT_NAME/" project.tmp/compose.yaml \
+		&& mv project.tmp project || { rm -rf project.tmp; exit 1; }; }
+	@[ -f project/.env ] || : > project/.env
+	@grep -q '^PROJECT_GH_USER=..*' project/.env || { \
+		sed -i '/^PROJECT_GH_USER=$$/d' project/.env \
+		&& { [ -z "$$(tail -c1 project/.env)" ] || echo >> project/.env; } \
+		&& printf 'PROJECT_GH_USER=%s\n' "$$GH_USER" >> project/.env \
+		&& grep -q "^PROJECT_GH_USER=$$GH_USER$$" project/.env \
+		&& echo "setup: project/.env に PROJECT_GH_USER=$$GH_USER を設定"; }
+	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i "s/@@PROJECT_NAME@@/$$PROJECT_NAME/" devcontainer.json; }
 	@[ -e Dockerfile ] || bash core/bin/gen-dockerfile.sh > Dockerfile
 	@UV_PROJECT=$(CURDIR)/core UV_PROJECT_ENVIRONMENT=$(CURDIR)/.venv core/uv-sync.sh --frozen

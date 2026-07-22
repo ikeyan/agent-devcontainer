@@ -2,9 +2,15 @@
 # ALLOWED_DOMAINS と整合させる。github.com は意図的に含めない (suffix 一致の罠と codeload.github.com の
 # 扱いは docs/verified-facts/network.md「proxy bypass / NO_PROXY」)。
 # project 分は project/.env の PROJECT_NO_PROXY (空エントリは各実装が無視する)。
-x-no-proxy: &no_proxy "localhost,127.0.0.1,::1,host.docker.internal,registry.npmjs.org,api.anthropic.com,docs.claude.com,code.claude.com,platform.claude.com,console.anthropic.com,claude.ai,sentry.io,statsig.com,jsr.io,api.jsr.io,npm.jsr.io,ikeyan.github.io,api.socket.dev,firewall-api.socket.dev,objects.githubusercontent.com,release-assets.githubusercontent.com,marketplace.visualstudio.com,vscode.blob.core.windows.net,update.code.visualstudio.com,pypi.org,files.pythonhosted.org,codeload.github.com,${PROJECT_NO_PROXY:-}"
+x-no-proxy: &no_proxy "localhost,127.0.0.1,::1,host.docker.internal,registry.npmjs.org,api.anthropic.com,docs.claude.com,code.claude.com,platform.claude.com,console.anthropic.com,claude.ai,sentry.io,statsig.com,jsr.io,api.jsr.io,npm.jsr.io,api.socket.dev,firewall-api.socket.dev,objects.githubusercontent.com,release-assets.githubusercontent.com,marketplace.visualstudio.com,vscode.blob.core.windows.net,update.code.visualstudio.com,pypi.org,files.pythonhosted.org,codeload.github.com,${PROJECT_NO_PROXY:-}"
 x-proxy: &proxy "http://secrets-proxy:8080"
 x-ca-bundle: &ca_bundle "/etc/ssl/certs/ca-certificates.crt"
+# gh seed 用 GitHub user 名 (project/.env 所有)。build.args (焼込) と environment (init-firewall.sh の
+# rebuild 漏れ整合検査 — 起動ごとに現在値) が同じ値を使うので anchor で共有。:- (空既定) にするのは、
+# compose が service 選択前に全体を補間するため :? だと dev と無関係な compose 呼び出し (bootstrap /
+# proxy-web の secrets-proxy) まで gate してしまうから。未設定・不正の fail-closed は dev build の
+# Dockerfile assert ([[ =~ ^[A-Za-z0-9-]+$ ]]、空も弾く) が担う。
+x-gh-user: &gh_user ${PROJECT_GH_USER:-}
 
 # 相対ホストパスの基準ディレクトリ (重要 — 善意の誤修正ガード):
 #   devcontainer.json は dockerComposeFile を ["project/compose.yaml", "core/compose.yaml"] の順で
@@ -23,6 +29,11 @@ services:
       context: ..                # project/ 基準でも core/ 基準でも .devcontainer/ (同深度)。build context は生成 Dockerfile のある .devcontainer/
       dockerfile: Dockerfile
       target: dev
+      args:
+        # gh seed (core/gh/hosts.yml) の @@GITHUB_USER@@ を build 時に焼き込む (build.args は
+        # 最初の -f の dir の .env から補間される: docs/verified-facts/docker.md「compose 複数 -f」)。
+        # 未設定・空・不正は Dockerfile の ARG assert が fail-closed に落とす (:- なので compose では通す)。
+        PROJECT_GH_USER: *gh_user
     cap_drop:
       - ALL
     cap_add:
@@ -48,6 +59,10 @@ services:
       NODE_OPTIONS: "--max-old-space-size=4096 --use-env-proxy"
       POWERLEVEL9K_DISABLE_GITSTATUS: "true"
       CHECKPOINT_DISABLE: "1"
+      # gh seed 整合検査用 (init-firewall.sh が焼込値と照合)。environment はコンテナ起動時に
+      # 常に現在値になる (build arg と違い recreate に追従する) ので、「.env を変えたのに
+      # rebuild していない」drift の検出源として使える。秘密ではない (GitHub user 名)。
+      PROJECT_GH_USER: *gh_user
       # Web/API は secrets-proxy 経由、インフラ系は NO_PROXY で直結。
       HTTP_PROXY: *proxy
       HTTPS_PROXY: *proxy
@@ -66,9 +81,9 @@ services:
       # ホストの .claude/settings.local.json (ローカル設定) を {} で覆ってコンテナの claude に入るのを防ぐ。
       # bind 先は devcontainer.json の initializeCommand が事前に用意する (docs/verified-facts/docker.md「Docker Desktop / runc」)。
       - ../core/claude/local-mask.json:/workspace/.claude/settings.local.json:ro  # project directory (project/) 基準 → core/ 配下
-      # gh auth login (実トークン焼込) を封じる ro bind。マイグレーション対策は gh/config.yml 側
-      # (docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。mountpoint は Dockerfile の COPY で用意済み。
-      - ../core/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro  # project directory (project/) 基準 → core/ 配下
+      # gh の hosts.yml は bind せず build 時に生成する (Dockerfile の gh seed 節)。gh auth login
+      # (実トークン焼込) は root 所有の file+dir で封じる (docs/verified-facts/gh.md「gh CLI / config dir
+      # の読取と書込」)。
       - bashhistory:/commandhistory
       - claude-config:/home/node/.claude
       # host(mac) の .venv を隠すコンテナ専用 volume (kit 自身の python 検査環境)。
@@ -93,7 +108,7 @@ services:
     # bootstrap 前なら起動失敗し dev も起動しない (fail-close)。
     #   make -C .devcontainer/core bootstrap
     #   (単一 -f の生 compose を直に叩くと project 名が core になり session が別 volume namespace へ
-    #    書かれ復旧不能ループになる。make target は project 層込みの 2 ファイル -f で project 名 tools を保つ)
+    #    書かれ復旧不能ループになる。make target は project 層込みの 2 ファイル -f で project 名を保つ)
     environment:
       # bootstrap 時の bw config server。値は project/.env の PROJECT_BW_SERVER (project 層所有)。
       BW_SERVER: ${PROJECT_BW_SERVER:-}

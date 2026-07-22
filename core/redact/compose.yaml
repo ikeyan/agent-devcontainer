@@ -1,8 +1,16 @@
-name: tools-redact
+# project 名は consumer ごとに変える (固定名だと複数 consumer repo で compose namespace が衝突する)。
+# redact-flow が consumer の正式 project 名から <project>-redact を導出して export する。手動起動で
+# 未設定なら fail-closed に落ちる (top-level name の :? は docs/verified-facts/docker.md「compose 複数 -f」)。
+name: ${REDACT_PROJECT:?set REDACT_PROJECT (通常は bin/redact-flow が導出)}
 
 # redact サンドボックス。.devcontainer/core/bin/redact-flow が REDACT_* を export して
-#   docker compose -f .devcontainer/core/redact/compose.yaml run --rm redact
-# で起動する。dev の compose とは別物 (secrets-proxy も HTTP_PROXY も持たない。
+#   docker compose -p "$REDACT_PROJECT" -f .devcontainer/core/redact/compose.yaml run --rm redact
+# で起動する。この compose を直に叩く場合も -p を明示し (ambient な COMPOSE_PROJECT_NAME が
+# name: を黙って上書きする — docs/verified-facts/docker.md「project 名の優先順位」)、external
+# volume を先に用意すること:
+#   docker volume create agent-devcontainer-redact-auth
+# (redact-flow 経由なら自動で用意される。無いと compose が external volume not found で止まる)。
+# dev の compose とは別物 (secrets-proxy も HTTP_PROXY も持たない。
 # egress は entrypoint+init-firewall.sh が Anthropic (api.anthropic.com + platform.claude.com):443
 # + dnsmasq DNS に固める。後者は claude の Console 認証で必須)。
 
@@ -52,8 +60,14 @@ networks:
   redact-net: {}
 
 volumes:
-  # name を固定する。既定だと compose は project 名を冠した tools-redact_redact-claude を
-  # 作るため、ユーザーが `claude login` で認証する literal な agent-devcontainer-redact-auth volume
-  # と食い違い、/root/.claude-auth が空マウントになって未認証で起動してしまう。
+  # name を kit 名義で固定した共有 volume。既定だと compose は project 名を冠した
+  # ${REDACT_PROJECT}_redact-claude を作るため、ユーザーが `claude login` で認証する literal な
+  # agent-devcontainer-redact-auth volume と食い違い、/root/.claude-auth が空マウントになって
+  # 未認証で起動してしまう。固定名は意図した共有 — どの consumer repo (どの project 名) からでも
+  # 1 回の事前認証を ro マウントで使い回す。external にする: compose 管理名義のままだと volume の
+  # project label と今の project 名の不一致で compose が毎回警告する (project 名が consumer ごとに
+  # 変わったため必ず起きる — docs/verified-facts/docker.md「固定名 volume と project label」)。
+  # external は compose が作成しない宣言なので、redact-flow が起動前に冪等に用意する。
   redact-claude:
+    external: true
     name: agent-devcontainer-redact-auth

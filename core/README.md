@@ -136,7 +136,7 @@ bootstrap が `bw login --apikey` → `bw unlock` を行い、`BW_SESSION` を `
   `BW_SESSION` で解錠できなければ `status=...` を添えて exit → healthcheck が通らず dev も起動しない
   (=フェイルクローズ)。理由は proxy のログに出る (`docker compose -f .devcontainer/project/compose.yaml -f .devcontainer/core/compose.yaml logs secrets-proxy`)。
 - `.devcontainer/project/rules.yaml` (**git 管理**): 宛先ホストごとの `inject` (静的注入) / `capture` (トークン化) と、トップレベルの `block` (危険エンドポイント遮断)。秘密は含まない (Vaultwarden のアイテム名と宛先ホストだけ) ので追跡する。全ルール型の構造・必須項目 (`secret.field` の許容値を含む) は `.devcontainer/core/secrets-proxy/rules.schema.json` (JSON Schema) が定義し、`make -C .devcontainer/core check-rules` で検証する (schema/検証は core、設定の中身は project)。`rules.yaml` が無いと secrets-proxy は起動しない。
-- **再 bootstrap / 別アカウントに切替える**には、`docker compose ... run --rm secrets-proxy bash -lc 'rm -f $BITWARDENCLI_APPDATA_DIR/session.key'` で session を消すか、`docker volume rm tools_proxy-bw` で login 状態ごと破棄してから bootstrap し直す。
+- **再 bootstrap / 別アカウントに切替える**には、`docker compose ... run --rm secrets-proxy bash -lc 'rm -f $BITWARDENCLI_APPDATA_DIR/session.key'` で session を消すか、`docker volume rm <project>_proxy-bw` (`<project>` = project/compose.yaml の `name:`) で login 状態ごと破棄してから bootstrap し直す。
 
 ### 構成ファイルの検証
 
@@ -160,7 +160,7 @@ dev は VS Code が管理しているので **無停止のまま** proxy だけ�
 
     make -C .devcontainer/core proxy-web        # 要 host python3
     # 実体: up -d --build --no-deps secrets-proxy → host 踏み台トンネルを foreground で開く
-    # project 名は compose の `name: tools` で VS Code と共有。dev は touch しない。
+    # project 名は project/compose.yaml の `name:` で VS Code と共有。dev は touch しない。
     # --build: entrypoint.sh / tcp-bridge.py は image に COPY されるので変更反映に再ビルドが要る (通常一瞬)。
 
 `make proxy-web` は起動ログの token を拾って URL を表示し、続けて **host 踏み台トンネル**
@@ -230,26 +230,6 @@ Python の venv も同様: `/workspace/.devcontainer/.venv` (Dockerfile の `UV_
 ```
 
 以後 `uv run` は既存 env を使うのでネット不要。
-
-## volume rename からの移行
-
-named volume の論理名を `tools-` 接頭辞つき (project 名 `tools` との二重表現) から汎用名へ
-rename した (`tools-bashhistory`→`bashhistory` 等。redact 側の認証 volume は kit 名義の
-`agent-devcontainer-redact-auth` に固定名を変更)。rename 前のリポジトリを使っていた場合、**次に
-devcontainer を開く前に**ホストで 1 回だけ移行スクリプトを実行すること:
-
-```shell
-.devcontainer/core/bin/migrate-volumes.sh   # compose project 名 (既定 tools) を引数で上書き可
-```
-
-実行せずにコンテナを再作成すると、claude の認証情報・shell 履歴・podman の image/コンテナストアは
-**新しい空の volume にすり替わり**、再ログインや再 pull が必要になる (データが消えるわけではなく
-旧 volume に残ったままだが、新しい named volume からは見えなくなる)。移行後はコンテナを再作成すれば
-旧データがそのまま引き継がれる。
-
-`node_modules` / pnpm store (`node-modules` / `pnpm-store`) は移行スクリプトの対象外 (再生成可能な
-キャッシュ): コンテナ再作成後に `pnpm install` で作り直す。venv も `migrate-volumes.sh` が
-移行するが、代わりに `.devcontainer/core/uv-sync.sh` で作り直しても良い。
 
 ## allowlist の編集
 

@@ -193,26 +193,76 @@ COPY --from=hadolint --chmod=0755 /bin/hadolint /usr/local/bin/hadolint
 # (SKIP 解消)。--chmod=0755 で 0755 root 所有に正規化する (hadolint と同様、同 uid の上書きを締める)。
 COPY --from=compose --chmod=0755 /docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 
-# gh CLI の認証は dev に実トークンを置かず secrets-proxy が substitute する。placeholder だけの
-# hosts.yml を seed する (.devcontainer/project/rules.yaml「api.github.com」)。hosts.yml は compose.yaml で ro
-# bind するので gh auth login で実トークンを焼けない (EROFS)。config.yml に version を seed して起動時
-# マイグレーションによる hosts.yml 書換も抑止する (gh/config.yml 参照)。~/.config/gh は volume でなく
-# ephemeral なのでイメージから復元される。COPY は bind の mountpoint を用意する役割も兼ねる。
-COPY --chown=node:node core/gh/hosts.yml /home/node/.config/gh/hosts.yml
-COPY --chown=node:node core/gh/config.yml /home/node/.config/gh/config.yml
-RUN chown -R node:node /home/node/.config && chmod 700 /home/node/.config/gh && \
-  chmod 600 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml
+# gh CLI の認証は dev に実トークンを置かず secrets-proxy が substitute する。token placeholder だけの
+# hosts.yml を seed し (.devcontainer/project/rules.yaml「api.github.com」)、user 名 (consumer 値) は
+# テンプレート (core/gh/hosts.yml) の @@GITHUB_USER@@ へ build arg PROJECT_GH_USER で焼き込む。
+# 所有権の設計 (根拠と防御範囲: docs/verified-facts/gh.md「gh CLI / config dir の読取と書込」、
+# updateRemoteUserUID の制約: devcontainers-cli.md):
+#   - dir と hosts.yml (token の書込先) は root 所有 = gh auth login の実トークン焼込事故を封じる
+#   - config.yml は node 所有のまま = 正当な gh config set / gh alias set を壊さない
+#   - config.yml の version seed が起動時マイグレーションの hosts.yml 書換を抑止 (gh/config.yml)
+# 値の変更は rebuild が要る (build arg)。「値を変えたが rebuild していない」drift は init-firewall.sh
+# が起動時に照合して止める (旧イメージ窓は README「更新に伴う既知の移行」)。~/.config/gh は volume
+# でなく ephemeral なのでイメージから復元される。
+ARG PROJECT_GH_USER
+COPY core/gh/hosts.yml /home/node/.config/gh/hosts.yml
+COPY core/gh/config.yml /home/node/.config/gh/config.yml
+# 事後条件を明示 assert する: user 名の形 ([[ =~ ]] は値全体に一致 — 行単位 grep だと複数行値の
+# 1 行目だけで素通しする。空も弾く) / @@GITHUB_USER@@ の全展開 / @@SECRET_github_token@@ が両方の
+# oauth_token: 値として残存 (コメント内の出現では満たされない位置指定。secrets-proxy の placeholder
+# は build で消してはならない)。set -e + 各段に専用の || ハンドラ — && と || を混ぜて連結すると
+# 前段の失敗が後段の無関係な診断へ流れ込む (左結合)。
+RUN set -e; \
+  [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
+    || { echo "PROJECT_GH_USER が不正 (project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定): '$PROJECT_GH_USER'" >&2; exit 1; }; \
+  sed -i "s/@@GITHUB_USER@@/$PROJECT_GH_USER/g" /home/node/.config/gh/hosts.yml; \
+  ! grep -q '@@GITHUB_USER@@' /home/node/.config/gh/hosts.yml \
+    || { echo "hosts.yml に @@GITHUB_USER@@ が残った (置換漏れ)" >&2; exit 1; }; \
+  [ "$(grep -c '^ *oauth_token: "@@SECRET_github_token@@"$' /home/node/.config/gh/hosts.yml)" -eq 2 ] \
+    || { echo "hosts.yml の oauth_token 値から @@SECRET_github_token@@ が消えた (secrets-proxy placeholder 破壊)" >&2; exit 1; }; \
+  chown node:node /home/node/.config; \
+  chown -R root:root /home/node/.config/gh; \
+  chown node:node /home/node/.config/gh/config.yml; \
+  chmod 755 /home/node/.config/gh; \
+  chmod 644 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml
 
 # init-firewall.sh / install-proxy-ca.sh の再実行 (postStartCommand・CDN IP ローテーション対応) は
 # dev だけが要る。sudo ごと dev 専用にする。
 COPY core/init-firewall.sh /usr/local/bin/
+COPY core/gh-hosts-user.awk /usr/local/bin/
 COPY core/install-proxy-ca.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/install-proxy-ca.sh && \
-  printf '%s\n%s\n' \
+# env_keep: init-firewall.sh の gh seed 整合検査は現在の PROJECT_GH_USER (compose environment) を
+# 見る必要があるが、sudo の env_reset が剥がし、cap_drop:ALL の root は /proc/1/environ も読めない
+# (node 所有 0400 + CAP_DAC_OVERRIDE/CAP_SYS_PTRACE 無し — docs/verified-facts/capabilities.md)。
+# 検査は root 不要 (hosts.yml は 644) だが root スクリプト内に置く: 既存 consumer の postStartCommand
+# 配線 (sudo 2 コマンド) が全 consumer に届く唯一の実行点で、node 実行の別スクリプトに分けると
+# devcontainer.json 未更新の consumer で検査だけが silent に消える (fail-open)。
+# per-command Defaults の文法と env_keep の semantics は docs/verified-facts/sudo.md。
+# visudo -c で構文を build 時に検証する — sudoers の構文エラーは sudo 全体を無効化し、
+# postStartCommand ごと devcontainer 起動を壊すため fail-closed に build で止める。
+# 続く probe は「per-command env_keep が env_reset を実際に貫通する」semantics 自体を毎 build で
+# 実測する (本命 entry は init-firewall.sh 束縛で build 中に実行できないため、probe 用 sudoers を
+# 一時的に置いて /usr/bin/env で検証し、消す)。3 点 (sudoers/compose/reader) の名前一致は
+# bin/redact_invariants_check.sh §11 が pin する。
+# set -e + 各段専用ハンドラ — && 連鎖の末尾に || を混ぜると前段 (printf/chmod/visudo) の失敗が
+# 末尾の env_keep 診断へ流れ込む (左結合)。visudo 構文エラー等は各コマンドの自前 stderr で落とす。
+RUN set -e; \
+  chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/install-proxy-ca.sh; \
+  printf '%s\n%s\n%s\n' \
+    'Defaults!/usr/local/bin/init-firewall.sh env_keep += "PROJECT_GH_USER"' \
     "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" \
     "node ALL=(root) NOPASSWD: /usr/local/bin/install-proxy-ca.sh" \
-    > /etc/sudoers.d/node-firewall && \
-  chmod 0440 /etc/sudoers.d/node-firewall
+    > /etc/sudoers.d/node-firewall; \
+  chmod 0440 /etc/sudoers.d/node-firewall; \
+  visudo -c -f /etc/sudoers.d/node-firewall; \
+  printf '%s\n%s\n' \
+    'Defaults!/usr/bin/env env_keep += "KIT_ENVKEEP_PROBE"' \
+    "node ALL=(root) NOPASSWD: /usr/bin/env" \
+    > /etc/sudoers.d/kit-envkeep-probe; \
+  chmod 0440 /etc/sudoers.d/kit-envkeep-probe; \
+  [ "$(runuser -u node -- env KIT_ENVKEEP_PROBE=ok sudo -n /usr/bin/env | grep -c '^KIT_ENVKEEP_PROBE=ok$')" = 1 ] \
+    || { echo "sudoers の per-command env_keep が機能しない (init-firewall.sh への PROJECT_GH_USER 伝搬が壊れる)" >&2; exit 1; }; \
+  rm /etc/sudoers.d/kit-envkeep-probe
 
 # project 層の直結許可ドメイン (init-firewall.sh が読む)。project/allow-domains.txt が編集点。
 COPY project/allow-domains.txt /etc/agent-devcontainer/allow-domains.txt

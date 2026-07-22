@@ -11,7 +11,7 @@ publish は張らないので LAN/dev への露出はゼロ。host は docker ex
 
 要件は host の python3 と docker/compose のみ (socat 不要)。COMPOSE env に `-f` 一式 (project 層
 先頭 + core, 例: `docker compose -f ../project/compose.yaml -f compose.yaml`) を含めて渡すこと —
-project 名 (`name: tools`) は project/compose.yaml が供給するため、それを欠くと `exec` が別 project
+project 名 (top-level `name:`) は project/compose.yaml が供給するため、それを欠くと `exec` が別 project
 namespace を見て secrets-proxy を見つけられない (core/docs/verified-facts/docker.md
 「compose 複数 -f / project directory / .env」)。カレントは .devcontainer/core を想定。
 Ctrl-C で閉じる。secrets-proxy 本体は動いたまま。
@@ -25,6 +25,11 @@ import threading
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PROXY_WEB_TUNNEL_PORT", "8081"))
+# ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きして exec が別 project を指し、
+# COMPOSE_ENV_FILES は補間に使う .env を余所へ差し替える (core/Makefile の COMPOSE と同じ隔離。
+# make 経由でなく直接実行した場合もここで揃える)。
+os.environ.pop("COMPOSE_PROJECT_NAME", None)
+os.environ.pop("COMPOSE_ENV_FILES", None)
 COMPOSE = shlex.split(os.environ.get("COMPOSE", "docker compose -f ../project/compose.yaml -f compose.yaml"))
 EXEC_CMD = COMPOSE + [
     "exec", "-T", "secrets-proxy",

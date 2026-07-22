@@ -90,8 +90,12 @@ stdout に表示する)。更新実行 (core が既にある) は glue を一切
 - **`project/compose.yaml`** — project 固有の compose 層。追加 volume / build args / 環境変数は
   `services.dev` 以下に足す。`name:` (compose project 名) は scaffold 時にカレントディレクトリ名から
   自動設定される。
-- **`project/.env`** — compose の変数補間専用 (`PROJECT_NO_PROXY`, secrets-proxy bootstrap 用の
-  `PROJECT_BW_SERVER`)。dev コンテナのプロセス環境には渡らない。
+- **`project/.env`** — compose の変数補間用 (`PROJECT_NO_PROXY`, secrets-proxy bootstrap 用の
+  `PROJECT_BW_SERVER`, gh seed 用の `PROJECT_GH_USER`)。原則 dev コンテナのプロセス環境には渡らない —
+  例外は `PROJECT_GH_USER` で、rebuild 漏れ検査 (init-firewall.sh) のため environment 経由でも渡る
+  (GitHub user 名であり秘密ではない。秘密はそもそも .env に置かない設計)。
+  `PROJECT_GH_USER` (認証に使う GitHub user 名) は必須 — 未設定・不正だと dev イメージ build 時に
+  Dockerfile の ARG assert が fail-closed に落とす (compose 補間は `:-` なので非 dev の compose 操作は通す)。
 
 ## 検証
 
@@ -114,12 +118,26 @@ push/PR ごとに上記を実行する)。`check-seccomp` は node>=23.6 を要�
   作る。`GITHUB_TOKEN` で作った PR は他の workflow を trigger しない GitHub の仕様があるため、PR 上で
   CI を回したい場合は close/reopen するか PAT に差し替える)。
 
-## 既知の ikeyan/tools 前提 (汎用化 TODO)
+### 更新に伴う既知の移行 (既存 consumer 向け)
 
-- `core/gh/hosts.yml` に GitHub user 名 `ikeyan` が直書きされている。
-- `core/init-firewall.sh` の直結許可ドメインと `core/compose.yaml` の `NO_PROXY` に `ikeyan.github.io`
-  が含まれる。
+installer は consumer 所有の `project/` を触らないため、core が新しい必須 project 変数を要求する
+更新では、既存 consumer は次の compose 呼び出し/rebuild で fail-closed に止まる (エラーメッセージが
+設定すべき変数を指す)。現時点の移行点:
+
+- **`PROJECT_GH_USER`** (gh seed の GitHub user 名) を `project/.env` に設定する。build 時に image へ
+  焼き込むため、設定・変更の反映には dev イメージの rebuild が要る (未設定なら dev イメージ build 時に
+  エラー文言で設定+rebuild を要求する)。設定「変更」後の rebuild 漏れは postStartCommand (init-firewall.sh) の
+  整合検査が起動時に止める。**kit 更新直後に旧イメージのまま再作成した場合だけは検査が旧版のため
+  検出されない** (VS Code は compose 宣言の entrypoint を使わないため、ホスト側から強制する手段が
+  無い — devcontainers-cli.md)。更新後は必ず rebuild すること。
+- **consumer 固有の直結ドメイン** (旧 core 直書き分、例: `ikeyan.github.io`) は core の許可リストから
+  外れた。必要なら `project/allow-domains.txt` と `PROJECT_NO_PROXY` の対に追加して rebuild する
+  (こちらは config エラーにならず、実行時の接続失敗として現れる点に注意)。
+
+## 既知の汎用化 TODO
+
 - `core/claude/` (`managed-settings.json` / `user-settings.json` / `local-mask.json`) は Claude Code
   固有の seed。他 agent CLI (Codex 等) への対応は今後。
-- `core/redact/compose.yaml` の `name: tools-redact` — 複数 consumer で compose namespace が衝突する。
-- `core/pyproject.toml` の `name = "tools"`。
+
+consumer 固有値 (gh user / 直結ドメイン / compose project 名) は project 層へ抽出済みで、再混入は
+`make check-contamination` が防ぐ (kit issue #10)。
