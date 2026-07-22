@@ -10,6 +10,7 @@
 - Claude Code permission パスの `/` vs `//` — 単一 `/` は project-root 相対。反映: `redact_invariants_check.sh` §4
 - 必要 capability の取りこぼし (iptables -m set の NET_RAW 等)。反映: `capabilities.md` + compose の cap_add コメント
 - 2026-07 (PR #23): レビュー対応で導入した gh seed の起動時検査を 3 実装連続で作り直し (compose entrypoint → /proc/1/environ 読取 → sudoers env_keep)。3 つとも外部依存の実行時契約 — devcontainers CLI の overrideCommand が compose 宣言 entrypoint を破棄 / cap_drop:ALL の root は他 uid の /proc/*/environ を読めない / sudo の env_reset — を一次情報で確認せず記憶で書いたことが原因で、ロジック単体の検証は全部通っていた。反映: AGENTS.md ワークフロー先頭 (契約の事前確認) + 検証節 (実行時契約の実測)、ledger `devcontainers-cli.md` / `capabilities.md` / `sudo.md`、build 時 env_keep probe (core/Dockerfile)
+- 2026-07 (PR #23): 混入検査 (check-contamination) の bypass 2 件 — `grep --exclude-dir=verified-facts` の glob が basename 一致で任意の同名 dir を除外 / `grep -r` が symlink target を非追従 — を xhigh multi-agent レビュー 6 ラウンドが見落とし、Codex bot が拾った。原因は同じ「外部ツールの契約を実測せず意味論を仮定した」クラスで、**レビューエージェント自身もツール契約由来の欠陥には盲点を持つ**。反映: ledger 除外をパス限定化 + symlink 拒否 (`bin/check_contamination.sh` の probe で pin)。教訓: 検査器がツールの挙動 (glob 意味論・symlink・exit code) に依存する箇所は、レビューに頼らず negative probe で実挙動を pin する
 
 ## セキュリティ照合の省略 (→ SECURITY-MODEL の不変条件を上から照合)
 

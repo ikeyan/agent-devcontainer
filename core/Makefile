@@ -80,12 +80,15 @@ check: $(CHECKS) ## .devcontainer 全体を検証
 
 # project 層の PROJECT_GH_USER を build 前に config-time で検査する。compose の :- は非 dev の操作を
 # 巻き込まないため未設定でも config を通す (accepted) が、それだと consumer CI (make check) が緑のまま
-# 初回 dev build で Dockerfile assert に落ちる。ここで .env を直接検査し早期に止める (grep ベース =
-# 非 dev compose は gate しない)。charset は Dockerfile assert と同じ [A-Za-z0-9-]+。
+# 初回 dev build で Dockerfile assert に落ちる。ここで早期に止める。検証値は .env を自前 parse せず
+# compose config の build.args から取る — 値を実際に焼く compose の解釈と一致させ (引用符・コメント等の
+# .env 文法差で偽陽/偽陰にしない)、これは値を読んで検証するだけで非 dev compose は gate しない。
+# charset は Dockerfile assert と同じ [A-Za-z0-9-]+。COMPOSE は -u PROJECT_GH_USER 済 = project/.env が源。
 check-project-env: ## project/.env の PROJECT_GH_USER が GitHub user 名として妥当か (dev build 前に停止)
-	@val=$$(sed -n 's/^PROJECT_GH_USER=//p' ../project/.env | head -1); \
+	@val=$$($(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null \
+		| $(PY) -c 'import sys,yaml; print((yaml.safe_load(sys.stdin)["services"]["dev"]["build"].get("args") or {}).get("PROJECT_GH_USER") or "")'); \
 	[[ "$$val" =~ ^[A-Za-z0-9-]+$$ ]] \
-		|| { echo "project/.env の PROJECT_GH_USER が未設定/不正 (GitHub user 名 [A-Za-z0-9-]+ を設定): '$$val'" >&2; exit 1; }; \
+		|| { echo "PROJECT_GH_USER が未設定/不正 (compose が build.args に解決した値: '$$val')。project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定" >&2; exit 1; }; \
 	echo "ok  project-env (PROJECT_GH_USER 妥当)"
 
 # config は daemon 不要 (パース + マージのみ)。docker/podman compose は CI/devcontainer 必須。
