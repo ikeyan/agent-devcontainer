@@ -42,7 +42,11 @@ elif [ -f "$wsabs/devcontainer.json" ];              then cfgrel="devcontainer.j
 else echo "devcontainer.json が $wsabs (/.devcontainer) に無い" >&2; exit 1; fi
 
 proj="dcup-smoke-$$"
-tmproot=$(mktemp -d)
+tmproot=$(mktemp -d) || { echo "temp ディレクトリの作成 (mktemp -d) に失敗" >&2; exit 1; }
+[ -n "$tmproot" ] || { echo "mktemp -d が空を返した" >&2; exit 1; }
+# probe 前の dangling <none> image を baseline に取る (cleanup が probe 由来の dangling だけを delta で
+# 掃くため。trap 設置前 = build 前に取るので、以降どこで落ちても既存 dangling を誤って消さない)。
+dangling_pre=$(docker images -f dangling=true -q 2>/dev/null | sort -u)
 
 cleanup() {
     local rc=$?   # トラップ発火時の終了ステータスを保存 (下で必要なら fail-closed に昇格)。
@@ -61,23 +65,25 @@ cleanup() {
         docker run --rm -u 0 --entrypoint chown -v "$tmproot:/t" "$devimg" -R "$(id -u):$(id -g)" /t >/dev/null 2>&1
     fi
     rm -rf "$tmproot"
-    # image は compose project label が付かないので *tag 名* で消す (ID だと共有 ID の user tag を巻き込む)。
-    # folder 系 (vsc-<proj>-<hash>-uid — uid image は compose base の *子*) を先に、compose 系
-    # (<proj>-<svc> — *親*) を後に消す。親を子より先に untag すると dangling <none> が残る (features 無し
-    # なので子は uid image のみ)。separator (- / _) を anchor して PID prefix の取り違え
-    # (dcup-smoke-700-* が dcup-smoke-7005-… に一致) を防ぐ。reference filter は repo:tag を glob 照合し
-    # 複数指定は OR (devcontainers-cli.md / docker docs)。rmi は tag 名なので共有 ID でも他 tag は残る。
+    # image は tag 名で消す (ID=docker images -q だと共有 content-ID の user tag を巻き込む)。子 (folder 系
+    # uid image) を先、親 (compose 系) を後に消して dangling を避け、separator anchor で別 PID probe との
+    # 取り違えを防ぐ。契約と出典は docs/verified-facts/devcontainers-cli.md。
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=vsc-$proj-*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$proj-*" --filter "reference=${proj}_*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
-    # fail-closed self-check: proj token を含む docker 資源が残っていないか (CI 外の投入ホストでも効く)。
-    # token は必ず separator (- / _) を伴う (dcup-smoke-<pid>-<svc> 等) ので anchor し、別 PID probe
-    # (dcup-smoke-7005) を substring 誤検出しない。残ったら fail-closed に昇格 (成功終了を上書き)。
+    # probe が生じた dangling <none> image を baseline delta で掃く (build/rmi どちらが生んでも identity
+    # 非依存で拾う。対象は untag image のみで低害)。
+    comm -13 <(printf '%s\n' "$dangling_pre") <(docker images -f dangling=true -q 2>/dev/null | sort -u) 2>/dev/null \
+        | xargs -r docker rmi -f >/dev/null 2>&1
+    # fail-closed self-check: proj token を含む docker 資源 + temp tree の残留を検出 (rootless/SELinux で
+    # chown/rm が効かず root 所有 temp が残る filesystem leak も loud に落とす)。token は必ず separator
+    # (- / _) を伴うので anchor し、別 PID probe (dcup-smoke-7005) を substring 誤検出しない。残存したら
+    # fail-closed に昇格 (成功終了を上書き)。
     local left
     left=$( { docker ps -a --format '{{.Names}}'; docker images --format '{{.Repository}}'; \
               docker volume ls --format '{{.Name}}'; docker network ls --format '{{.Name}}'; } 2>/dev/null \
             | grep -cE -- "${proj}[-_]" || true )
-    if [ "$left" -ne 0 ]; then
-        echo "cleanup 後も '$proj' を含む docker 資源が $left 件残存 — 手動削除が要る" >&2
+    if [ "$left" -ne 0 ] || [ -e "$tmproot" ]; then
+        echo "cleanup 後も残留: docker 資源 $left 件 / temp=$tmproot ($([ -e "$tmproot" ] && echo 残 || echo 無)) — 手動削除が要る" >&2
         [ "$rc" -eq 0 ] && rc=1
     fi
     exit "$rc"
