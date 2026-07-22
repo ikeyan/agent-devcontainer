@@ -71,7 +71,7 @@ CHECKS := \
 	check-seccomp
 
 # check-redact-image / check-redact-dns-egress は重い/ネット要のため check 集約には入れず明示実行する (下記)。
-.PHONY: help check gh-seed proxy-web proxy-web-off check-redact-image check-redact-dns-egress gen-seccomp gen-dockerfile $(CHECKS)
+.PHONY: help check gh-seed proxy-web proxy-web-off check-redact-image check-redact-dns-egress check-devcontainer-up gen-seccomp gen-dockerfile $(CHECKS)
 
 help: ## 一覧
 	@sed -nE 's/^([a-zA-Z_-]+):.*## (.*)$$/  \1\t\2/p' $(MAKEFILE_LIST) | expand -t 20
@@ -342,12 +342,24 @@ gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh u
 # ビルドされるのは共通祖先 base だけで、dev はビルドされない)。重い & ネットを使うので既定の
 # check 集約には入れない — 投入ホストで明示的に叩く。
 check-redact-image: ## redact イメージを実ビルドし node 子の python3>=3.12+mitmproxy を検査 (要 docker/podman+ネット; 重いので明示実行)
-	@$(ENGINE) build $(BUILD_FORMAT) -q -t redact-checkimg --target redact -f ../Dockerfile .. >/dev/null \
+	@tag="redact-checkimg-$$$$"; trap '$(ENGINE) rmi -f "$$tag" >/dev/null 2>&1 || true' EXIT; \
+	$(ENGINE) build $(BUILD_FORMAT) -q -t "$$tag" --target redact -f ../Dockerfile .. >/dev/null \
 		|| { echo "redact image build 失敗 (要ネット)" >&2; exit 1; }; \
-	$(ENGINE) run --rm --user node --entrypoint bash redact-checkimg -lc \
+	$(ENGINE) run --rm --user node --entrypoint bash "$$tag" -lc \
 		'python3 -c "import sys, mitmproxy; assert sys.version_info >= (3, 12), sys.version"' \
 		|| { echo "redact-image: node 子が python3>=3.12 + mitmproxy を使えない" >&2; exit 1; }; \
 	echo "ok  redact-image ($(ENGINE); node python3>=3.12 + mitmproxy import)"
+
+# devcontainer を実際に up して postStart (init-firewall の gh seed 整合検査 + firewall) まで
+# 完走するかを end-to-end で検査する (build-images は build のみで postStart を実行しない)。
+# devcontainers CLI 経路でしか出ない runtime 契約 (overrideCommand の entrypoint 破棄 / capped root の
+# traverse 不可 EACCES 等 — docs/incidents.md) を回帰 pin する。実体・前提は bin/check_devcontainer_up.sh。
+# 期待 user は compose config の build.args (= project/.env の PROJECT_GH_USER。COMPOSE は -u 済) から取る。
+# 要 docker + @devcontainers/cli。重い/ネット要のため check 集約には入れず CI と投入ホストで明示実行する。
+check-devcontainer-up: ## devcontainer を up し postStart (gh seed 検査) まで通るか end-to-end 検査 (要 docker + @devcontainers/cli; 重い、明示実行)
+	@ghu=$$($(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null \
+		| $(PY) -c 'import sys,yaml; print((yaml.safe_load(sys.stdin)["services"]["dev"]["build"].get("args") or {}).get("PROJECT_GH_USER") or "")'); \
+	bash bin/check_devcontainer_up.sh .. "$$ghu"
 
 # Docker `internal:` network が外部 DNS を転送しない (= internal net 自体が DNS exfil を塞ぐ) ことを
 # 実機で pin する。redact を proxy 中継 + internal net へ移す設計の要石を回帰で守る
