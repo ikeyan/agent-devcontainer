@@ -52,6 +52,10 @@ jobs:
         env:
           DNS_EGRESS_REQUIRE: "1"
 
+      # redact イメージ実ビルド + node 子の python3>=3.12/mitmproxy 検査。docker 必須なので daemon の
+      # あるここで明示実行 (per-run タグ + trap でイメージを残さない)。
+      - run: make -C core check-redact-image
+
   install-idempotency:
     runs-on: ubuntu-latest
     steps:
@@ -91,3 +95,12 @@ jobs:
           docker build --target dev --build-arg PROJECT_GH_USER=kitci -f Dockerfile .
           docker build --target redact -f Dockerfile .
           docker build core/secrets-proxy
+      - name: smoke — devcontainer up (postStart を end-to-end 実行)
+        run: |
+          set -euo pipefail
+          # build だけでは postStartCommand を実行しない。devcontainers CLI で実際に up し、
+          # init-firewall の gh seed 整合検査 (capped root の hosts.yml 読取ほか) まで完走するかを pin。
+          npm install -g @devcontainers/cli
+          # compose build.args + postStart 照合用に PROJECT_GH_USER を project/.env に入れる。
+          sed -i 's/^PROJECT_GH_USER=$/PROJECT_GH_USER=kitci/' project/.env
+          bash core/bin/check_devcontainer_up.sh . kitci
