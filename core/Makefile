@@ -32,7 +32,10 @@ PY := $(CURDIR)/../.venv/bin/python
 # 一時 export はこの env -u で無害化できるが、.zshenv/launchctl 級の常設 export は VS Code 側の
 # stack 自体が別名になる — その変数を常設しないのが kit の前提 (file name: が唯一の正)。
 COMPOSE_ENGINE := $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
-COMPOSE := env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES $(COMPOSE_ENGINE)
+# PROJECT_GH_USER も unset する: dev コンテナ内で make を回すと compose の environment 経由でこの変数が
+# shell env に入り、compose 補間はシェル変数を project/.env より優先する (compose docs)。unset して常に
+# project/.env を検査対象にする (init-firewall の照合は Config.Env を直読みするので影響しない)。
+COMPOSE := env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES -u PROJECT_GH_USER $(COMPOSE_ENGINE)
 # compose は常に project 層 (../project/compose.yaml) を先頭に重ねる。先頭ファイルのディレクトリが
 # project directory になり project/.env が補間に効く。後勝ちで core が優先 (docs/verified-facts/docker.md)。
 COMPOSE_FILES := -f ../project/compose.yaml -f compose.yaml
@@ -47,6 +50,7 @@ BUILD_FORMAT := $(shell [ "$(ENGINE)" = podman ] && echo "--format docker")
 CHECKS := \
 	check-compose \
 	check-compose-paths \
+	check-project-env \
 	check-proxy-web-config \
 	check-shell \
 	check-shellcheck \
@@ -73,6 +77,16 @@ help: ## 一覧
 	@sed -nE 's/^([a-zA-Z_-]+):.*## (.*)$$/  \1\t\2/p' $(MAKEFILE_LIST) | expand -t 20
 
 check: $(CHECKS) ## .devcontainer 全体を検証
+
+# project 層の PROJECT_GH_USER を build 前に config-time で検査する。compose の :- は非 dev の操作を
+# 巻き込まないため未設定でも config を通す (accepted) が、それだと consumer CI (make check) が緑のまま
+# 初回 dev build で Dockerfile assert に落ちる。ここで .env を直接検査し早期に止める (grep ベース =
+# 非 dev compose は gate しない)。charset は Dockerfile assert と同じ [A-Za-z0-9-]+。
+check-project-env: ## project/.env の PROJECT_GH_USER が GitHub user 名として妥当か (dev build 前に停止)
+	@val=$$(sed -n 's/^PROJECT_GH_USER=//p' ../project/.env | head -1); \
+	[[ "$$val" =~ ^[A-Za-z0-9-]+$$ ]] \
+		|| { echo "project/.env の PROJECT_GH_USER が未設定/不正 (GitHub user 名 [A-Za-z0-9-]+ を設定): '$$val'" >&2; exit 1; }; \
+	echo "ok  project-env (PROJECT_GH_USER 妥当)"
 
 # config は daemon 不要 (パース + マージのみ)。docker/podman compose は CI/devcontainer 必須。
 check-compose: ## compose.yaml を compose config で検証 (docker/podman compose 必須)
