@@ -26,21 +26,20 @@ if [ -f "$wsabs/.devcontainer/devcontainer.json" ]; then cfg="$wsabs/.devcontain
 elif [ -f "$wsabs/devcontainer.json" ]; then cfg="$wsabs/devcontainer.json";
 else echo "devcontainer.json が $wsabs (/.devcontainer) に無い" >&2; exit 1; fi
 
-# up が作る stack (dev + secrets-proxy) を後片付けする。compose project 名は実際に建った dev コンテナの
-# ラベルから取る (パスからの推測でなく実物 = レイアウト非依存)。
+# probe 専用の一意な compose project 名で up して user の実 devcontainer / 他 stack から隔離する
+# (devcontainers CLI は COMPOSE_PROJECT_NAME を最優先する — devcontainers-cli.md「project 名の fallback」)。
+# これで既存 devcontainer を reuse/破壊せず、cleanup も本 project のラベルが付いた資源だけを消す
+# (副作用を残さない — AGENTS.md)。$$ (PID) で並行 probe 同士も衝突しない。
+proj="dcup-smoke-$$"
 cleanup() {
-    local cid proj
-    cid=$(docker ps -aq --filter "label=devcontainer.local_folder=$wsabs" 2>/dev/null | head -1)
-    if [ -n "$cid" ]; then
-        proj=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$cid" 2>/dev/null)
-        [ -n "$proj" ] && docker ps -aq --filter "label=com.docker.compose.project=$proj" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1
-        docker rm -f "$cid" >/dev/null 2>&1
-    fi
+    docker ps -aq --filter "label=com.docker.compose.project=$proj" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1
+    docker volume ls -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null | xargs -r docker volume rm -f >/dev/null 2>&1
+    docker network ls -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null | xargs -r docker network rm >/dev/null 2>&1
     return 0
 }
 trap cleanup EXIT
 
-out=$(devcontainer up --workspace-folder "$wsabs" --config "$cfg" 2>&1); rc=$?
+out=$(COMPOSE_PROJECT_NAME="$proj" devcontainer up --workspace-folder "$wsabs" --config "$cfg" 2>&1); rc=$?
 if [ "$rc" -ne 0 ]; then
     echo "devcontainer up が失敗 (postStartCommand が落ちた可能性 — 下記末尾を確認):" >&2
     printf '%s\n' "$out" | tail -30 >&2
