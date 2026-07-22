@@ -224,7 +224,13 @@ RUN set -e; \
   chown -R root:root /home/node/.config/gh; \
   chown node:node /home/node/.config/gh/config.yml; \
   chmod 755 /home/node/.config/gh; \
-  chmod 644 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml
+  chmod 644 /home/node/.config/gh/hosts.yml /home/node/.config/gh/config.yml; \
+  chmod o+x /home/node
+# init-firewall.sh (postStartCommand で sudo root) の gh seed 整合検査は hosts.yml (root 所有 644) を
+# 読むが、dev は cap_drop:ALL で root に DAC_OVERRIDE が無く、node home の base 既定 700 を traverse
+# できず EACCES になる (namei で確認: /home/node が唯一の非 traverse リンク)。o+x (711) にして root の
+# 通過だけ許す — files は各自の perms を保つので hosts.yml の root 所有 (node 書込不可) は不変。
+# dev の actor は node と root のみで、711 は実質的な露出増にならない (docs/incidents.md)。
 
 # init-firewall.sh / install-proxy-ca.sh の再実行 (postStartCommand・CDN IP ローテーション対応) は
 # dev だけが要る。sudo ごと dev 専用にする。
