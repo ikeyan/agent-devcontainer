@@ -136,12 +136,12 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   (build byproduct) は RepoTags も RepoDigests も持たない。残留検査で leak を数えるときは
   `{{len .RepoDigests}} == 0` で digest-pull base を除外する。CI smoke で node base (1.2GB, tags=[],
   digests=[node@sha256:...]) を誤検出して確認。 `[empirical]`
-- **dangling cleanup は所有で限定する (時刻 delta 不可)**: untag で孤児化した probe image を掃くとき、
-  「up 前後の dangling 集合差」で拾うと、共有 daemon 上で無関係プロセスが同時に残した untag image まで
-  巻き込む (差分は *時刻* を示すが *所有* を示さない)。→ untag する前に probe token tag (`<proj>-*` /
-  `${proj}_*` / `vsc-<proj>-*`) が指す **image ID 集合を控え**、untag 後にそのうち tag を全て失った ID
-  だけを消す。user と content-ID を共有する image は user tag が残るのでスキップされ、無関係プロセスの
-  dangling は集合外なので触れない。 `[docs(source)]`
+- **image は tag 名で child-first に消す。ID ベースの孤児掃除はしない**: buildkit では tag 指定 rmi で
+  子 (vsc uid image) → 親 (compose base) の順に untag すれば孤児 dangling は生じない。ID で「孤児化した
+  probe image」を掃く方式は**採らない** — probe image は content-addressable ID を共有しうるので、共有
+  daemon 上で pre-existing な untagged image が一時的に probe tag を得て「孤児」に見え、ID 削除で他プロセスの
+  成果物を巻き込む (時刻差も content 一致も *所有* を示さない)。真の probe leak (build byproduct) の検出は
+  CI 側 dangling delta が担い、そこでも digest-pull base を RepoDigests で除外する。 `[docs(source)]`
 
 ## 出典
 

@@ -9,17 +9,22 @@
 # は build では捕まらず、consumer の初 rebuild で初めて露見してきた。ここで実際に up して postStart
 # まで走らせ、その class を回帰 pin する。要 docker + @devcontainers/cli。
 #
-# 隔離: <workspace-folder> をそのまま up せず、一意な basename (dcup-smoke-<pid>) の temp ディレクトリへ
-# 複製して up する。devcontainers CLI が UID 調整で建てる image 名は cwd 由来
-# (getFolderImageName = vsc-<basename(cwd)>-<sha256(cwd)>-uid; devcontainers-cli.md) で project 名では
-# 隔離できない。basename を probe 専用の一意名にすることで、compose の <proj>-<svc> image も folder 由来の
-# vsc-<proj>-<hash> image も全て dcup-smoke-<pid> token を持つ一意な *tag 名* になり、user が同じ folder で
-# 開いている実 devcontainer の tag (vsc-<realfolder>-*) とは別名になる (up 中の mount stub 書込みも temp
-# 側に閉じる)。COMPOSE_PROJECT_NAME も同名にして container/volume/network を隔離する (CLI は
-# COMPOSE_PROJECT_NAME を最優先 — devcontainers-cli.md)。
-#   image content は Dockerfile + baked な core/+project/ + build-arg だけで決まり workspace は bind mount
-#   なので、probe image は user の実 image と *同じ content-addressable ID* を持ちうる。ゆえに cleanup は
-#   ID (docker images -q) でなく *tag 名* で rmi する — 共有 ID の user tag を巻き込まないため。
+# 隔離: <workspace-folder> をそのまま up せず、**daemon 全体で一意な** basename (dcup-smoke-<mktemp 乱数>)
+# の temp ディレクトリへ scaffold を複製して up する。
+#   - なぜ乱数 basename か: devcontainers CLI が UID 調整で建てる image 名は cwd 由来
+#     (getFolderImageName = vsc-<basename(cwd)>-<sha256(cwd)>-uid; devcontainers-cli.md) で project 名では
+#     隔離できない。basename を probe 専用の一意名にすることで、compose の <proj>-<svc> image も folder 系
+#     vsc-<proj>-<hash> image も全て proj token を持つ一意な *tag 名* になり、user が同じ folder で開いて
+#     いる実 devcontainer の tag (vsc-<realfolder>-*) とは別名になる。token を PID ($$) でなく mktemp の
+#     乱数から採るのは、共有 daemon を別 PID namespace の probe が叩くと $$ が衝突しうるため (daemon 全体で
+#     一意にする)。COMPOSE_PROJECT_NAME も同名にして container/volume/network を隔離する (CLI は
+#     COMPOSE_PROJECT_NAME を最優先 — devcontainers-cli.md)。
+#   - なぜ複製か: up は workspace 側 (bind/volume mount 先) に書込むので、temp に複製して副作用を閉じ込める。
+#     複製は -h (--dereference) で symlink を辿り**自己完結コピー**にする → symlinked な .devcontainer/project
+#     が compose/build context/bind を tmproot 外へ解決し isolation を破るのを防ぐ (設計不変則: 領域内に閉じる)。
+#   - image content は Dockerfile + baked な core/+project/ + build-arg だけで決まり workspace は bind mount
+#     なので、probe image は user の実 image と *同じ content-addressable ID* を持ちうる。ゆえに cleanup は
+#     ID (docker images -q) でなく *tag 名* で rmi する — 共有 ID の user tag を巻き込まないため。
 #
 # 前提: <workspace-folder> は scaffold 済み (project/ + devcontainer.json + 生成 Dockerfile) で
 # project/.env の PROJECT_GH_USER が <expected-gh-user> と一致すること。secrets-proxy は template
@@ -31,7 +36,7 @@ expect_user=${2:?usage: check_devcontainer_up.sh <workspace-folder> <expected-gh
 command -v devcontainer >/dev/null 2>&1 || { echo "@devcontainers/cli が要る (npm i -g @devcontainers/cli)" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "docker が要る (compose provider 込み)" >&2; exit 1; }
 # ws を絶対パス化。cd 失敗 (存在しない/権限無し) を fail-closed で捕まえる — 空の wsabs を後段の
-# `cp/tar "$wsabs/."` に渡すと "/." = ルート全体の複製になるため、ここで必ず止める。
+# `tar -C "$wsabs"` に渡すと領域外を複製しかねないため、ここで必ず止める。
 wsabs=$(cd "$ws" 2>/dev/null && pwd) || { echo "workspace-folder に入れない: $ws" >&2; exit 1; }
 [ -n "$wsabs" ] || { echo "workspace-folder の絶対パス化に失敗: $ws" >&2; exit 1; }
 
@@ -41,9 +46,11 @@ if   [ -f "$wsabs/.devcontainer/devcontainer.json" ]; then cfgrel=".devcontainer
 elif [ -f "$wsabs/devcontainer.json" ];              then cfgrel="devcontainer.json";
 else echo "devcontainer.json が $wsabs (/.devcontainer) に無い" >&2; exit 1; fi
 
-proj="dcup-smoke-$$"
 tmproot=$(mktemp -d) || { echo "temp ディレクトリの作成 (mktemp -d) に失敗" >&2; exit 1; }
 [ -n "$tmproot" ] || { echo "mktemp -d が空を返した" >&2; exit 1; }
+# proj token は mktemp の乱数 suffix から採る (PID でなく daemon 全体で一意に)。docker image/compose 名の
+# 規則に合わせ小文字 + 英数字のみへ正規化。
+proj="dcup-smoke-$(basename "$tmproot" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
 
 cleanup() {
     local rc=$?   # トラップ発火時の終了ステータスを保存 (下で必要なら fail-closed に昇格)。
@@ -62,33 +69,15 @@ cleanup() {
         docker run --rm -u 0 --entrypoint chown -v "$tmproot:/t" "$devimg" -R "$(id -u):$(id -g)" /t >/dev/null 2>&1
     fi
     rm -rf "$tmproot"
-    # image は tag 名で消す (ID=docker images -q だと共有 content-ID の user tag を巻き込む)。契約と出典は
-    # docs/verified-facts/devcontainers-cli.md。untag で孤児化した probe image を後で ID 指定で掃くため、
-    # untag する *前* に probe token tag が指す ID 集合を控える (= ownership scope; 時刻 delta でなく所有で
-    # 限定するので共有 daemon の無関係な dangling を巻き込まない)。
-    local probe_ids
-    probe_ids=$(docker images -q --filter "reference=vsc-$proj-*" --filter "reference=$proj-*" --filter "reference=${proj}_*" 2>/dev/null | sort -u)
-    # 子 (folder 系 uid image) を先、親 (compose 系) を後に untag して dangling を避け、separator anchor で
-    # 別 PID probe との取り違えを防ぐ。rmi は tag 名なので共有 ID でも他 (user) tag は残る。
+    # image は *tag 名* で消す (ID=docker images -q だと共有 content-ID の user tag を巻き込む)。子 (folder 系
+    # uid image) を先、親 (compose 系) を後に untag して親子の孤児化を避け、separator anchor で別 probe token
+    # との取り違えを防ぐ。tag 指定なので共有 ID でも user tag は残る。契約と出典は
+    # docs/verified-facts/devcontainers-cli.md。
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=vsc-$proj-*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$proj-*" --filter "reference=${proj}_*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
-    # untag 後、控えた probe ID のうち *tag を全て失った (dangling 化した)* ものを消す。user と content-ID
-    # を共有する image は user tag が残るのでスキップ (削除しない)、無関係プロセスの dangling は probe_ids に
-    # 無いので不可触。孤児を **一括 rmi** し親子 (uid image ← compose base) の依存を docker に解かせる。
-    # 親を子より先に個別 rmi すると child 存在で失敗し孤児が残るため、無くなるまで最大 3 周する。
-    local orphans
-    for _ in 1 2 3; do
-        orphans=$(printf '%s\n' "$probe_ids" | while read -r id; do
-            [ -n "$id" ] || continue
-            [ "$(docker image inspect "$id" --format '{{len .RepoTags}}' 2>/dev/null)" = "0" ] && printf '%s\n' "$id"
-        done)
-        [ -n "$orphans" ] || break
-        printf '%s\n' "$orphans" | xargs -r docker rmi -f >/dev/null 2>&1
-    done
     # fail-closed self-check: proj token を含む docker 資源 + temp tree の残留を検出 (rootless/SELinux で
     # chown/rm が効かず root 所有 temp が残る filesystem leak も loud に落とす)。token は必ず separator
-    # (- / _) を伴うので anchor し、別 PID probe (dcup-smoke-7005) を substring 誤検出しない。残存したら
-    # fail-closed に昇格 (成功終了を上書き)。
+    # (- / _) を伴うので anchor する。残存したら fail-closed に昇格 (成功終了を上書き)。
     local left
     left=$( { docker ps -a --format '{{.Names}}'; docker images --format '{{.Repository}}'; \
               docker volume ls --format '{{.Name}}'; docker network ls --format '{{.Name}}'; } 2>/dev/null \
@@ -103,12 +92,17 @@ trap cleanup EXIT   # tmproot/proj は設定済み → 以降どこで落ちて�
 
 probe_ws="$tmproot/$proj"
 mkdir -p "$probe_ws"
-# scaffold だけ要る (postStart は workspace 内容を読まない)。.git/.venv/node_modules 等の巨大・無関係物を
-# 除いて複製する (I/O 削減 + 前回 up の残した root 所有 mount stub 等での複製失敗を避ける)。pipefail で
-# どちらかの tar が落ちれば非 0 → fail-closed。
-tar -C "$wsabs" -cf - --exclude=./.git --exclude=./node_modules --exclude='./.venv' --exclude='./.devcontainer/.venv' . \
-  | tar -C "$probe_ws" -xf - \
-  || { echo "workspace の複製に失敗 ($wsabs → $probe_ws)" >&2; exit 1; }
+# scaffold だけ複製する (postStart は /workspace 内容を読まない)。consumer は .devcontainer/ だけを複製し
+# repo の巨大な source/build 物を含めない (disk/timeout 回避)、dogfood は config が root なので root を複製。
+# -h (--dereference) で symlink を辿り自己完結コピーにする (領域外解決を防ぐ)。.git/.venv/node_modules 等の
+# 巨大物は除外。pipefail でどちらの tar が落ちても非 0 → fail-closed。
+case "$cfgrel" in
+    .devcontainer/*) src="$wsabs/.devcontainer"; dst="$probe_ws/.devcontainer"; mkdir -p "$dst";;
+    *)               src="$wsabs";               dst="$probe_ws";;
+esac
+tar -C "$src" -cf - -h --exclude=./.git --exclude=./node_modules --exclude='./.venv' --exclude='./.devcontainer/.venv' . \
+  | tar -C "$dst" -xf - \
+  || { echo "workspace scaffold の複製に失敗 ($src → $dst)" >&2; exit 1; }
 cfg="$probe_ws/$cfgrel"
 
 out=$(COMPOSE_PROJECT_NAME="$proj" devcontainer up --workspace-folder "$probe_ws" --config "$cfg" 2>&1); rc=$?
