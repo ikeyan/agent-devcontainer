@@ -290,6 +290,12 @@ grep -qF 'chown -R root:root /home/node/.config/gh' "$DC/Dockerfile" \
     || fail "§11: Dockerfile が gh dir を root 所有にしていない (gh auth login のトークン焼込バリアが失効)"
 grep -qF 'chmod 644 /home/node/.config/gh/hosts.yml' "$DC/Dockerfile" \
     || fail "§11: Dockerfile が hosts.yml を 644 にしていない (node 書込可だとトークン焼込を封じられない)"
+# node home を o+x にする traverse 権が無いと、init-firewall (sudo root, cap_drop:ALL で DAC_OVERRIDE
+# 無し) が hosts.yml を読めず postStart が EACCES で落ち devcontainer が開けない (docs/incidents.md)。
+# runtime coverage は check-devcontainer-up (smoke) が持つが重い/明示実行なので、標準 check でも
+# source を静的 pin して Dockerfile 編集での消失を毎回捕まえる。
+grep -qF 'chmod o+x /home/node' "$DC/Dockerfile" \
+    || fail "§11: Dockerfile が /home/node を o+x にしていない (capped root が gh seed hosts.yml を traverse できず postStart が落ちる)"
 # (a''') init-firewall.sh の user 抽出 parser は共有 awk (gh-hosts-user.awk) に切り出し、Dockerfile が
 #        image へ COPY する。実挙動は check-gh-seed の fixture が exercise する (parser↔seed 形式の結合)。
 grep -qF 'COPY core/gh-hosts-user.awk /usr/local/bin/' "$DC/Dockerfile" \
