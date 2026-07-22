@@ -72,12 +72,18 @@ cleanup() {
     # 別 PID probe との取り違えを防ぐ。rmi は tag 名なので共有 ID でも他 (user) tag は残る。
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=vsc-$proj-*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$proj-*" --filter "reference=${proj}_*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
-    # untag 後、控えた probe ID のうち *tag を全て失った (dangling 化した)* ものだけを ID 指定で消す。
-    # user と content-ID を共有する image は user tag が残るのでスキップ (削除しない)。無関係プロセスの
-    # dangling は probe_ids に無いので触らない。
-    printf '%s\n' "$probe_ids" | while read -r id; do
-        [ -n "$id" ] || continue
-        [ "$(docker image inspect "$id" --format '{{len .RepoTags}}' 2>/dev/null)" = "0" ] && docker rmi -f "$id" >/dev/null 2>&1
+    # untag 後、控えた probe ID のうち *tag を全て失った (dangling 化した)* ものを消す。user と content-ID
+    # を共有する image は user tag が残るのでスキップ (削除しない)、無関係プロセスの dangling は probe_ids に
+    # 無いので不可触。孤児を **一括 rmi** し親子 (uid image ← compose base) の依存を docker に解かせる。
+    # 親を子より先に個別 rmi すると child 存在で失敗し孤児が残るため、無くなるまで最大 3 周する。
+    local orphans
+    for _ in 1 2 3; do
+        orphans=$(printf '%s\n' "$probe_ids" | while read -r id; do
+            [ -n "$id" ] || continue
+            [ "$(docker image inspect "$id" --format '{{len .RepoTags}}' 2>/dev/null)" = "0" ] && printf '%s\n' "$id"
+        done)
+        [ -n "$orphans" ] || break
+        printf '%s\n' "$orphans" | xargs -r docker rmi -f >/dev/null 2>&1
     done
     # fail-closed self-check: proj token を含む docker 資源 + temp tree の残留を検出 (rootless/SELinux で
     # chown/rm が効かず root 所有 temp が残る filesystem leak も loud に落とす)。token は必ず separator
