@@ -130,6 +130,12 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   `-u 0` で走らせ `chown -R` してから消す。(b) 親 image を子 (`FROM` で参照する image) より先に `rmi`
   すると親が dangling `<none>` として残る → **子 (folder 系 uid image) を先、親 (compose 系) を後**に消す。
   `[empirical]`
+- **`docker images -f dangling=true` は digest pull した base image も含む**: `FROM node@sha256:...`
+  のように digest 指定で pull/参照した base image は RepoTags を持たない (RepoDigests のみ) ため dangling
+  filter に一致するが、これは共有 cache であり leak ではない (消すと再 pull を招く副作用)。真の孤児
+  (build byproduct) は RepoTags も RepoDigests も持たない。残留検査で leak を数えるときは
+  `{{len .RepoDigests}} == 0` で digest-pull base を除外する。CI smoke で node base (1.2GB, tags=[],
+  digests=[node@sha256:...]) を誤検出して確認。 `[empirical]`
 - **dangling cleanup は所有で限定する (時刻 delta 不可)**: untag で孤児化した probe image を掃くとき、
   「up 前後の dangling 集合差」で拾うと、共有 daemon 上で無関係プロセスが同時に残した untag image まで
   巻き込む (差分は *時刻* を示すが *所有* を示さない)。→ untag する前に probe token tag (`<proj>-*` /

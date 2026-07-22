@@ -116,18 +116,22 @@ jobs:
                    | grep -c -- 'dcup-smoke-' || true )
           # dangling (<none>) image は名前を持たないので baseline delta で拾う (untag 系の leak を塞ぐ)。
           # CI runner は専用なので時刻 delta = probe 由来で安全 (script 側は共有ホスト向けに所有 scope)。
+          # ただし digest pull した base image (FROM node@sha256:...) は RepoTags 無しで dangling filter に
+          # 一致するが RepoDigests を持つ共有 cache であり leak でない。真の孤児 (RepoTags も RepoDigests も
+          # 無い build byproduct) だけを数える。
           dangling_after=$(docker images -f dangling=true -q | sort -u)
           new_ids=$(comm -13 <(printf '%s\n' "$dangling_before") <(printf '%s\n' "$dangling_after"))
-          new_dangling=$(printf '%s\n' "$new_ids" | grep -c . || true)
+          leaked_ids=$(printf '%s\n' "$new_ids" | while read -r i; do [ -n "$i" ] || continue; \
+              [ "$(docker image inspect "$i" --format '{{len .RepoDigests}}' 2>/dev/null)" = "0" ] && printf '%s\n' "$i"; done)
+          new_dangling=$(printf '%s\n' "$leaked_ids" | grep -c . || true)
           fail=0
           [ "$probe_rc" -eq 0 ]     || { echo "probe 失敗 (rc=$probe_rc)" >&2; fail=1; }
           [ "$named" -eq 0 ]        || { echo "dcup-smoke-* 名の docker 資源が $named 件残留 (cleanup が副作用を残した)" >&2; fail=1; }
-          # 残った場合は正体を出す (script の所有 scope cleanup が取りこぼした image を特定するため)。
-          [ "$new_dangling" -eq 0 ] || { echo "probe 由来の dangling image が $new_dangling 件残留:" >&2; \
-              printf '%s\n' "$new_ids" | while read -r i; do [ -n "$i" ] || continue; \
-                docker image inspect "$i" --format '  id={{.Id}} tags={{.RepoTags}} size={{.Size}} parent={{.Parent}}' 2>/dev/null; \
+          # 残った場合は正体を出す (script の所有 scope cleanup が取りこぼした build byproduct を特定するため)。
+          [ "$new_dangling" -eq 0 ] || { echo "probe 由来の dangling build byproduct が $new_dangling 件残留:" >&2; \
+              printf '%s\n' "$leaked_ids" | while read -r i; do [ -n "$i" ] || continue; \
+                docker image inspect "$i" --format '  id={{.Id}} tags={{.RepoTags}} digests={{.RepoDigests}} size={{.Size}}' 2>/dev/null; \
                 echo "  --- history $i ---" >&2; docker history --no-trunc "$i" 2>/dev/null | head -6 >&2; \
-                echo "  --- images referencing it as parent ---" >&2; docker images -a --filter "since=$i" --format '    {{.Repository}}:{{.Tag}} {{.ID}}' 2>/dev/null | head >&2; \
               done >&2; fail=1; }
           [ "$fail" -eq 0 ] || exit 1
           echo "ok  smoke cleanup — 残留なし (named dcup-smoke-* + probe 由来 dangling)"
