@@ -117,6 +117,19 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   `--filter reference=` は OR。ただし `reference=<proj>*` は右端 unanchored で `<proj>` が別 PID の prefix
   (`dcup-smoke-700*` が `dcup-smoke-7005-dev` に一致) だと取り違えるので、separator を anchor した
   `reference=<proj>-*` / `<proj>_*` / `vsc-<proj>-*` で消す。 `[docs]`
+- **image は tag 名で消す (ID では消さない)**: probe image の content は Dockerfile + baked な
+  `core/`+`project/` + build-arg だけで決まり、workspace は bind mount で焼き込まれない。ゆえに probe の
+  `dcup-smoke-<pid>-dev` / `vsc-dcup-smoke-<pid>-<hash>-uid` は、同じ repo・同じ build-arg で建てた user の
+  実 image と **同一の content-addressable ID** を持ちうる (tag 名だけが違う)。`docker rmi -f <ID>` は
+  その ID の全 tag を消すので user tag を巻き込む → cleanup は `docker images --format '{{.Repository}}:{{.Tag}}'`
+  で **tag 名**を列挙して `rmi -f <repo:tag>` する。tag 指定の rmi は該当 tag を untag するだけで、他 tag が
+  残る image は削除しない (共有 ID でも user tag は生存)。 `[docs(source)]`
+- **cleanup の実測 2 点** (CI build-images の smoke で観測): (a) `devcontainer up` は compose の
+  bind/volume mount 先 (`/workspace/.claude/settings.local.json`, `/workspace/.devcontainer/.venv` 等) を
+  **host 上に root 所有**で作る (mount stub) → 非 root uid では `rm -rf` が EACCES で落ちる。docker を
+  `-u 0` で走らせ `chown -R` してから消す。(b) 親 image を子 (`FROM` で参照する image) より先に `rmi`
+  すると親が dangling `<none>` として残る → **子 (folder 系 uid image) を先、親 (compose 系) を後**に消す。
+  `[empirical]`
 
 ## 出典
 
