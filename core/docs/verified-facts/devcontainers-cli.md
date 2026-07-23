@@ -108,10 +108,12 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   - 注: `${folderImageName}-features` (features 拡張 image) が出るのは**単一コンテナ経路のみ**
     (`extendImage`, `containerFeatures.ts:59`)。compose 経路は `build:` service だと `overrideImageName`
     が undefined のまま (`dockerCompose.ts:197-202`) で `-features` image は作られない。 `[docs(source)]`
-- **含意 (smoke `check_devcontainer_up.sh` の隔離設計)**: probe を **一意 basename (`dcup-smoke-<pid>`) の
-  temp workspace へ複製**して up する。folder 系も `vsc-dcup-smoke-<pid>-<hash>[-uid]` になり、compose 系
-  `dcup-smoke-<pid>-<svc>` と共に全 image が `dcup-smoke-<pid>` token を持つ = user の `vsc-<realfolder>-*`
-  とは別名 (retag も衝突も無い)。cleanup はこの token を持つ資源だけを消せば完結する。 `[docs(source)]`
+- **含意 (smoke `check_devcontainer_up.sh` の隔離設計)**: probe は caller の workspace を複製せず、kit の
+  `templates/` から **一意 basename (`dcup-smoke-<mktemp乱数>`) の temp dir に kit config を自己 scaffold**
+  して up する (consumer 編集の compose bind/lifecycle/symlink を一切走らせない → 領域外脱出が構造的に不能;
+  kit の postStart 回帰は template で再現する。kit-only)。folder 系 image も `vsc-dcup-smoke-<rand>-<hash>`、
+  compose 系も `dcup-smoke-<rand>-<svc>` と全て `dcup-smoke-<rand>` token を持ち、user の `vsc-<realfolder>-*`
+  とは別名。cleanup はこの token を持つ資源だけを消せば完結する。 `[docs(source)]`
 - `docker images --filter reference=<pat>` は `repository:tag` を glob 照合し `*` を許す
   (docs 例 `busy*:*libc` が `busybox:uclibc` に一致)。tag 省略時は該当 repo の全 tag に一致。複数
   `--filter reference=` は OR。ただし `reference=<proj>*` は右端 unanchored で `<proj>` が別 PID の prefix

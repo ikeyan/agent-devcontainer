@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # devcontainer を実際に up して postStartCommand (init-firewall.sh の gh seed 整合検査 + firewall +
 # install-proxy-ca.sh) まで end-to-end で完走するかを検査する。
-#   usage: check_devcontainer_up.sh <workspace-folder> <expected-gh-user>
+#   usage: check_devcontainer_up.sh <expected-gh-user>
 #
 # なぜ要る: CI の build-images は image を build するだけで postStartCommand を実行しない。だが
 # devcontainers CLI 経路でしか出ない runtime 契約 — overrideCommand が compose 宣言 entrypoint を
@@ -9,42 +9,32 @@
 # は build では捕まらず、consumer の初 rebuild で初めて露見してきた。ここで実際に up して postStart
 # まで走らせ、その class を回帰 pin する。要 docker + @devcontainers/cli。
 #
-# 隔離: <workspace-folder> をそのまま up せず、**daemon 全体で一意な** basename (dcup-smoke-<mktemp 乱数>)
-# の temp ディレクトリへ scaffold を複製して up する。
-#   - なぜ乱数 basename か: devcontainers CLI が UID 調整で建てる image 名は cwd 由来
-#     (getFolderImageName = vsc-<basename(cwd)>-<sha256(cwd)>-uid; devcontainers-cli.md) で project 名では
-#     隔離できない。basename を probe 専用の一意名にすることで、compose の <proj>-<svc> image も folder 系
-#     vsc-<proj>-<hash> image も全て proj token を持つ一意な *tag 名* になり、user が同じ folder で開いて
-#     いる実 devcontainer の tag (vsc-<realfolder>-*) とは別名になる。token を PID ($$) でなく mktemp の
-#     乱数から採るのは、共有 daemon を別 PID namespace の probe が叩くと $$ が衝突しうるため (daemon 全体で
-#     一意にする)。COMPOSE_PROJECT_NAME も同名にして container/volume/network を隔離する (CLI は
-#     COMPOSE_PROJECT_NAME を最優先 — devcontainers-cli.md)。
-#   - なぜ複製か: up は workspace 側 (bind/volume mount 先) に書込むので、temp に複製して副作用を閉じ込める。
-#     複製は -h (--dereference) で symlink を辿り**自己完結コピー**にする → symlinked な .devcontainer/project
-#     が compose/build context/bind を tmproot 外へ解決し isolation を破るのを防ぐ (設計不変則: 領域内に閉じる)。
-#   - image content は Dockerfile + baked な core/+project/ + build-arg だけで決まり workspace は bind mount
-#     なので、probe image は user の実 image と *同じ content-addressable ID* を持ちうる。ゆえに cleanup は
-#     ID (docker images -q) でなく *tag 名* で rmi する — 共有 ID の user tag を巻き込まないため。
+# 何を走らせるか: **kit の template scaffold**を temp dir に生成して up する (caller の workspace は
+# 使わない)。この検査の目的は kit 自身 (生成 Dockerfile + core/compose + postStart) の回帰 pin であり、
+# consumer が編集する project/compose.yaml・devcontainer.json (領域外 bind、workspace ファイルを参照する
+# lifecycle、symlink 等) を走らせる必要はない。それらを走らせると isolation の脱出経路が無限に増える一方、
+# kit の回帰は template でこそ再現する。→ kit templates/ から scaffold して edit 由来の脱出を構造的に断つ。
+# kit-only (templates/ が要る。consumer には無いので非対応)。
 #
-# 前提: <workspace-folder> は scaffold 済み (project/ + devcontainer.json + 生成 Dockerfile) で
-# project/.env の PROJECT_GH_USER が <expected-gh-user> と一致すること。secrets-proxy は template
-# rules.yaml (BW item 源なし) なら bootstrap 無しで healthy になる (rules_bw.py: env/file だけの rules
-# は Vaultwarden 不要) ので dev が起動し postStart に到達する。
+# 隔離: **daemon 全体で一意な** basename (dcup-smoke-<mktemp 乱数>) の temp dir に scaffold する。
+#   - devcontainers CLI が UID 調整で建てる image 名は cwd 由来 (getFolderImageName =
+#     vsc-<basename(cwd)>-<sha256(cwd)>-uid; devcontainers-cli.md) で project 名では隔離できない。basename を
+#     一意名にすると、compose の <proj>-<svc> image も folder 系 vsc-<proj>-<hash> image も全て proj token を
+#     持つ一意な tag 名になり、user が同じ folder で開いている実 devcontainer の tag とは別名になる。token を
+#     PID でなく mktemp 乱数から採るのは共有 daemon を別 PID namespace の probe が叩くと $$ が衝突しうるため。
+#     COMPOSE_PROJECT_NAME も同名にして container/volume/network を隔離する。
+#   - image content は Dockerfile + core/+project/ + build-arg で決まり workspace は bind mount なので、probe
+#     image は user の実 image と同じ content-addressable ID を持ちうる。ゆえに cleanup は ID でなく tag 名で
+#     rmi する (共有 ID の user tag を巻き込まない)。契約と限界は docs/verified-facts/devcontainers-cli.md。
 set -uo pipefail
-ws=${1:?usage: check_devcontainer_up.sh <workspace-folder> <expected-gh-user>}
-expect_user=${2:?usage: check_devcontainer_up.sh <workspace-folder> <expected-gh-user>}
+expect_user=${1:?usage: check_devcontainer_up.sh <expected-gh-user>}
 command -v devcontainer >/dev/null 2>&1 || { echo "@devcontainers/cli が要る (npm i -g @devcontainers/cli)" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "docker が要る (compose provider 込み)" >&2; exit 1; }
-# ws を絶対パス化。cd 失敗 (存在しない/権限無し) を fail-closed で捕まえる — 空の wsabs を後段の
-# `tar -C "$wsabs"` に渡すと領域外を複製しかねないため、ここで必ず止める。
-wsabs=$(cd "$ws" 2>/dev/null && pwd) || { echo "workspace-folder に入れない: $ws" >&2; exit 1; }
-[ -n "$wsabs" ] || { echo "workspace-folder の絶対パス化に失敗: $ws" >&2; exit 1; }
-
-# devcontainer.json の場所は consumer (.devcontainer/) と kit dogfood (repo 直下) で異なる。複製前に
-# source 側で存在を検証して fail-fast する (無駄な複製を避ける)。cfg は複製後に同じ相対パスで導出。
-if   [ -f "$wsabs/.devcontainer/devcontainer.json" ]; then cfgrel=".devcontainer/devcontainer.json";
-elif [ -f "$wsabs/devcontainer.json" ];              then cfgrel="devcontainer.json";
-else echo "devcontainer.json が $wsabs (/.devcontainer) に無い" >&2; exit 1; fi
+# kit root を script 位置から求める (core/bin/ の 2 つ上)。templates/ が無ければ consumer なので非対応。
+selfdir=$(cd "$(dirname "$0")" && pwd) || { echo "script dir を解決できない" >&2; exit 1; }
+kitroot=$(cd "$selfdir/../.." && pwd) || { echo "kit root を解決できない" >&2; exit 1; }
+[ -d "$kitroot/templates/project" ] && [ -f "$kitroot/templates/devcontainer.json" ] && [ -d "$kitroot/core" ] \
+    || { echo "kit-only smoke: $kitroot に templates/project + templates/devcontainer.json + core/ が要る (consumer では非対応)" >&2; exit 1; }
 
 tmproot=$(mktemp -d) || { echo "temp ディレクトリの作成 (mktemp -d) に失敗" >&2; exit 1; }
 [ -n "$tmproot" ] || { echo "mktemp -d が空を返した" >&2; exit 1; }
@@ -62,62 +52,50 @@ cleanup() {
     docker ps -aq --filter "label=com.docker.compose.project=$proj" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1
     docker volume ls -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null | xargs -r docker volume rm -f >/dev/null 2>&1
     docker network ls -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null | xargs -r docker network rm >/dev/null 2>&1
-    # devcontainer up は workspace の bind/volume mount 先 (.claude/settings.local.json, .venv 等) を
-    # host 上に root 所有で作る → 実行 uid では rm -rf できない。docker を root で走らせ所有権を戻してから
-    # 消す (docker は本 script の必須依存。chown には既定 cap の CHOWN で足りる)。
+    # devcontainer up は workspace の bind/volume mount 先を host 上に root 所有で作る → 実行 uid では rm でき
+    # ない。docker を root で走らせ所有権を戻してから消す (docker は本 script の必須依存。CHOWN で足りる)。
     if [ -n "$devimg" ]; then
         docker run --rm -u 0 --entrypoint chown -v "$tmproot:/t" "$devimg" -R "$(id -u):$(id -g)" /t >/dev/null 2>&1
     fi
     rm -rf "$tmproot"
-    # image は *tag 名* で消す (ID=docker images -q だと共有 content-ID の user tag を巻き込む)。子 (folder 系
-    # uid image) を先、親 (compose 系) を後に untag して親子の孤児化を避け、separator anchor で別 probe token
-    # との取り違えを防ぐ。tag 指定なので共有 ID でも user tag は残る。契約と出典は
+    # image は tag 名で child-first に消す (ID だと共有 content-ID の user tag を巻き込む)。子 (folder 系
+    # uid image) → 親 (compose 系) の順。separator anchor で別 probe token との取り違えを防ぐ。契約と限界は
     # docs/verified-facts/devcontainers-cli.md。
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=vsc-$proj-*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$proj-*" --filter "reference=${proj}_*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
-    # fail-closed self-check: proj token を含む docker 資源 + temp tree の残留を検出 (rootless/SELinux で
-    # chown/rm が効かず root 所有 temp が残る filesystem leak も loud に落とす)。token は必ず separator
-    # (- / _) を伴うので anchor する。残存したら fail-closed に昇格 (成功終了を上書き)。
-    local left
-    left=$( { docker ps -a --format '{{.Names}}'; docker images --format '{{.Repository}}'; \
-              docker volume ls --format '{{.Name}}'; docker network ls --format '{{.Name}}'; } 2>/dev/null \
-            | grep -cE -- "${proj}[-_]" || true )
-    if [ "$left" -ne 0 ] || [ -e "$tmproot" ]; then
-        echo "cleanup 後も残留: docker 資源 $left 件 / temp=$tmproot ($([ -e "$tmproot" ] && echo 残 || echo 無)) — 手動削除が要る" >&2
+    # fail-closed self-check: proj token を含む docker 資源 + temp tree の残留を検出。daemon が落ちて検査
+    # クエリ自体が失敗すると空 → 誤 clean になるので、まず docker 応答性を確認し不応答なら fail-closed。
+    if ! docker ps -q >/dev/null 2>&1; then
+        echo "cleanup 検証中に docker が不応答 — 残留を確認できないため fail-closed" >&2
         [ "$rc" -eq 0 ] && rc=1
+    else
+        # token は必ず separator (- / _) を伴うので anchor する。残存 or temp 残りは fail-closed に昇格。
+        local left
+        left=$( { docker ps -a --format '{{.Names}}'; docker images --format '{{.Repository}}'; \
+                  docker volume ls --format '{{.Name}}'; docker network ls --format '{{.Name}}'; } 2>/dev/null \
+                | grep -cE -- "${proj}[-_]" || true )
+        if [ "$left" -ne 0 ] || [ -e "$tmproot" ]; then
+            echo "cleanup 後も残留: docker 資源 $left 件 / temp=$tmproot ($([ -e "$tmproot" ] && echo 残 || echo 無)) — 手動削除が要る" >&2
+            [ "$rc" -eq 0 ] && rc=1
+        fi
     fi
     exit "$rc"
 }
 trap cleanup EXIT   # tmproot/proj は設定済み → 以降どこで落ちても cleanup が走る (temp leak を塞ぐ)。
 
+# kit template を probe_ws に scaffold (root layout: project/ core/ devcontainer.json Dockerfile を並置)。
+# CI build-images の scaffold と同じ手順。@@PROJECT_NAME@@ 置換 + PROJECT_GH_USER 設定 + Dockerfile 生成。
 probe_ws="$tmproot/$proj"
 mkdir -p "$probe_ws"
-# scaffold だけ複製する (postStart は /workspace 内容を読まない)。consumer は .devcontainer/ だけを複製し
-# repo の巨大な source/build 物を含めない (disk/timeout 回避)、dogfood は config が root なので root を複製。
-# .git/.venv/node_modules 等の巨大物は除外。pipefail でどちらの tar が落ちても非 0 → fail-closed。
-# symlink は追従せずそのまま複製する (-h は dangling/cyclic symlink で tar を落とし健全な devcontainer を
-# 誤 fail させる)。代わりに複製後に「領域外を指す symlink」を検出して弾く (下)。
-case "$cfgrel" in
-    .devcontainer/*) src="$wsabs/.devcontainer"; dst="$probe_ws/.devcontainer"; mkdir -p "$dst";;
-    *)               src="$wsabs";               dst="$probe_ws";;
-esac
-tar -C "$src" -cf - --exclude=./.git --exclude=./node_modules --exclude='./.venv' --exclude='./.devcontainer/.venv' . \
-  | tar -C "$dst" -xf - \
-  || { echo "workspace scaffold の複製に失敗 ($src → $dst)" >&2; exit 1; }
-# 設計不変則: 外部入力パスは正規化して領域内に閉じる。複製内の symlink が probe_ws 領域外 (絶対パス or
-# ../ 脱出) を指すと、devcontainers CLI が compose/build context/bind を tmproot 外へ解決し isolation を
-# 破る (symlinked .devcontainer/project 等) → fail-closed で拒否する。領域内 symlink (dangling な内部
-# 参照を含む) は許容 (realpath -m は存在を要さない)。
-esc=$(find "$probe_ws" -type l 2>/dev/null | while IFS= read -r l; do
-    t=$(readlink -- "$l") || continue
-    case "$t" in
-        /*) printf '%s -> %s\n' "$l" "$t";;                       # 絶対 symlink = 領域外
-        *)  rp=$(realpath -m -- "$(dirname -- "$l")/$t" 2>/dev/null) || continue
-            case "$rp/" in "$probe_ws"/*) ;; *) printf '%s -> %s\n' "$l" "$t";; esac;;
-    esac
-done)
-[ -z "$esc" ] || { echo "領域外を指す symlink を検出 — isolation 不可のため中止 (symlinked .devcontainer/project 等は不可):" >&2; printf '%s\n' "$esc" >&2; exit 1; }
-cfg="$probe_ws/$cfgrel"
+cp -Rp "$kitroot/templates/project"          "$probe_ws/project"        || { echo "template project の scaffold に失敗" >&2; exit 1; }
+cp -p  "$kitroot/templates/devcontainer.json" "$probe_ws/devcontainer.json" || { echo "template devcontainer.json の scaffold に失敗" >&2; exit 1; }
+cp -Rp "$kitroot/core"                        "$probe_ws/core"           || { echo "core の scaffold に失敗" >&2; exit 1; }
+sed -i "s/@@PROJECT_NAME@@/smoke/g" "$probe_ws/project/compose.yaml" "$probe_ws/devcontainer.json"
+# PROJECT_GH_USER を expect_user に (gh seed の baked user = これ。既存行は消して 1 本化)。
+{ grep -v '^PROJECT_GH_USER=' "$probe_ws/project/.env" 2>/dev/null; printf 'PROJECT_GH_USER=%s\n' "$expect_user"; } > "$probe_ws/project/.env.tmp" \
+    && mv "$probe_ws/project/.env.tmp" "$probe_ws/project/.env" || { echo "project/.env の PROJECT_GH_USER 設定に失敗" >&2; exit 1; }
+( cd "$probe_ws" && bash core/bin/gen-dockerfile.sh ) > "$probe_ws/Dockerfile" || { echo "Dockerfile の生成に失敗" >&2; exit 1; }
+cfg="$probe_ws/devcontainer.json"
 
 out=$(COMPOSE_PROJECT_NAME="$proj" devcontainer up --workspace-folder "$probe_ws" --config "$cfg" 2>&1); rc=$?
 if [ "$rc" -ne 0 ]; then
@@ -125,9 +103,8 @@ if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$out" | tail -30 >&2
     exit 1
 fi
-# positive control: 隔離が効いた (建った dev コンテナが proj ラベルを持つ) ことを確認してから、
-# proj scope の cleanup に依存する。COMPOSE_PROJECT_NAME が無視されると別 project で建ち cleanup が
-# 空振りするので、それを先に検出する。
+# positive control: 隔離が効いた (建った dev コンテナが proj ラベルを持つ) ことを確認してから、proj scope の
+# cleanup に依存する。COMPOSE_PROJECT_NAME が無視されると別 project で建ち cleanup が空振りする。
 docker ps -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null | grep -q . \
     || { echo "隔離失効: project '$proj' のコンテナが無い (COMPOSE_PROJECT_NAME が反映されていない)" >&2; exit 1; }
 # up が exit 0 でも、gh seed 整合検査が実際に走り期待 user で通ったことを pin する (検査の素通り防止)。
