@@ -94,15 +94,29 @@ probe_ws="$tmproot/$proj"
 mkdir -p "$probe_ws"
 # scaffold だけ複製する (postStart は /workspace 内容を読まない)。consumer は .devcontainer/ だけを複製し
 # repo の巨大な source/build 物を含めない (disk/timeout 回避)、dogfood は config が root なので root を複製。
-# -h (--dereference) で symlink を辿り自己完結コピーにする (領域外解決を防ぐ)。.git/.venv/node_modules 等の
-# 巨大物は除外。pipefail でどちらの tar が落ちても非 0 → fail-closed。
+# .git/.venv/node_modules 等の巨大物は除外。pipefail でどちらの tar が落ちても非 0 → fail-closed。
+# symlink は追従せずそのまま複製する (-h は dangling/cyclic symlink で tar を落とし健全な devcontainer を
+# 誤 fail させる)。代わりに複製後に「領域外を指す symlink」を検出して弾く (下)。
 case "$cfgrel" in
     .devcontainer/*) src="$wsabs/.devcontainer"; dst="$probe_ws/.devcontainer"; mkdir -p "$dst";;
     *)               src="$wsabs";               dst="$probe_ws";;
 esac
-tar -C "$src" -cf - -h --exclude=./.git --exclude=./node_modules --exclude='./.venv' --exclude='./.devcontainer/.venv' . \
+tar -C "$src" -cf - --exclude=./.git --exclude=./node_modules --exclude='./.venv' --exclude='./.devcontainer/.venv' . \
   | tar -C "$dst" -xf - \
   || { echo "workspace scaffold の複製に失敗 ($src → $dst)" >&2; exit 1; }
+# 設計不変則: 外部入力パスは正規化して領域内に閉じる。複製内の symlink が probe_ws 領域外 (絶対パス or
+# ../ 脱出) を指すと、devcontainers CLI が compose/build context/bind を tmproot 外へ解決し isolation を
+# 破る (symlinked .devcontainer/project 等) → fail-closed で拒否する。領域内 symlink (dangling な内部
+# 参照を含む) は許容 (realpath -m は存在を要さない)。
+esc=$(find "$probe_ws" -type l 2>/dev/null | while IFS= read -r l; do
+    t=$(readlink -- "$l") || continue
+    case "$t" in
+        /*) printf '%s -> %s\n' "$l" "$t";;                       # 絶対 symlink = 領域外
+        *)  rp=$(realpath -m -- "$(dirname -- "$l")/$t" 2>/dev/null) || continue
+            case "$rp/" in "$probe_ws"/*) ;; *) printf '%s -> %s\n' "$l" "$t";; esac;;
+    esac
+done)
+[ -z "$esc" ] || { echo "領域外を指す symlink を検出 — isolation 不可のため中止 (symlinked .devcontainer/project 等は不可):" >&2; printf '%s\n' "$esc" >&2; exit 1; }
 cfg="$probe_ws/$cfgrel"
 
 out=$(COMPOSE_PROJECT_NAME="$proj" devcontainer up --workspace-folder "$probe_ws" --config "$cfg" 2>&1); rc=$?

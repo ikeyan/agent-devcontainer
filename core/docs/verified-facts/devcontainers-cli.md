@@ -142,6 +142,14 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   daemon 上で pre-existing な untagged image が一時的に probe tag を得て「孤児」に見え、ID 削除で他プロセスの
   成果物を巻き込む (時刻差も content 一致も *所有* を示さない)。真の probe leak (build byproduct) の検出は
   CI 側 dangling delta が担い、そこでも digest-pull base を RepoDigests で除外する。 `[docs(source)]`
+- **`docker rmi -f <repo:tag>` は sole tag だと image ごと消す (untag だけではない)** — Docker docs
+  (`.../cli/docker/image/rm/`) 明記。含意 (smoke の保証範囲): probe が build する content と *完全一致* する
+  ID の **pre-existing な untagged** image が共有 daemon に既にあると、probe tag がその唯一の tag になり
+  cleanup の untag が pre-existing image を消す。ただし user の実 devcontainer image は **tagged** (multi-tag)
+  なので untag しても生存する = 通常の dev host では安全。この edge (共有 daemon + 無タグ同一 content) は稀で
+  clean な回避策が無い (docker に untag-without-delete が無い) ため既知の限界として受容する。同様に、真の
+  probe dangling を script 単体で fail-closed に検出できないのは **legacy builder (DOCKER_BUILDKIT=0)** の
+  場合のみ (buildkit 既定では child-first untag で孤児は出ない)。 `[docs]`
 
 ## 出典
 
