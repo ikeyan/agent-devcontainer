@@ -255,7 +255,8 @@ def _capture_logs(fn):
 
 def test_log_requests_observation():
     """観測ログ: SECRETS_PROXY_LOG_REQUESTS で on/off。on なら許可も拒否も (block より前なので)
-    `REQ method host path` で残り、query (秘密が載りうる) は落ちる。既定 off = 挙動不変。"""
+    `REQ method host` で残る。path/query は秘密が載りうるので fail-closed で出さない (host のみ)。
+    既定 off = 挙動不変。"""
     rules = 'block_unlisted: true\nallow_hosts: ["api.anthropic.com"]\n'
     os.environ.pop("SECRETS_PROXY_LOG_REQUESTS", None)
     sp = _proxy(rules)
@@ -272,8 +273,11 @@ def test_log_requests_observation():
                             path="/v1/messages?beta=tok-SECRET"))
         sp.request(_reqflow("evil.example.com", method="GET", path="/steal"))
     msgs = _capture_logs(drive)
-    assert any("REQ POST api.anthropic.com /v1/messages" in m for m in msgs), msgs
-    assert any("REQ GET evil.example.com /steal" in m for m in msgs), msgs
+    assert any("REQ POST api.anthropic.com" in m for m in msgs), msgs
+    assert any("REQ GET evil.example.com" in m for m in msgs), msgs
+    # path/query は出さない (host のみ)。
+    assert all("/v1/messages" not in m for m in msgs), msgs
+    assert all("/steal" not in m for m in msgs), msgs
     assert all("tok-SECRET" not in m for m in msgs), msgs
 
 
@@ -552,6 +556,27 @@ def test_response_redaction_is_complete(value):
             assert on_wire not in got, (label, ct, "body", got)
             for hv in f.response.headers.values():
                 assert on_wire not in hv, (label, ct, "hdr", hv)
+
+
+def test_logs_are_host_only_and_never_leak_path_or_query():
+    # secrets-proxy 自身が観測/ブロックログ経由で秘密を漏らさない: path/query を一切出さず host だけ記録
+    # する (fail-closed — segment の秘密性を長さ・文字種で推定しない。/hook/password 等の短い秘密も守る)。
+    # 観測 site (REQ) と BLOCK-ENDPOINT site の両方を実 call site として pin する (helper 単体でなく)。
+    with _env(SECRETS_PROXY_LOG_REQUESTS="1"):
+        sp = _proxy('block_unlisted: false\n'
+                    'block:\n  - path: "^/services"\n    reason: "danger"\n')
+    def drive():
+        sp.request(_reqflow("hooks.example.com", method="POST",
+                            path="/services/T00000000/BSEKRETsekret1234567890/password?sig=QUERYSEKRET"))
+        sp.request(_reqflow("api.anthropic.com", method="GET", path="/hook/password?tok=QUERYSEKRET"))
+    msgs = _capture_logs(drive)
+    assert any("REQ GET api.anthropic.com" in m for m in msgs), msgs          # host は記録
+    blk = [m for m in msgs if "BLOCK-ENDPOINT" in m]
+    assert blk and any(("hooks.example.com" in m) and ("danger" in m) for m in blk), msgs  # host+reason
+    # path/query の中身は一切ログに載らない (短い lowercase 秘密 password や長い token も含め)。
+    for m in msgs:
+        for leak in ("password", "BSEKRETsekret1234567890", "QUERYSEKRET", "T00000000"):
+            assert leak not in m, (leak, m)
 
 
 if __name__ == "__main__":

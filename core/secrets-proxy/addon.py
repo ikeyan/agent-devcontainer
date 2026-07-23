@@ -438,10 +438,13 @@ class SecretsProxy:
         req = flow.request
         host = req.pretty_host
 
-        # 0) 観測ログ。block より前に置き、許可も拒否も全部記録する (allowlist 割り出し +
-        #    監査)。query は秘密が載りうるので落とす (path だけ残す)。
+        # 0) 観測ログ。block より前に置き、許可も拒否も全部記録する (allowlist 割り出し + 監査)。
+        #    path/query は秘密 (webhook 鍵・signed URL token・path 埋め込み cred) が載りうる。secret 流出を
+        #    防ぐ proxy 自身が log 経由で漏らさないよう **fail-closed で path を出さない** — segment の秘密性を
+        #    長さ・文字種で推定する heuristic は短い/低エントロピーな秘密 (/hook/password 等) を漏らすため、
+        #    host だけ記録する (allowlist は domain ベースなので discovery には host で足りる)。
         if self.log_requests:
-            log.info("secrets-proxy: REQ %s %s %s", req.method, host, req.path.split("?", 1)[0])
+            log.info("secrets-proxy: REQ %s %s", req.method, host)
 
         # 1) 危険エンドポイントの遮断
         reason = self._blocked(req, host)
@@ -449,8 +452,10 @@ class SecretsProxy:
             flow.response = http.Response.make(
                 403, f"secrets-proxy: blocked ({reason})\n".encode(),
                 {"Content-Type": "text/plain"})
-            log.warning("secrets-proxy: BLOCK-ENDPOINT %s %s%s (%s)",
-                        req.method, host, req.path, reason)
+            # path は出さない (上記 fail-closed と同じ理由)。どの endpoint かは reason (rule の人間可読な
+            # 説明) + host で識別する。詳細な path 調査は信頼された debug 経路 (mitmweb/proxy-web) で行う。
+            log.warning("secrets-proxy: BLOCK-ENDPOINT %s %s (%s)",
+                        req.method, host, reason)
             return
 
         # 2) allowlist 外の遮断
