@@ -556,8 +556,10 @@ def test_response_redaction_is_complete(value):
 
 def test_safe_path_drops_query_and_redacts_tokens():
     # secrets-proxy 自身が観測/ブロックログ経由で path 埋め込み秘密を漏らさない (_safe_path)。
-    # query は必ず落ちる (署名・token が載りうる)。
+    # query/fragment は必ず落ちる (署名・token が載りうる)。
     assert "SEKRET" not in addon._safe_path("/download/file?sig=SEKRET1234567890abcd")
+    assert addon._safe_path("/a/b#frag") == "/a/b"                    # fragment も除去
+    assert addon._safe_path("/a?x=1#y=2") == "/a"
     # 16+ 文字 / 8+ 文字の英数混在 segment (webhook 鍵・signed id 等) は伏せ、短い route 名は残す。
     assert (addon._safe_path("/services/T00000000/Btok/abcXYZ1234567890zzzz")
             == "/services/<redacted>/Btok/<redacted>")
@@ -569,6 +571,20 @@ def test_safe_path_drops_query_and_redacts_tokens():
 def test_safe_path_never_leaks_long_token(tok):
     # 16+ 文字の token を path segment / query のどこに置いても log 表現には残らない。
     assert tok not in addon._safe_path(f"/x/{tok}/y?q={tok}")
+
+
+def test_block_endpoint_log_redacts_path_secret():
+    # 危険 endpoint 遮断の BLOCK-ENDPOINT ログも _safe_path を通す (観測 site だけでなく、より重い leak
+    # だった block site も call site として pin する — helper 単体の pin では revert を検出できない)。
+    sp = _proxy('block:\n  - path: "^/services"\n    reason: "danger"\n')
+    def drive():
+        sp.request(_reqflow("hooks.example.com", method="POST",
+                            path="/services/T00000000/BSEKRETsekret1234567890?sig=QUERYSEKRET"))
+    blk = [m for m in _capture_logs(drive) if "BLOCK-ENDPOINT" in m]
+    assert blk, "BLOCK-ENDPOINT ログが出ていない"
+    assert all("BSEKRETsekret1234567890" not in m for m in blk), blk   # path token 伏せ
+    assert all("QUERYSEKRET" not in m for m in blk), blk               # query 除去
+    assert any(("hooks.example.com" in m) and ("danger" in m) for m in blk), blk  # host+reason は残す
 
 
 if __name__ == "__main__":

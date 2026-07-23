@@ -92,12 +92,16 @@ def _json_path(data, path: str):
 
 def _safe_path(path: str) -> str:
     """観測/ブロックログ用に request path から秘密を落とす。secret 流出を防ぐ proxy 自身が log 経由で
-    秘密を漏らさないため。query は丸ごと除去し (署名・token が載りうる)、path segment のうち token 状の
-    もの — 16 文字以上、または 8 文字以上で英字と数字が混在 (webhook 鍵・API key・signed id 等) — を
-    `<redacted>` に伏せる。短い route 名 (api/v1/users 等) は残し discovery/監査の手掛かりを保つ。
-    保証: query は必ず除去。segment の秘匿は best-effort (長さ+文字種 heuristic; 低エントロピーな短い
-    秘密は伏せきれない — 既知の捕獲済み秘密を運ぶ request 自体は _scan_leak が別途遮断する)。"""
-    base = path.split("?", 1)[0]
+    秘密を漏らさないため。query/fragment を丸ごと除去し (署名・token が載りうる場所として最多)、path
+    segment のうち token 状のもの — 16 文字以上、または 8 文字以上で英字と数字が混在 (webhook 鍵・API
+    key・signed id 等) — を `<redacted>` に伏せる。短い route 名 (api/v1/users 等) は残し discovery/監査の
+    手掛かりを保つ。req.path 契約 (path+query, fragment は通常無し) は verified-facts/mitmproxy.md 参照。
+    保証は「query/fragment は必ず除去」まで。segment の秘匿は best-effort な heuristic で残余がある:
+    (a) 短く低エントロピーな path 埋め込み秘密 (<8 文字、または 8–15 文字の単一文字種) は伏せきれない、
+    (b) 逆に token 状に見える通常の resource 名 (sprint2024 等) も伏せうる — 監査より漏洩防止を優先し
+    安全側 (過剰伏せ) に倒している。log は request 処理の最初で出るので後段の _scan_leak は log 漏洩の
+    backstop にはならない (この heuristic 自体が唯一の防御)。"""
+    base = path.split("?", 1)[0].split("#", 1)[0]
     return "/".join(
         "<redacted>"
         if len(s) >= 16 or (len(s) >= 8 and re.search(r"[A-Za-z]", s) and re.search(r"\d", s))

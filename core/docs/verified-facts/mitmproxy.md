@@ -3,6 +3,17 @@
 secrets-proxy は `mitmproxy==11.1.3` を使う (`.devcontainer/core/secrets-proxy/Dockerfile`)。
 flag/オプションはこの版のソースで確認した。
 
+## `http.Request.path` は origin-form で path+query を含む (query 除去は最初の `?` で切る)
+
+- `Request.path` は request-target をそのまま返し、**path と query の両方**を含む (docstring:
+  "This attribute includes both path and query parts of the target URI"; 例 `/index.html?a=b`)。
+  OPTIONS は `*` になりうる。→ path から query を落とすには最初の `?` で切る (`split("?",1)[0]`)。
+- fragment (`#…`) は本来 request target に載らない (client が除く) が、防御的に `#` でも切る。
+- 実測 (venv の mitmproxy 12.2.3。proxy 固定は 11.1.3 だが docstring/挙動は同じ):
+  `req.path` を `/a/b?x=SEK#frag` にすると `split("?",1)[0]` = `/a/b`。
+- 用途: secrets-proxy の観測/ブロックログが path 埋め込み秘密を漏らさない sanitize
+  (`addon.py:_safe_path` — query/fragment 除去 + token 状 segment 伏せ)。 `[docs][empirical]`
+
 ## mitmweb の Web UI オプション
 
 出典: `mitmproxy/tools/web/webaddons.py` (tag `v11.1.3`, class `WebAuth`/`WebAddon`)

@@ -5,3 +5,6 @@
 /core/VERSION
 # ローカル環境物
 /.venv/
+# 手動 python 実行が残す bytecode (make 経由は PYTHONDONTWRITEBYTECODE=1)
+__pycache__/
+*.pyc
