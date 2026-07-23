@@ -90,26 +90,6 @@ def _json_path(data, path: str):
     return json.dumps(cur, separators=(",", ":"))
 
 
-def _safe_path(path: str) -> str:
-    """観測/ブロックログ用に request path から秘密を落とす。secret 流出を防ぐ proxy 自身が log 経由で
-    秘密を漏らさないため。query/fragment を丸ごと除去し (署名・token が載りうる場所として最多)、path
-    segment のうち token 状のもの — 16 文字以上、または 8 文字以上で英字と数字が混在 (webhook 鍵・API
-    key・signed id 等) — を `<redacted>` に伏せる。短い route 名 (api/v1/users 等) は残し discovery/監査の
-    手掛かりを保つ。req.path 契約 (path+query, fragment は通常無し) は verified-facts/mitmproxy.md 参照。
-    保証は「query/fragment は必ず除去」まで。segment の秘匿は best-effort な heuristic で残余がある:
-    (a) 短く低エントロピーな path 埋め込み秘密 (<8 文字、または 8–15 文字の単一文字種) は伏せきれない、
-    (b) 逆に token 状に見える通常の resource 名 (sprint2024 等) も伏せうる — 監査より漏洩防止を優先し
-    安全側 (過剰伏せ) に倒している。log は request 処理の最初で出るので後段の _scan_leak は log 漏洩の
-    backstop にはならない (この heuristic 自体が唯一の防御)。"""
-    base = path.split("?", 1)[0].split("#", 1)[0]
-    return "/".join(
-        "<redacted>"
-        if len(s) >= 16 or (len(s) >= 8 and re.search(r"[A-Za-z]", s) and re.search(r"\d", s))
-        else s
-        for s in base.split("/")
-    )
-
-
 class SecretsProxy:
     def __init__(self):
         # inject (静的注入)
@@ -458,10 +438,13 @@ class SecretsProxy:
         req = flow.request
         host = req.pretty_host
 
-        # 0) 観測ログ。block より前に置き、許可も拒否も全部記録する (allowlist 割り出し +
-        #    監査)。path/query に秘密が載りうるので _safe_path で query 除去 + token 状 segment を伏せる。
+        # 0) 観測ログ。block より前に置き、許可も拒否も全部記録する (allowlist 割り出し + 監査)。
+        #    path/query は秘密 (webhook 鍵・signed URL token・path 埋め込み cred) が載りうる。secret 流出を
+        #    防ぐ proxy 自身が log 経由で漏らさないよう **fail-closed で path を出さない** — segment の秘密性を
+        #    長さ・文字種で推定する heuristic は短い/低エントロピーな秘密 (/hook/password 等) を漏らすため、
+        #    host だけ記録する (allowlist は domain ベースなので discovery には host で足りる)。
         if self.log_requests:
-            log.info("secrets-proxy: REQ %s %s %s", req.method, host, _safe_path(req.path))
+            log.info("secrets-proxy: REQ %s %s", req.method, host)
 
         # 1) 危険エンドポイントの遮断
         reason = self._blocked(req, host)
@@ -469,8 +452,10 @@ class SecretsProxy:
             flow.response = http.Response.make(
                 403, f"secrets-proxy: blocked ({reason})\n".encode(),
                 {"Content-Type": "text/plain"})
-            log.warning("secrets-proxy: BLOCK-ENDPOINT %s %s%s (%s)",
-                        req.method, host, _safe_path(req.path), reason)
+            # path は出さない (上記 fail-closed と同じ理由)。どの endpoint かは reason (rule の人間可読な
+            # 説明) + host で識別する。詳細な path 調査は信頼された debug 経路 (mitmweb/proxy-web) で行う。
+            log.warning("secrets-proxy: BLOCK-ENDPOINT %s %s (%s)",
+                        req.method, host, reason)
             return
 
         # 2) allowlist 外の遮断

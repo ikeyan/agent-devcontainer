@@ -3,16 +3,15 @@
 secrets-proxy は `mitmproxy==11.1.3` を使う (`.devcontainer/core/secrets-proxy/Dockerfile`)。
 flag/オプションはこの版のソースで確認した。
 
-## `http.Request.path` は origin-form で path+query を含む (query 除去は最初の `?` で切る)
+## `http.Request.path` は origin-form で path+query を含む (秘密が載りうる → ログに出さない)
 
 - `Request.path` は request-target をそのまま返し、**path と query の両方**を含む (docstring:
   "This attribute includes both path and query parts of the target URI"; 例 `/index.html?a=b`)。
-  OPTIONS は `*` になりうる。→ path から query を落とすには最初の `?` で切る (`split("?",1)[0]`)。
-- fragment (`#…`) は本来 request target に載らない (client が除く) が、防御的に `#` でも切る。
-- 実測 (venv の mitmproxy 12.2.3。proxy 固定は 11.1.3 だが docstring/挙動は同じ):
-  `req.path` を `/a/b?x=SEK#frag` にすると `split("?",1)[0]` = `/a/b`。
-- 用途: secrets-proxy の観測/ブロックログが path 埋め込み秘密を漏らさない sanitize
-  (`addon.py:_safe_path` — query/fragment 除去 + token 状 segment 伏せ)。 `[docs][empirical]`
+  実測 (venv の mitmproxy 12.2.3。proxy 固定は 11.1.3 だが docstring/挙動は同じ): `req.path` を
+  `/a/b?x=SEK#frag` にすると query/fragment まで含む。→ path/query は webhook 鍵・signed URL token・
+  path 埋め込み cred を載せうるので、secrets-proxy は観測/ブロックログに `req.path` を **出さない**
+  (fail-closed。segment の秘密性を長さ・文字種で推定する sanitize は短い秘密を漏らすため採らず、host
+  だけ記録する — `addon.py` request())。詳細な path 調査は信頼された debug 経路 (mitmweb) で行う。 `[docs][empirical]`
 
 ## mitmweb の Web UI オプション
 
