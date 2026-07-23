@@ -90,6 +90,22 @@ def _json_path(data, path: str):
     return json.dumps(cur, separators=(",", ":"))
 
 
+def _safe_path(path: str) -> str:
+    """観測/ブロックログ用に request path から秘密を落とす。secret 流出を防ぐ proxy 自身が log 経由で
+    秘密を漏らさないため。query は丸ごと除去し (署名・token が載りうる)、path segment のうち token 状の
+    もの — 16 文字以上、または 8 文字以上で英字と数字が混在 (webhook 鍵・API key・signed id 等) — を
+    `<redacted>` に伏せる。短い route 名 (api/v1/users 等) は残し discovery/監査の手掛かりを保つ。
+    保証: query は必ず除去。segment の秘匿は best-effort (長さ+文字種 heuristic; 低エントロピーな短い
+    秘密は伏せきれない — 既知の捕獲済み秘密を運ぶ request 自体は _scan_leak が別途遮断する)。"""
+    base = path.split("?", 1)[0]
+    return "/".join(
+        "<redacted>"
+        if len(s) >= 16 or (len(s) >= 8 and re.search(r"[A-Za-z]", s) and re.search(r"\d", s))
+        else s
+        for s in base.split("/")
+    )
+
+
 class SecretsProxy:
     def __init__(self):
         # inject (静的注入)
@@ -439,9 +455,9 @@ class SecretsProxy:
         host = req.pretty_host
 
         # 0) 観測ログ。block より前に置き、許可も拒否も全部記録する (allowlist 割り出し +
-        #    監査)。query は秘密が載りうるので落とす (path だけ残す)。
+        #    監査)。path/query に秘密が載りうるので _safe_path で query 除去 + token 状 segment を伏せる。
         if self.log_requests:
-            log.info("secrets-proxy: REQ %s %s %s", req.method, host, req.path.split("?", 1)[0])
+            log.info("secrets-proxy: REQ %s %s %s", req.method, host, _safe_path(req.path))
 
         # 1) 危険エンドポイントの遮断
         reason = self._blocked(req, host)
@@ -450,7 +466,7 @@ class SecretsProxy:
                 403, f"secrets-proxy: blocked ({reason})\n".encode(),
                 {"Content-Type": "text/plain"})
             log.warning("secrets-proxy: BLOCK-ENDPOINT %s %s%s (%s)",
-                        req.method, host, req.path, reason)
+                        req.method, host, _safe_path(req.path), reason)
             return
 
         # 2) allowlist 外の遮断

@@ -554,6 +554,23 @@ def test_response_redaction_is_complete(value):
                 assert on_wire not in hv, (label, ct, "hdr", hv)
 
 
+def test_safe_path_drops_query_and_redacts_tokens():
+    # secrets-proxy 自身が観測/ブロックログ経由で path 埋め込み秘密を漏らさない (_safe_path)。
+    # query は必ず落ちる (署名・token が載りうる)。
+    assert "SEKRET" not in addon._safe_path("/download/file?sig=SEKRET1234567890abcd")
+    # 16+ 文字 / 8+ 文字の英数混在 segment (webhook 鍵・signed id 等) は伏せ、短い route 名は残す。
+    assert (addon._safe_path("/services/T00000000/Btok/abcXYZ1234567890zzzz")
+            == "/services/<redacted>/Btok/<redacted>")
+    assert addon._safe_path("/api/v1/users/42") == "/api/v1/users/42"
+
+
+@given(tok=st.text(alphabet="abcdefghijklmnopqrstuvwxyzABCDEF0123456789-_", min_size=16, max_size=64))
+@_SETTINGS
+def test_safe_path_never_leaks_long_token(tok):
+    # 16+ 文字の token を path segment / query のどこに置いても log 表現には残らない。
+    assert tok not in addon._safe_path(f"/x/{tok}/y?q={tok}")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
