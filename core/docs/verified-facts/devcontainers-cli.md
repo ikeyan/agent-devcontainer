@@ -76,6 +76,83 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
   チェーン全体 (compose → Config.Env → CLI postStart docker exec → sudo env_keep → reader) の
   end-to-end pin は devcontainers CLI 実行を要するため issue #25 (check-devcontainer-up) が担う。 `[empirical]`
 
+## compose 経路の既存コンテナ探索は project+service ラベルだけ (idLabel 非依存)
+
+- compose 構成 (`dockerComposeFile` 指定) の `devcontainer up` は `openDockerComposeDevContainer`
+  経由で、既存コンテナを `findComposeContainer(params, projectName, service)` で探す。これは
+  ```ts
+  listContainers(params, true, [
+      `com.docker.compose.project=${projectName}`,
+      `com.docker.compose.service=${serviceName}`,
+  ])
+  ```
+  の 2 ラベルだけで照合し、`devcontainer.local_folder` / `devcontainer.config_file` (idLabel) は
+  **探索に使わない** (idLabel は `startContainer` が新規コンテナへ *付与* するだけ)。よって一意な
+  `COMPOSE_PROJECT_NAME` を与えれば同一 workspace/config の既存 devcontainer は project ラベル不一致で
+  ヒットせず、CLI は fresh な `compose up` を新しい project 名前空間で建てる。`--id-label` は
+  非 compose (image/Dockerfile) 経路の `findDevContainer` 探索にだけ効き、compose 経路の
+  `findComposeContainer` には影響しない。 `[docs(source)]`
+
+## `devcontainer up` が建てる image は 2 系統 (project 冠 compose / cwd 由来 folder) — cleanup 設計の要石
+
+- **compose 系**: service に `image:` が無い (このリポジトリの `dev` / `secrets-proxy` は `build:` のみ) と、
+  compose が建てる image 名は `getDefaultImageName = ${projectName}${sep}${service}` (`sep` は compose
+  >=2.8 で `-`、未満で `_`)。→ 一意 project 名で up する度に `<project>-dev` / `<project>-secrets-proxy`
+  が別 image として溜まる。 `[docs(source)]`
+- **folder 系**: CLI が UID 調整 (`updateRemoteUserUID`) で建てる image は
+  `getFolderImageName = vsc-${basename(cwd)}-${sha256(cwd)}` を基に `${folderImageName}-uid`
+  (`containerFeatures.ts:435`; compose 経路は `imageName.startsWith(folderImageName)` が偽なので
+  `vsc-…-uid`)。**cwd から決まる**ので project 名では隔離できず、`--workspace-folder` が同じなら実
+  devcontainer と同名になる。→ probe が同じ folder で up すると `up` 中に user の共有
+  `vsc-<folder>-<hash>-uid` を retag する副作用が起き、project scope の cleanup では防げない。 `[docs(source)]`
+  - 注: `${folderImageName}-features` (features 拡張 image) が出るのは**単一コンテナ経路のみ**
+    (`extendImage`, `containerFeatures.ts:59`)。compose 経路は `build:` service だと `overrideImageName`
+    が undefined のまま (`dockerCompose.ts:197-202`) で `-features` image は作られない。 `[docs(source)]`
+- **含意 (smoke `check_devcontainer_up.sh` の隔離設計)**: probe は caller の workspace を複製せず、kit の
+  `templates/` から **一意 basename (`dcup-smoke-<mktemp乱数>`) の temp dir に kit config を自己 scaffold**
+  して up する (consumer 編集の compose bind/lifecycle/symlink を一切走らせない → 領域外脱出が構造的に不能;
+  kit の postStart 回帰は template で再現する。kit-only)。folder 系 image も `vsc-dcup-smoke-<rand>-<hash>`、
+  compose 系も `dcup-smoke-<rand>-<svc>` と全て `dcup-smoke-<rand>` token を持ち、user の `vsc-<realfolder>-*`
+  とは別名。cleanup はこの token を持つ資源だけを消せば完結する。 `[docs(source)]`
+- `docker images --filter reference=<pat>` は `repository:tag` を glob 照合し `*` を許す
+  (docs 例 `busy*:*libc` が `busybox:uclibc` に一致)。tag 省略時は該当 repo の全 tag に一致。複数
+  `--filter reference=` は OR。ただし `reference=<proj>*` は右端 unanchored で `<proj>` が別 PID の prefix
+  (`dcup-smoke-700*` が `dcup-smoke-7005-dev` に一致) だと取り違えるので、separator を anchor した
+  `reference=<proj>-*` / `<proj>_*` / `vsc-<proj>-*` で消す。 `[docs]`
+- **image は tag 名で消す (ID では消さない)**: probe image の content は Dockerfile + baked な
+  `core/`+`project/` + build-arg だけで決まり、workspace は bind mount で焼き込まれない。ゆえに probe の
+  `dcup-smoke-<pid>-dev` / `vsc-dcup-smoke-<pid>-<hash>-uid` は、同じ repo・同じ build-arg で建てた user の
+  実 image と **同一の content-addressable ID** を持ちうる (tag 名だけが違う)。`docker rmi -f <ID>` は
+  その ID の全 tag を消すので user tag を巻き込む → cleanup は `docker images --format '{{.Repository}}:{{.Tag}}'`
+  で **tag 名**を列挙して `rmi -f <repo:tag>` する。tag 指定の rmi は該当 tag を untag するだけで、他 tag が
+  残る image は削除しない (共有 ID でも user tag は生存)。 `[docs(source)]`
+- **cleanup の実測 2 点** (CI build-images の smoke で観測): (a) `devcontainer up` は compose の
+  bind/volume mount 先 (`/workspace/.claude/settings.local.json`, `/workspace/.devcontainer/.venv` 等) を
+  **host 上に root 所有**で作る (mount stub) → 非 root uid では `rm -rf` が EACCES で落ちる。docker を
+  `-u 0` で走らせ `chown -R` してから消す。(b) 親 image を子 (`FROM` で参照する image) より先に `rmi`
+  すると親が dangling `<none>` として残る → **子 (folder 系 uid image) を先、親 (compose 系) を後**に消す。
+  `[empirical]`
+- **`docker images -f dangling=true` は digest pull した base image も含む**: `FROM node@sha256:...`
+  のように digest 指定で pull/参照した base image は RepoTags を持たない (RepoDigests のみ) ため dangling
+  filter に一致するが、これは共有 cache であり leak ではない (消すと再 pull を招く副作用)。真の孤児
+  (build byproduct) は RepoTags も RepoDigests も持たない。残留検査で leak を数えるときは
+  `{{len .RepoDigests}} == 0` で digest-pull base を除外する。CI smoke で node base (1.2GB, tags=[],
+  digests=[node@sha256:...]) を誤検出して確認。 `[empirical]`
+- **image は tag 名で child-first に消す。ID ベースの孤児掃除はしない**: buildkit では tag 指定 rmi で
+  子 (vsc uid image) → 親 (compose base) の順に untag すれば孤児 dangling は生じない。ID で「孤児化した
+  probe image」を掃く方式は**採らない** — probe image は content-addressable ID を共有しうるので、共有
+  daemon 上で pre-existing な untagged image が一時的に probe tag を得て「孤児」に見え、ID 削除で他プロセスの
+  成果物を巻き込む (時刻差も content 一致も *所有* を示さない)。真の probe leak (build byproduct) の検出は
+  CI 側 dangling delta が担い、そこでも digest-pull base を RepoDigests で除外する。 `[docs(source)]`
+- **`docker rmi -f <repo:tag>` は sole tag だと image ごと消す (untag だけではない)** — Docker docs
+  (`.../cli/docker/image/rm/`) 明記。含意 (smoke の保証範囲): probe が build する content と *完全一致* する
+  ID の **pre-existing な untagged** image が共有 daemon に既にあると、probe tag がその唯一の tag になり
+  cleanup の untag が pre-existing image を消す。ただし user の実 devcontainer image は **tagged** (multi-tag)
+  なので untag しても生存する = 通常の dev host では安全。この edge (共有 daemon + 無タグ同一 content) は稀で
+  clean な回避策が無い (docker に untag-without-delete が無い) ため既知の限界として受容する。同様に、真の
+  probe dangling を script 単体で fail-closed に検出できないのは **legacy builder (DOCKER_BUILDKIT=0)** の
+  場合のみ (buildkit 既定では child-first untag で孤児は出ない)。 `[docs]`
+
 ## 出典
 
 - devcontainers/cli, `src/spec-node/dockerCompose.ts` (branch `main`)。
@@ -84,6 +161,12 @@ devcontainers CLI が compose をどう起動するかで決まる。以下は�
 - 同 repo `src/spec-node/dockerCompose.ts` (`userEntrypoint`/`overrideCommand`)、
   `src/spec-node/containerFeatures.ts` (`getRemoteUserUIDUpdateDetails` の発動条件)、
   `scripts/updateUID.Dockerfile` (`chown -R`) を取得して確認 (2026-07-17)。
+- 同 repo v0.88.0 を clone し `src/spec-node/dockerCompose.ts`
+  (`openDockerComposeDevContainer`/`findComposeContainer`/`getDefaultImageName`)、
+  `src/spec-node/containerFeatures.ts` (`updatedImageName`/`fixedImageName` = folder image 由来)、
+  `src/spec-node/utils.ts` (`getFolderImageName`) を確認 (2026-07-22)。
+- `docker image ls` の `--filter reference=` の glob 照合は Docker docs
+  (`https://docs.docker.com/reference/cli/docker/image/ls/`) の例 `busy*:*libc` で確認 (2026-07-22)。
 - 上記に対応する本リポジトリの帰結・実測 (project directory = 最初の `-f` のディレクトリ、`.env` の
   読まれ方、後勝ちマージ) は `docker.md`「compose 複数 -f / project directory / .env」。ホスト側パスの
   実在検証は `make check-compose-paths` (`bin/check_compose_paths.py`)。 `[docs(source)]`

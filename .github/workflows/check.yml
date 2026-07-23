@@ -101,6 +101,39 @@ jobs:
           # build だけでは postStartCommand を実行しない。devcontainers CLI で実際に up し、
           # init-firewall の gh seed 整合検査 (capped root の hosts.yml 読取ほか) まで完走するかを pin。
           npm install -g @devcontainers/cli
-          # compose build.args + postStart 照合用に PROJECT_GH_USER を project/.env に入れる。
-          sed -i 's/^PROJECT_GH_USER=$/PROJECT_GH_USER=kitci/' project/.env
-          bash core/bin/check_devcontainer_up.sh . kitci
+          # probe は script が templates/ から kit config を temp に自己 scaffold して up する (この step の
+          # 上でやる `.` の scaffold は build-images の standalone build 用で、smoke には渡さない)。
+          # probe 前の dangling image を baseline に取る (cleanup が untag 由来の <none> を残さないことの delta 用)。
+          dangling_before=$(docker images -f dangling=true -q | sort -u)
+          # probe の失敗は「最も leak しやすい経路」なので、失敗しても残留 pin を必ず走らせる (rc を捕まえて後で判定)。
+          set +e; bash core/bin/check_devcontainer_up.sh kitci; probe_rc=$?; set -e
+          # 残留 pin: probe が作る資源は container/volume/network/image とも dcup-smoke-<pid> token を含む
+          #   (compose 系 <proj>-<svc>・folder 系 vsc-<proj>-<hash>)。名前に token を含む資源を横断 grep で数える
+          #   (^ で固定せず substring — folder image は vsc- 前置なので)。image が残れば script の name cleanup が
+          #   効いていない、も同時に炙り出す。
+          named=$( { docker ps -a --format '{{.Names}}'; docker images --format '{{.Repository}}'; \
+                     docker volume ls --format '{{.Name}}'; docker network ls --format '{{.Name}}'; } \
+                   | grep -c -- 'dcup-smoke-' || true )
+          # dangling (<none>) image は名前を持たないので baseline delta で拾う (untag 系の leak を塞ぐ)。
+          # CI runner は専用なので時刻 delta = probe 由来で安全 (script 側は共有ホスト向けに所有 scope)。
+          # ただし digest pull した base image (FROM node@sha256:...) は RepoTags 無しで dangling filter に
+          # 一致するが RepoDigests を持つ共有 cache であり leak でない。真の孤児 (RepoTags も RepoDigests も
+          # 無い build byproduct) だけを数える。
+          dangling_after=$(docker images -f dangling=true -q | sort -u)
+          new_ids=$(comm -13 <(printf '%s\n' "$dangling_before") <(printf '%s\n' "$dangling_after"))
+          # if/fi で書く: 末尾の `[ ] && printf` が偽だと while が 1 を返し、pipefail+set -e で step が
+          # 無言 abort するため (loop は常に 0 で終える)。
+          leaked_ids=$(printf '%s\n' "$new_ids" | while read -r i; do [ -n "$i" ] || continue; \
+              if [ "$(docker image inspect "$i" --format '{{len .RepoDigests}}' 2>/dev/null)" = "0" ]; then printf '%s\n' "$i"; fi; done)
+          new_dangling=$(printf '%s\n' "$leaked_ids" | grep -c . || true)
+          fail=0
+          [ "$probe_rc" -eq 0 ]     || { echo "probe 失敗 (rc=$probe_rc)" >&2; fail=1; }
+          [ "$named" -eq 0 ]        || { echo "dcup-smoke-* 名の docker 資源が $named 件残留 (cleanup が副作用を残した)" >&2; fail=1; }
+          # 残った場合は正体を出す (script の所有 scope cleanup が取りこぼした build byproduct を特定するため)。
+          [ "$new_dangling" -eq 0 ] || { echo "probe 由来の dangling build byproduct が $new_dangling 件残留:" >&2; \
+              printf '%s\n' "$leaked_ids" | while read -r i; do [ -n "$i" ] || continue; \
+                docker image inspect "$i" --format '  id={{.Id}} tags={{.RepoTags}} digests={{.RepoDigests}} size={{.Size}}' 2>/dev/null; \
+                echo "  --- history $i ---" >&2; docker history --no-trunc "$i" 2>/dev/null | head -6 >&2; \
+              done >&2; fail=1; }
+          [ "$fail" -eq 0 ] || exit 1
+          echo "ok  smoke cleanup — 残留なし (named dcup-smoke-* + probe 由来 dangling)"

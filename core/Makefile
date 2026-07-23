@@ -356,10 +356,8 @@ check-redact-image: ## redact イメージを実ビルドし node 子の python3
 # traverse 不可 EACCES 等 — docs/incidents.md) を回帰 pin する。実体・前提は bin/check_devcontainer_up.sh。
 # 期待 user は compose config の build.args (= project/.env の PROJECT_GH_USER。COMPOSE は -u 済) から取る。
 # 要 docker + @devcontainers/cli。重い/ネット要のため check 集約には入れず CI と投入ホストで明示実行する。
-check-devcontainer-up: ## devcontainer を up し postStart (gh seed 検査) まで通るか end-to-end 検査 (要 docker + @devcontainers/cli; 重い、明示実行)
-	@ghu=$$($(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null \
-		| $(PY) -c 'import sys,yaml; print((yaml.safe_load(sys.stdin)["services"]["dev"]["build"].get("args") or {}).get("PROJECT_GH_USER") or "")'); \
-	bash bin/check_devcontainer_up.sh .. "$$ghu"
+check-devcontainer-up: ## devcontainer を up し postStart (gh seed 検査) まで通るか end-to-end 検査 (要 docker + @devcontainers/cli; kit-only, 重い、明示実行)
+	@bash bin/check_devcontainer_up.sh smoke  # script が templates/ から kit config を自己 scaffold する (kit-only)
 
 # Docker `internal:` network が外部 DNS を転送しない (= internal net 自体が DNS exfil を塞ぐ) ことを
 # 実機で pin する。redact を proxy 中継 + internal net へ移す設計の要石を回帰で守る
