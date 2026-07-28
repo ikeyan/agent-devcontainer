@@ -4,7 +4,7 @@
 # 再生成は `make -C .devcontainer/core gen-dockerfile`、drift 検査は check-dockerfile-gen)。
 # build context は .devcontainer/ なので、COPY のソースパスは `core/...` / `project/...` で書く。
 
-FROM ghcr.io/astral-sh/uv:0.11.27@sha256:4d01caf3b22dfd11003455e2e68153da08c4ee1fa54fdbd166c6282d22693419 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.0@sha256:606e70c71c852d03f611b1e56a195d08648507018a7057fab82c4974c4eae105 AS uv
 
 FROM node:24.17.0-trixie@sha256:61db8992b5c481488fe236ea69fe94035ba73df76a474051ed2e9713f3a15e5a AS base
 
