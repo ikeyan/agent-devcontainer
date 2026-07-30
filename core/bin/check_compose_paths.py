@@ -8,7 +8,7 @@
 を集め、ホスト上に実在するかを stat で assert する。1 つでも不在なら exit 1。
 
 なぜ要るか: devcontainer.json は compose を [project/compose.yaml, core/compose.yaml] の順で
--f 列挙し、CLI は --project-directory を付けない (docs/verified-facts/devcontainers-cli.md)。
+-f 列挙し、CLI は --project-directory を付けない (canon: facts/devcontainer/compose-f-flags-preserve-order-no-project-directory)。
 よって compose の project directory は最初の -f = .devcontainer/project/ になり、core/compose.yaml
 内の相対ホストパスは core/ ではなく project/ 基準で解決される。`./podman/...` のような core/ を
 意図した相対パスが project/ 基準で解決されて不在ファイルを指す誤アンカーは、`compose config` 自体は

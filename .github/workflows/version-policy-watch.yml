@@ -2,7 +2,7 @@ name: version-policy-watch
 
 # base image の版ポリシー (node=最新 active LTS / python=bugfix 終了済み最新) を一次資料で週次確認し、
 # 手動 promotion が必要になったら issue を自動起票する。ポリシーの根拠は
-# .github/dependabot.yml の ignore コメントと core/docs/verified-facts/dependabot.md「ignore」節。
+# .github/dependabot.yml の ignore コメントと canon: facts/dependabot/ignore-versions-blocks-tag-suffix-bumps。
 #
 # 判定は日付をハードコードせず、毎回一次資料 (nodejs/Release schedule.json / peps.python.org
 # release-cycle.json) を読んで行う。Dependabot 自体は ignore 範囲内の版上げ PR を出さないので、
@@ -157,7 +157,7 @@ jobs:
           2. Dependabot の週次 PR (または手動) で core/Dockerfile の \`FROM node:...\` 行を
              ${node_target} 系の tag+digest に更新する。
           3. \`make -C core check\` および kit CI を通す。
-          4. core/docs/verified-facts/dependabot.md の ignore 節のコメントを更新する。
+          4. canon (facts/dependabot/ignore-versions-blocks-tag-suffix-bumps) の記載を更新する。
 
           このIssueは \`.github/workflows/version-policy-watch.yml\` が一次資料を毎週読んで自動起票した。
           昇格が完了したら closeすること。
@@ -199,7 +199,7 @@ jobs:
           3. Dependabot の週次 PR (または手動) で core/secrets-proxy/Dockerfile の \`FROM python:...\`
              行を ${py_target} 系の tag+digest に更新する。
           4. \`make -C core check\` および kit CI を通す。
-          5. core/docs/verified-facts/dependabot.md の ignore 節のコメントを更新する。
+          5. canon (facts/dependabot/ignore-versions-blocks-tag-suffix-bumps) の記載を更新する。
 
           このIssueは \`.github/workflows/version-policy-watch.yml\` が一次資料を毎週読んで自動起票した。
           昇格が完了したら closeすること。

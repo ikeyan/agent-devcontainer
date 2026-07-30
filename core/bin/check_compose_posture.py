@@ -4,14 +4,14 @@
 `docker/podman compose -f ../project/compose.yaml -f compose.yaml config` の出力 (stdin) を読み、
 「マージ結果そのもの」の不変条件を assert する。なぜ config を直接見るか: 複数 -f の「後勝ち」で
 core が勝つのは core が明示宣言したスカラーだけで、list (cap_add/networks/volumes) は追記マージ、
-core 未宣言キーは project 値が通る (docs/verified-facts/docker.md「compose 複数 -f」)。よって project 層の
+core 未宣言キーは project 値が通る (canon: facts/docker/compose-project-directory-and-env-resolution)。よって project 層の
 編集で崩れうる姿勢は、後勝ちの一般則でなくマージ結果を直接検査して固定する。
 
 pin する条件 (§10):
   A. project 名が呼び出し側の指定 (= project/compose.yaml 自身が宣言する name:) と一致する。消えると
      fallback で 'project' (project/compose.yaml のディレクトリ basename) 等に化け、全 named volume が
      別 namespace に切り替わり既存データから切り離される
-     (docs/verified-facts/devcontainers-cli.md「project 名の fallback」)。kit 化により project 名は
+     (canon: facts/devcontainer/compose-project-name-fallback)。kit 化により project 名は
      consumer ごとに変わる (@@PROJECT_NAME@@) ため、リテラル固定値でなく呼び出し側 (redact_invariants_check.sh
      が project/compose.yaml から読んだ実際の name:) と突き合わせる。
   B. dev の cap_add がちょうど {NET_ADMIN, NET_RAW, SETUID, SETGID}。project 層が cap を追記して

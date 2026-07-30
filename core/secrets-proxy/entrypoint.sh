@@ -13,7 +13,7 @@
 #   make -C .devcontainer/core bootstrap
 #   (単一 -f の生 compose を直に叩くと project 名が `core` になり session が別 volume namespace
 #    (core_proxy-bw) へ書かれ、通常起動 (project 名 tools) から読めず復旧不能ループになる。make target は
-#    project 層込みの 2 ファイル -f で project 名 tools を保つ。docs/verified-facts/devcontainers-cli.md)
+#    project 層込みの 2 ファイル -f で project 名 tools を保つ。canon: facts/devcontainer/compose-project-name-fallback)
 #   BW_SERVER / API キー / マスターパスワードを対話入力 → login + unlock し、
 #   BW_SESSION を $SESSION_FILE に保存する。マスターパスワードは保存しない。
 set -euo pipefail
@@ -149,7 +149,7 @@ fi
 # 既定は mitmdump (ヘッドレス)。SECRETS_PROXY_WEB=1 のときだけ mitmweb (Web UI 付き) にする。
 # Web UI の公開/隔離 (dev から到達不可な admin IP + host loopback publish) は override
 # (compose.mitmweb.yaml) が与える。flag は mitmproxy 11.1.3 で確認済み
-# (docs/verified-facts/mitmproxy.md)。
+# (canon: facts/mitmproxy/mitmweb-vs-mitmdump-option-differences)。
 COMMON_OPTS=(
   --listen-host 0.0.0.0 --listen-port 8080
   --set confdir="$CONFDIR"
@@ -166,14 +166,14 @@ if [ "${SECRETS_PROXY_WEB:-0}" = "1" ]; then
   web_host="${SECRETS_PROXY_WEB_HOST:-127.0.0.1}"
   # 認証は mitmweb 既定で常時 ON。ただし web_open_browser=false だと mitmweb は token を一切
   # ログに出さない (webaddons.py: web_url を出すのは browser 起動失敗パスのみ。v11.1.3 で確認、
-  # docs/verified-facts/mitmproxy.md)。よって token をこちらで生成し web_password に固定して URL を
+  # canon: facts/mitmproxy/mitmweb-token-not-logged-when-headless)。よって token をこちらで生成し web_password に固定して URL を
   # 表示する。?token=<web_password> がそのまま認証に通る (is_valid_password = compare_digest)。
   # host からは 127.0.0.1 に publish しているので 127.0.0.1 で開く。
   web_token="$(python -c 'import secrets;print(secrets.token_hex(16))')"
   [ -n "$web_token" ] || { echo "[entrypoint] FATAL: web token の生成に失敗" >&2; exit 1; }
   echo "[entrypoint] starting mitmweb: proxy :8080, web UI ${web_host}:${web_port}"
   echo "[entrypoint] mitmweb open: http://127.0.0.1:${web_port}/?token=${web_token}"
-  # flow_detail は mitmweb に無いオプションなので渡さない (docs/verified-facts/mitmproxy.md)。
+  # flow_detail は mitmweb に無いオプションなので渡さない (canon: facts/mitmproxy/mitmweb-vs-mitmdump-option-differences)。
   exec mitmweb "${COMMON_OPTS[@]}" \
     --set web_open_browser=false \
     --set web_host="${web_host}" \

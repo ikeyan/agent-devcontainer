@@ -5,15 +5,15 @@ user namespace + subuid で動く。権限緩和は seccomp (Docker 既定 profi
 tailored profile。`unconfined` ではない) と、ネスト `/proc` mount を通すための dev の /proc マスク解除
 (`systempaths=unconfined`) の 2 点で、Podman 用の cap 追加は無い (評価は下記 blast-radius)。
 `newuidmap`/`newgidmap` が必要とする cap は file-cap で与える
-(この環境では setuid→cap 付与が効かないため。docs/verified-facts/podman.md「rootless Podman / newuidmap」)。
+(この環境では setuid→cap 付与が効かないため。canon: facts/podman/newuidmap-setuid-cap-denied-fixed-by-filecap)。
 
 ## 構成
 
-各設定ファイルに理由コメントがあり、深い根拠は docs/verified-facts/podman.md にある。ここは所在の地図:
+各設定ファイルに理由コメントがあり、深い根拠は canon (`facts/podman/`) にある。ここは所在の地図:
 
 - **Dockerfile (dev ステージ)**: `podman`/`uidmap`/`slirp4netns` を apt 追加 (uidmap・slirp4netns は
   Recommends なので明示) し `podman/*.conf` を `/etc/containers/` へ COPY。`newuidmap`/`newgidmap` は
-  file-cap 化して setuid を外す (docs/verified-facts/podman.md「rootless Podman / newuidmap」)。
+  file-cap 化して setuid を外す (canon: facts/podman/newuidmap-setuid-cap-denied-fixed-by-filecap)。
 - **`podman/*.conf`**: storage=overlay (graphroot は podman volume 上に置き overlay-on-overlay を
   回避。vfs に戻す手順は下記) / cgroupfs + file logger / slirp4netns / 短縮名の docker.io 解決。各値の
   根拠は同ファイルのコメント参照。
@@ -50,7 +50,7 @@ registry は secrets-proxy の `allow_hosts` に挙げたホストにだけ到�
 ## なぜ seccomp 緩和が要るのか
 
 rootless Podman は userns を作るが、dev の既定設定では弾かれる (kernel でなくランタイムの既定 seccomp
-profile による制限。probe の確定値は docs/verified-facts/podman.md「コンテナ (Podman / userns)」)。これが seccomp
+profile による制限。probe の確定値は canon: facts/podman/nested-userns-blocked-by-container-seccomp)。これが seccomp
 緩和を入れる理由。緩和は `unconfined` ではなく、必要な syscall だけを開いた tailored profile で行う
 (下記「seccomp profile (tightening)」)。
 
@@ -69,7 +69,7 @@ cap 追加は無い。既存の NET_ADMIN/NET_RAW/SETUID/SETGID は firewall/sud
   確定一覧と生成・追従は下記「seccomp profile (tightening)」(= `gen-seccomp.ts`)。
 - **/proc マスク解除 (`systempaths=unconfined`)**: ネスト rootless Podman の fresh `/proc` mount を
   Docker 既定の locked /proc マスク (ro `/proc/sys`・masked `/proc/kcore` 等) が EPERM で弾くため外す
-  (機構は docs/verified-facts/docker.md「Docker /proc マスク (systempaths)」)。防御は下がるが、dev は uid 1000 +
+  (機構は canon: facts/docker/proc-mask-systempaths)。防御は下がるが、dev は uid 1000 +
   `cap_drop: ALL` なので解除後も kcore 読取 (CAP_SYS_RAWIO 要) も root 所有 /proc/sys 書込 (CAP_SYS_ADMIN
   要) もできず、ネスト先 mapped-root も自 userns の fresh /proc しか触れない。低下するのは情報露出系の
   defense-in-depth のみ。
@@ -99,7 +99,7 @@ tailored profile (`podman/seccomp.json`) を使う。再生成・upstream 追従
 - **drift 検査**: `make check` の `check-seccomp` が「snapshot + 変換 == commit 済み seccomp.json」を
   offline で検証する (ずれていれば exit 1)。
 - compose は `security_opt: [seccomp=./podman/seccomp.json]`。path は project ディレクトリ基準で compose
-  が本文を inline 展開する (docs/verified-facts/docker.md「Docker compose」)。
+  が本文を inline 展開する (canon: facts/docker/compose-seccomp-path-resolution)。
 
 ## vfs に戻す / 切替時の注意
 

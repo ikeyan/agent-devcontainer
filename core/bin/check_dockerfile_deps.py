@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dockerfile の外部 image 依存を AST で機械検査する (make -C .devcontainer/core check-dockerfile-deps)。
 
-規則 (根拠は docs/verified-facts/dependabot.md):
+規則 (根拠は canon: facts/dependabot/copy-from-not-tracked-use-named-stage):
   1. FROM の image 参照が先行ステージ alias でない (= 外部 image) なら @sha256:<digest> 必須。
      Dependabot の docker ecosystem は FROM 行しか解析しないので、digest まで固定した外部 image だけが
      版・digest の自動追従に載る (digest は tag 再push の改竄/取り違え検知も兼ねる)。
@@ -11,7 +11,7 @@
      名前付きステージにして --from=<stage> で参照する。
 
 tree-sitter-containerfile の AST node 名 (from_instruction / image_spec / image_name / image_digest /
-image_alias / copy_instruction / param) は実 parse で確認済み: docs/verified-facts/tree-sitter-containerfile.md。
+image_alias / copy_instruction / param) は実 parse で確認済み: canon: facts/tree-sitter-containerfile/dockerfile-ast-node-names。
 
 self-probe (redact_selfcheck.py と同じ流儀): 埋め込み fixture の digest 無し FROM / COPY --from=外部image
 を検出できなければ fail、正常 fixture (alias 参照 + digest 付き FROM) を誤検知したら fail。検査器自体が

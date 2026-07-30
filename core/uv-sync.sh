@@ -7,7 +7,7 @@
 # ダウンロードでなく uv のエラーとして即座に現れるようにする。残る仕事は CA の結合:
 # sfw CA 単体では uv が実物 CA を検証できず UnknownIssuer で落ちるので system バンドルと結合して渡し、
 # 実体 uv (/usr/local/bin/uv) を直接呼ぶ (shim 経由だと内側 sfw が結合バンドルを潰す)。機構と出典は
-# docs/verified-facts/network.md「uv / sfw の CA 結合」。
+# canon: facts/network/uv-sfw-ca-bundle。
 set -euo pipefail
 
 export UV_PYTHON_DOWNLOADS=never

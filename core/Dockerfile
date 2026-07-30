@@ -24,8 +24,9 @@ ARG PNPM_VERSION=11.5.2
 
 # GitHub Releases 成果物は version と sha256 を対で固定し、取得後に sha256sum -c で検証する
 # (CDN 改竄・取り違えを fail-closed で弾く)。version 更新時は sha256 も必ず更新する。出典と
-# 取得手順は docs/verified-facts/github-releases-sha256.md「GitHub Releases 成果物の sha256」。arch は
-# dpkg --print-architecture (amd64|arm64) を正規キーにし、上流の資産名へ case で写す。
+# 取得手順は canon: facts/github-releases-sha256/release-artifact-checksum-sources。arch は
+# dpkg --print-architecture (amd64|arm64) を正規キーにし、上流の資産名へ case で写す
+# (canon: facts/github-releases-sha256/arch-key-normalization)。
 ARG GIT_DELTA_VERSION=0.18.2
 ARG GIT_DELTA_SHA256_amd64=1658c7b61825d411b50734f34016101309e4b6e7f5799944cf8e4ac542cebd7f
 ARG GIT_DELTA_SHA256_arm64=937781aa7788e1510858743fff6c9a8b4a69fe0a22a7c8a69493e633227939a9
@@ -159,8 +160,8 @@ FROM docker/compose-bin:v5.3.1@sha256:38fd4a3c7458b931d339b1eb657df0bef790a39bca
 # devcontainer 本体 (dev): base に rootless Podman 一式を足す。構成と blast-radius は PODMAN.md。
 #
 # newuidmap/newgidmap に file-cap を付与し setuid ビットを外す。この環境では setuid→cap 付与が効かず、
-# setuid 任せだと rootless Podman の uid_map write が EPERM になるため (docs/verified-facts/podman.md
-# 「rootless Podman / newuidmap」)。setcap には libcap2-bin。
+# setuid 任せだと rootless Podman の uid_map write が EPERM になるため
+# (canon: facts/podman/newuidmap-setuid-cap-denied-fixed-by-filecap)。setcap には libcap2-bin。
 #
 # dnsmasq-base は make check の check-redact-config が dev 内で `dnsmasq --test` を叩くため
 # (dev 自身は dnsmasq を起動しない。redact ステージは full dnsmasq を別途入れる)。
@@ -196,8 +197,8 @@ COPY --from=compose --chmod=0755 /docker-compose /usr/local/lib/docker/cli-plugi
 # gh CLI の認証は dev に実トークンを置かず secrets-proxy が substitute する。token placeholder だけの
 # hosts.yml を seed し (.devcontainer/project/rules.yaml「api.github.com」)、user 名 (consumer 値) は
 # テンプレート (core/gh/hosts.yml) の @@GITHUB_USER@@ へ build arg PROJECT_GH_USER で焼き込む。
-# 所有権の設計 (根拠と防御範囲: docs/verified-facts/gh.md「gh CLI / config dir の読取と書込」、
-# updateRemoteUserUID の制約: devcontainers-cli.md):
+# 所有権の設計 (根拠と防御範囲: canon: facts/gh/config-dir-read-write-permission-enforcement、
+# updateRemoteUserUID の制約: canon: facts/devcontainer/update-remote-user-uid-chowns-home):
 #   - dir と hosts.yml (token の書込先) は root 所有 = gh auth login の実トークン焼込事故を封じる
 #   - config.yml は node 所有のまま = 正当な gh config set / gh alias set を壊さない
 #   - config.yml の version seed が起動時マイグレーションの hosts.yml 書換を抑止 (gh/config.yml)
@@ -230,7 +231,7 @@ RUN set -e; \
 # 読むが、dev は cap_drop:ALL で root に DAC_OVERRIDE が無く、node home の base 既定 700 を traverse
 # できず EACCES になる (namei で確認: /home/node が唯一の非 traverse リンク)。o+x (711) にして root の
 # 通過だけ許す — files は各自の perms を保つので hosts.yml の root 所有 (node 書込不可) は不変。
-# dev の actor は node と root のみで、711 は実質的な露出増にならない (docs/incidents.md)。
+# dev の actor は node と root のみで、711 は実質的な露出増にならない (canon: incidents/gh-seed-check-home-traverse-blocks-devcontainer-open)。
 
 # init-firewall.sh / install-proxy-ca.sh の再実行 (postStartCommand・CDN IP ローテーション対応) は
 # dev だけが要る。sudo ごと dev 専用にする。
@@ -239,11 +240,11 @@ COPY core/gh-hosts-user.awk /usr/local/bin/
 COPY core/install-proxy-ca.sh /usr/local/bin/
 # env_keep: init-firewall.sh の gh seed 整合検査は現在の PROJECT_GH_USER (compose environment) を
 # 見る必要があるが、sudo の env_reset が剥がし、cap_drop:ALL の root は /proc/1/environ も読めない
-# (node 所有 0400 + CAP_DAC_OVERRIDE/CAP_SYS_PTRACE 無し — docs/verified-facts/capabilities.md)。
+# (node 所有 0400 + CAP_DAC_OVERRIDE/CAP_SYS_PTRACE 無し — canon: facts/capabilities/proc-environ-unreadable-cross-uid)。
 # 検査は root 不要 (hosts.yml は 644) だが root スクリプト内に置く: 既存 consumer の postStartCommand
 # 配線 (sudo 2 コマンド) が全 consumer に届く唯一の実行点で、node 実行の別スクリプトに分けると
 # devcontainer.json 未更新の consumer で検査だけが silent に消える (fail-open)。
-# per-command Defaults の文法と env_keep の semantics は docs/verified-facts/sudo.md。
+# per-command Defaults の文法と env_keep の semantics は canon: facts/sudo/per-command-defaults-cmnd-and-env-keep。
 # visudo -c で構文を build 時に検証する — sudoers の構文エラーは sudo 全体を無効化し、
 # postStartCommand ごと devcontainer 起動を壊すため fail-closed に build で止める。
 # 続く probe は「per-command env_keep が env_reset を実際に貫通する」semantics 自体を毎 build で
@@ -308,7 +309,7 @@ COPY core/pyproject.toml /tmp/pyproject.toml
 # uv はシム (sfw) を避けて実体を直叩きする。--system の site-packages は誰でも読めるので、
 # entrypoint が node へ降格した子も python3 で import できる。
 # uv (musl 静的バイナリ) の pip install 直前に /etc/resolv.conf を先頭の nameserver 1 行だけに
-# 削る (理由: docs/verified-facts/network.md「musl (uv) resolver / 複数 nameserver」)。ただし書き換えは
+# 削る (理由: canon: facts/network/musl-resolver-multiple-nameservers)。ただし書き換えは
 # nameserver 行が 2 つ以上あるときだけ: トリムが要るのは nested rootless podman のような複数 nameserver
 # 環境で、そこでは resolv.conf は書込可。BuildKit (docker 既定) は RUN 中 /etc/resolv.conf を read-only
 # bind にするが (moby/buildkit#1267)、その環境は nameserver 1 行なので書き込み自体が発生しない。

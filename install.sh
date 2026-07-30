@@ -37,7 +37,7 @@ if [ -z "$SRC" ]; then
   fi
   tmp=$(mktemp -d)
   curl -fsSL "https://github.com/$REPO_SLUG/archive/$REF.tar.gz" | tar -xz -C "$tmp"
-  # tarball の top dir 名は ref 表記に依存する (docs/verified-facts/github-tarball.md) — glob で拾う
+  # tarball の top dir 名は ref 表記に依存する (canon: facts/github-tarball/archive-tar-gz-topdir-naming) — glob で拾う
   set -- "$tmp"/*/
   SRC="${1%/}"
 else

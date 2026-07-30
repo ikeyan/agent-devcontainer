@@ -13,7 +13,6 @@
 #     内容先頭の token にも必ず直前文字 (`:`) がある。
 #   - `tools-redact`/`tools_` は直前が英数の場合のみ無害化: 別語の部分一致 (例: wheel 正規化名の
 #     setuptools_scm) を誤検出しない。残滓の実形 (tools_proxy-bw 等) は行頭/記号の後に現れ検出が残る。
-# core/docs/verified-facts/ は実測記録の歴史的台帳なので対象外。
 # fail-closed: 走査エラー (grep exit>1 = 読めないファイル等 / find 非 0 / sanitize sed の失敗 /
 # 対象 dir へ cd 不可) を「クリーン」へ反転させず PIPESTATUS・サブシェル exit 2 で明示 fail し (-a で binary も本文走査)、
 # ファイル/ディレクトリ名への混入も同じ流儀 (probe 付き) で走査する。
@@ -41,20 +40,16 @@ scan() {
     raw=$(grep -rnaiE "$FORBIDDEN_RE" "$@")
     st=$?
     [ $st -le 1 ] || return 2
-    # ledger (docs/verified-facts) の hit だけをパス限定で落とす (実測記録の歴史台帳で consumer 値を
-    # 含みうる)。grep --exclude-dir は basename glob なので `verified-facts` という名の他 dir まで
-    # 除外してしまい bypass を生む — grep 出力の行頭パスを `^\./docs/verified-facts/` で狙って落とす。
-    printf '%s\n' "$raw" | grep -v '^\./docs/verified-facts/' | sanitize | grep -iE "$FORBIDDEN_RE"
-    ps=("${PIPESTATUS[@]}")   # [printf, grep -v, sed, grep]
-    [ "${ps[2]}" -eq 0 ] || return 2   # sanitize sed の失敗だけ走査エラー扱い (grep -v の exit 1 は正常)
-    return "${ps[3]}"
+    printf '%s\n' "$raw" | sanitize | grep -iE "$FORBIDDEN_RE"
+    ps=("${PIPESTATUS[@]}")   # [printf, sed, grep]
+    [ "${ps[1]}" -eq 0 ] || return 2   # sanitize sed の失敗だけ走査エラー扱い
+    return "${ps[2]}"
 }
 
-# ファイル/ディレクトリ名走査。exit 規約は scan と同じ (allowlist は名前には適用しない)。
-# ledger は exact path で prune する (verified-facts 名の他 dir は prune しない)。cwd は走査 root。
+# ファイル/ディレクトリ名走査。exit 規約は scan と同じ (allowlist は名前には適用しない)。cwd は走査 root。
 name_scan() {
     local all ps
-    all=$(find . -path ./docs/verified-facts -prune -o -print) || return 2
+    all=$(find .) || return 2
     printf '%s\n' "$all" | grep -iE "$FORBIDDEN_RE"
     ps=("${PIPESTATUS[@]}")
     return "${ps[1]}"
@@ -74,8 +69,8 @@ syms=$(find "$@" -type l) || { echo "symlink 走査が find エラーで不完�
 IFS='|' read -ra TOKS <<< "$FORBIDDEN_RE"
 
 # 全 probe dir をスコープ終端で解放する (獲得と解放を対に。REVIEW.md 簡素化)。
-probe='' clean='' nprobe='' lprobe='' sprobe=''
-trap 'rm -rf "$probe" "$clean" "$nprobe" "$lprobe" "$sprobe"' EXIT
+probe='' clean='' nprobe='' sprobe=''
+trap 'rm -rf "$probe" "$clean" "$nprobe" "$sprobe"' EXIT
 
 # cd 失敗を scan の「クリーン」(return 1) と混同しない: サブシェルを exit 2 (走査エラー) で抜ける。
 scan_in()      { ( cd "$1" || exit 2; scan . ); }
@@ -117,17 +112,6 @@ st=$?
 [ $st -eq 0 ] || { echo "negative: ファイル名 probe が走査エラー/空振り (st=$st)" >&2; exit 1; }
 { echo "$nhits" | grep -q 'ikeyan-dir' && echo "$nhits" | grep -q 'tools_probe'; } \
     || { echo "negative: ファイル名検出器が fixture を素通し" >&2; exit 1; }
-
-# --- probe: ledger (docs/verified-facts) だけを除外し、verified-facts 名の他 dir は検出する ---
-lprobe=$(mktemp -d)
-mkdir -p "$lprobe/docs/verified-facts" "$lprobe/verified-facts"
-echo "ikeyan-in-ledger" > "$lprobe/docs/verified-facts/f"   # 除外される (歴史台帳)
-echo "ikeyan-nonledger" > "$lprobe/verified-facts/f"        # 検出される (別 dir)
-lhits=$(scan_in "$lprobe")
-echo "$lhits" | grep -qF 'ikeyan-nonledger' \
-    || { echo "negative: verified-facts 名の非 ledger dir を誤って除外している" >&2; exit 1; }
-echo "$lhits" | grep -qF 'ikeyan-in-ledger' \
-    && { echo "negative: ledger (docs/verified-facts) を除外できていない" >&2; exit 1; }
 
 # --- probe: symlink 検出 (find -type l) が link を拾えるか (拒否の前提) ---
 sprobe=$(mktemp -d)

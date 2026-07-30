@@ -41,7 +41,7 @@ docker info >/dev/null 2>&1 || { echo "docker daemon に接続できない。doc
 # (固定名だと複数 consumer repo で compose namespace が衝突する)。project/compose.yaml が宣言する
 # name: の literal を読む (compose config を経ない理由は compose-project-name 冒頭コメント)。
 # 名前は compose へ -p でも渡す: ambient な COMPOSE_PROJECT_NAME が file の name: を黙って上書きする
-# ため、-p (最優先) で導出値に固定する (docs/verified-facts/docker.md「project 名の優先順位」)。
+# ため、-p (最優先) で導出値に固定する (canon: facts/docker/compose-project-directory-and-env-resolution)。
 DEVC_DIR="$(cd "$SELF_DIR/../.." && pwd)"  # consumer では .devcontainer/、kit repo ではリポジトリ root
 project_name="$("$SELF_DIR/compose-project-name" "$DEVC_DIR/project/compose.yaml")"
 REDACT_PROJECT="${project_name}-redact"
@@ -90,7 +90,7 @@ docker volume inspect "$AUTH_VOL" >/dev/null 2>&1 \
 # build と run で同一の呼び出し契約 (隔離・project 固定・REDACT_* 注入) を使う。配列に集約して
 # 片方だけの drift を防ぐ (§12 は redact-flow の -u COMPOSE_* を 1 回しか grep しないので、二重定義だと
 # 片側の隔離漏れが素通りしうる)。-p で project 名を固定し、ambient な COMPOSE_PROJECT_NAME /
-# COMPOSE_ENV_FILES を env -u で無害化する (file 宣言を黙って上書き/差替えする — docs/verified-facts/docker.md)。
+# COMPOSE_ENV_FILES を env -u で無害化する (file 宣言を黙って上書き/差替えする — canon: facts/docker/compose-project-directory-and-env-resolution)。
 redact_compose=(env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES
     REDACT_APP="$APP"
     REDACT_REPO="$REPO"

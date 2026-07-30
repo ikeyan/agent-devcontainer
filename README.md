@@ -5,7 +5,7 @@ dev コンテナ + egress firewall (iptables/ipset) + secrets-proxy (平文 cred
 redact サンドボックス + 検証群 (`make check`) を、1 コマンドで任意のリポジトリへ導入・更新する。
 アーキテクチャ詳細は [core/README.md](core/README.md)、redact の脅威モデルは
 [core/redact/SECURITY-MODEL.md](core/redact/SECURITY-MODEL.md)、外部ツールの確定仕様は
-[core/docs/verified-facts/](core/docs/verified-facts/)。
+canon (`ikeyan/canon` の `facts/`)。
 
 ## インストール / 更新
 
@@ -38,8 +38,10 @@ gh api repos/ikeyan/agent-devcontainer/tarball/main | tar xz
 bash ikeyan-agent-devcontainer-*/install.sh --src ikeyan-agent-devcontainer-*
 ```
 
-(`gh api .../tarball/<ref>` が展開する top dir は `<owner>-<repo>-<short-sha>` — install.sh 自身が
-使う `/archive/<ref>.tar.gz` 直叩きとは生成規則が別物。`core/docs/verified-facts/github-tarball.md` 参照)
+(`gh api .../tarball/<ref>` が展開する top dir は `<owner>-<repo>-<short-sha>`
+(canon: facts/github-tarball/rest-api-tarball-topdir-naming) — install.sh 自身が
+使う `/archive/<ref>.tar.gz` 直叩き (canon: facts/github-tarball/archive-tar-gz-topdir-naming) とは
+生成規則が別物)
 
 **要件**: `bash` / `curl` / `tar`。git は installer 自体には不要だが、取り込み内容を `git diff` で
 レビューしてから commit する運用を前提にしている。devcontainer の実行には docker または podman
@@ -129,7 +131,7 @@ installer は consumer 所有の `project/` を触らないため、core が新�
   エラー文言で設定+rebuild を要求する)。設定「変更」後の rebuild 漏れは postStartCommand (init-firewall.sh) の
   整合検査が起動時に止める。**kit 更新直後に旧イメージのまま再作成した場合だけは検査が旧版のため
   検出されない** (VS Code は compose 宣言の entrypoint を使わないため、ホスト側から強制する手段が
-  無い — devcontainers-cli.md)。更新後は必ず rebuild すること。
+  無い — canon: facts/devcontainer/override-command-discards-compose-entrypoint)。更新後は必ず rebuild すること。
 - **consumer 固有の直結ドメイン** (旧 core 直書き分、例: `ikeyan.github.io`) は core の許可リストから
   外れた。必要なら `project/allow-domains.txt` と `PROJECT_NO_PROXY` の対に追加して rebuild する
   (こちらは config エラーにならず、実行時の接続失敗として現れる点に注意)。

@@ -5,7 +5,7 @@
 #
 # `compose config` を使わず file の literal を読む理由 (どれも fail-closed 側の選択):
 #   - config の project 名は ambient な COMPOSE_PROJECT_NAME に黙って上書きされる
-#     (docs/verified-facts/docker.md「project 名の優先順位」) — 導出値が環境依存になる。
+#     (canon: facts/docker/compose-project-directory-and-env-resolution) — 導出値が環境依存になる。
 #   - config は merged 形でしか valid でなく (同「最小 template 形」)、merge には project/.env の
 #     全必須変数が要る — redact と無関係な変数 (PROJECT_GH_USER 等) に導出が結合してしまう。
 # file 形式は kit が scaffold する `name: "<project>"` (installer が置換)。literal 宣言が契約 —
