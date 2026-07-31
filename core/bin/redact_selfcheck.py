@@ -30,8 +30,15 @@
 
 行数だけでは足りない: 「受理分を 1 本落として非対象を 1 本通す」filter (host でなく
 method で誤判定した等) は差引きで N 行に収まってしまい、非対象の秘密が出力に載ったまま
-素通りする。そこで行数に加えて**どの flow が出たか**を印で照合する — 受理分の path が
-全て出力にあり、非対象の印 (ホスト / path / 本文) が 1 つも無いこと。
+素通りする。そこで行数に加えて**どの flow が出たか**を照合する。
+
+同一性は **HTTP method** で見る。URL や本文は「値を伏せる」正当な redact に書き換えられうる
+(数値や query を <num> にする等) ので印にできない — それを印にすると、正しいアプリが CI で
+落ちる。method は enum で秘密を持たないため redact 対象にならない。合成 flow は method が
+互いに重ならないようにしてあり、非対象 flow だけが PATCH を持つ。
+
+宣言された受理ホストは**全て**検査する。先頭だけを試すと、host[0] は通すが他を落とす
+filter を「成功」と report してしまう (部分成功を成功にしない)。
 
 宣言は `ast` で静的に読む (import も実行もしない) ので、検査器が consumer のコードを
 自プロセスに取り込むことはない。
@@ -76,9 +83,12 @@ DEFAULT_HOST = "address"
 # SELFCHECK_HOSTS を宣言したアプリが必ず落とすべきホスト。`.invalid` は RFC 2606 の予約 TLD
 # なので、正当な allowlist がこれを含むことはない。
 REJECTED_HOST = "selfcheck-rejected.invalid"
-# 受理されるべき flow を出力の中で一意に見分ける印 (合成 flow の path)。
-ACCEPT_MARKERS = ("/api/items?q=1", "/api/login", "/api/items/9")
-# 非対象 flow が出力に残っていることを示す印 (ホスト・path・本文の 3 経路を見る)。
+# flow の同一性は HTTP method で見る。URL や本文は「値を伏せる」正当な redact に書き換え
+# られうる (数値や query を <num> にする等) ので印にできないが、method は enum で秘密を
+# 持たないため redact 対象にならない。合成 flow は method が互いに重ならないようにしてある。
+ACCEPT_METHODS = ("GET", "POST", "DELETE")
+REJECT_METHOD = "PATCH"
+# 非対象 flow の取りこぼしを method 以外からも拾う保険 (これらが消されても method で捕まる)。
 REJECT_MARKERS = (REJECTED_HOST, "/should-be-dropped", "THIRD_PARTY_SECRET")
 
 
@@ -141,7 +151,9 @@ def synth_flows(host: str, *, reject_host: str | None = None) -> bytes:
     if reject_host is not None:
         flows.append(
             tflow.tflow(
-                req=tutils.treq(host=reject_host, method=b"GET", path=b"/should-be-dropped"),
+                req=tutils.treq(
+                    host=reject_host, method=REJECT_METHOD.encode(), path=b"/should-be-dropped"
+                ),
                 resp=tutils.tresp(content=b'{"leaked":"THIRD_PARTY_SECRET"}'),
             )
         )
@@ -165,49 +177,56 @@ def run_redact(redact_path: Path, flows: bytes) -> subprocess.CompletedProcess:
     )
 
 
-def check_contract(redact_path: Path) -> list[str]:
-    """エンジン契約違反のリストを返す (空なら OK)。
-
-    受理ホストを宣言しているアプリには非対象ホストの flow を 1 本混ぜ、それが落ちた上で
-    受理分がちょうど N_FLOWS 行出ることを要求する。"""
+def _check_one(redact_path: Path, host: str, *, reject: bool) -> list[str]:
+    """1 つの受理ホストについて契約を検査する。reject=True なら非対象ホストの flow を 1 本混ぜる。"""
     errs: list[str] = []
-    hosts = read_selfcheck_hosts(redact_path)
-    if hosts:
-        flows = synth_flows(hosts[0], reject_host=REJECTED_HOST)
-    else:
-        flows = synth_flows(DEFAULT_HOST)
-
+    flows = synth_flows(host, reject_host=REJECTED_HOST if reject else None)
     p = run_redact(redact_path, flows)
     if p.returncode != 0:
-        errs.append(f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[:400]}")
-        return errs
+        return [f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[:400]}"]
+
     out = p.stdout.decode()
     lines = out.splitlines()
+    methods: list[str] = []
+    for i, ln in enumerate(lines):
+        try:
+            methods.append(json.loads(ln).get("method"))
+        except json.JSONDecodeError as e:
+            errs.append(f"行 {i} が不正 JSON: {e}")
+
     if len(lines) != N_FLOWS:
-        if hosts and not lines:
-            errs.append(
-                f"行数 0 — 宣言された SELFCHECK_HOSTS[0] ({hosts[0]}) を filter が受理していない"
-            )
+        if reject and not lines:
+            errs.append(f"行数 0 — 宣言された受理ホスト ({host}) を filter が受理していない")
         else:
             errs.append(f"行数 {len(lines)} != 受理されるべき flow 数 {N_FLOWS}")
 
     # 行数だけでは「受理分を 1 本落として非対象を 1 本通す」誤った filter が素通りする
-    # (差引きが合ってしまう)。どの flow が出たかを印で見る。
-    if hosts:
-        leaked = [m for m in REJECT_MARKERS if m in out]
-        if leaked:
-            errs.append(
-                f"非対象ホスト ({REJECTED_HOST}) の flow を落としていない — 出力に {leaked[0]!r} が残っている"
-            )
-    missing = [m for m in ACCEPT_MARKERS if m not in out]
+    # (差引きが合ってしまう)。どの flow が出たかを method で照合する。
+    missing = [m for m in ACCEPT_METHODS if m not in methods]
     if missing:
-        errs.append(f"受理されるべき flow が出力に無い: {', '.join(missing)}")
+        errs.append(f"受理されるべき flow が出力に無い (method: {', '.join(missing)})")
+    if reject:
+        leaked = [m for m in REJECT_MARKERS if m in out]
+        if REJECT_METHOD in methods or leaked:
+            found = f"method {REJECT_METHOD}" if REJECT_METHOD in methods else repr(leaked[0])
+            errs.append(
+                f"非対象ホスト ({REJECTED_HOST}) の flow を落としていない — 出力に {found} が残っている"
+            )
+    return errs
 
-    for i, ln in enumerate(lines):
-        try:
-            json.loads(ln)
-        except json.JSONDecodeError as e:
-            errs.append(f"行 {i} が不正 JSON: {e}")
+
+def check_contract(redact_path: Path) -> list[str]:
+    """エンジン契約違反のリストを返す (空なら OK)。
+
+    受理ホストを宣言しているアプリは**宣言された全ホスト**について検査する (一部だけ通る
+    filter を成功と report しないため)。各回、非対象ホストの flow を 1 本混ぜ、それが落ちた
+    上で受理分がちょうど N_FLOWS 行出ることを要求する。"""
+    hosts = read_selfcheck_hosts(redact_path)
+    if not hosts:
+        return _check_one(redact_path, DEFAULT_HOST, reject=False)
+    errs: list[str] = []
+    for host in hosts:
+        errs += [f"[{host}] {e}" for e in _check_one(redact_path, host, reject=True)]
     return errs
 
 
@@ -251,7 +270,7 @@ def main() -> int:
                 print(f"      {e}", file=sys.stderr)
         else:
             hosts = read_selfcheck_hosts(rp)
-            note = f" (SELFCHECK_HOSTS={hosts[0]} / 非対象 1 本の drop も確認)" if hosts else ""
+            note = f" (SELFCHECK_HOSTS={' '.join(hosts)} / 非対象 1 本の drop も確認)" if hosts else ""
             print(f"ok  {rel}{note}")
 
     # 2) negative probe: 検査器が契約違反を実際に検出することを pin する
@@ -294,6 +313,26 @@ def main() -> int:
         if not (any("落としていない" in e for e in errs) and any("出力に無い" in e for e in errs)):
             print(
                 "negative: 受理分を落として非対象を通す filter (行数は一致) を検出できなかった",
+                file=sys.stderr,
+            )
+            failed = True
+        # (e) 宣言した受理ホストのうち先頭しか受理しない filter。宣言の一部だけ通るのを
+        #     成功と report しないことを pin する。
+        rp = write_temp_app(
+            root / "partial_hosts",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            'SELFCHECK_HOSTS = ("a.example.com", "b.example.com")\n'
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host == "a.example.com":\n'
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        if not any(e.startswith("[b.example.com]") for e in check_contract(rp)):
+            print(
+                "negative: 宣言した受理ホストの一部しか受理しない filter を検出できなかった",
                 file=sys.stderr,
             )
             failed = True
