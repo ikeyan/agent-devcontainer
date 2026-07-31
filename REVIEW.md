@@ -1,6 +1,6 @@
 ---
 # 変更は source 側へ (特定リポジトリ固有のパス・語彙は持ち込まない)
-source: https://github.com/ikeyan/agent-files/blob/main/REVIEW.md
+source: https://raw.githubusercontent.com/ikeyan/agent-files/main/REVIEW.md
 ---
 
 # レビュー観点

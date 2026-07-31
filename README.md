@@ -38,10 +38,7 @@ gh api repos/ikeyan/agent-devcontainer/tarball/main | tar xz
 bash ikeyan-agent-devcontainer-*/install.sh --src ikeyan-agent-devcontainer-*
 ```
 
-(`gh api .../tarball/<ref>` が展開する top dir は `<owner>-<repo>-<short-sha>`
-(canon: facts/github-tarball/rest-api-tarball-topdir-naming) — install.sh 自身が
-使う `/archive/<ref>.tar.gz` 直叩き (canon: facts/github-tarball/archive-tar-gz-topdir-naming) とは
-生成規則が別物)
+(`gh api .../tarball/<ref>` が展開する top dir は `<owner>-<repo>-<short-sha>` (canon: facts/github-tarball/rest-api-tarball-topdir-naming) — install.sh 自身が使う `/archive/<ref>.tar.gz` 直叩き (canon: facts/github-tarball/archive-tar-gz-topdir-naming) とは生成規則が別物)
 
 **要件**: `bash` / `curl` / `tar`。git は installer 自体には不要だが、取り込み内容を `git diff` で
 レビューしてから commit する運用を前提にしている。devcontainer の実行には docker または podman
