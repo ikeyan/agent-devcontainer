@@ -169,40 +169,54 @@ def read_selfcheck_domains(path: Path) -> tuple[str, ...]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
         return ()  # 実行時にも同じ理由で落ちるので、そちらのエラーで報告される
+
+    # module 直下の代入を**全て**集める。最初の 1 つで打ち切ると、後の代入で上書きされる
+    # モジュールで実行時と違う値を読んでしまい、宣言したはずの root が未検査のまま緑になる。
+    assigns = []
     for node in tree.body:
-        # `X = ...` と `X: tuple[str, ...] = ...` (AnnAssign) の両方を拾う。型注記付きで書かれた
-        # 宣言を黙って見落とすと、正しく filter するアプリが「行数 0」で落ちる。
+        if isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == DECL_NAME:
+                raise DeclarationError(
+                    f"{DECL_NAME} を += で組み立てないこと — 静的に読めない"
+                )
+            continue
         if isinstance(node, ast.Assign):
             targets, value_node = node.targets, node.value
         elif isinstance(node, ast.AnnAssign):
+            # 注記のみ (`X: tuple[str, ...]`) は宣言ではないので飛ばし、後続の代入を探す。
+            if node.value is None:
+                continue
             targets, value_node = [node.target], node.value
         else:
             continue
-        if not any(isinstance(t, ast.Name) and t.id == DECL_NAME for t in targets):
-            continue
-        if value_node is None:
-            # 注記のみ (`X: tuple[str, ...]`)。宣言ではないので、後続の実代入を探しに行く。
-            # ここで return すると「注記 + 代入」を分けて書いたアプリの宣言を読み落とす。
-            continue
-        try:
-            value = ast.literal_eval(value_node)
-        except (ValueError, TypeError, SyntaxError) as e:
-            raise DeclarationError(
-                f"{DECL_NAME} がリテラルでないため静的に読めない"
-                " — 検査器は import せず ast で読むので、module 直下にリテラルで書くこと"
-            ) from e
-        if isinstance(value, str):
-            value = (value,)
-        if not (
-            isinstance(value, (list, tuple))
-            and value
-            and all(isinstance(v, str) and v for v in value)
-        ):
-            raise DeclarationError(
-                f"{DECL_NAME} は空でない文字列の tuple で書くこと (実際: {value!r})"
-            )
-        return tuple(value)
-    return ()
+        if any(isinstance(t, ast.Name) and t.id == DECL_NAME for t in targets):
+            assigns.append(value_node)
+
+    if not assigns:
+        return ()
+    if len(assigns) > 1:
+        raise DeclarationError(
+            f"{DECL_NAME} が module 直下で {len(assigns)} 回代入されている"
+            " — 実行時は最後の値になるが静的には曖昧なので 1 箇所にまとめること"
+        )
+    try:
+        value = ast.literal_eval(assigns[0])
+    except (ValueError, TypeError, SyntaxError) as e:
+        raise DeclarationError(
+            f"{DECL_NAME} がリテラルでないため静的に読めない"
+            " — 検査器は import せず ast で読むので、module 直下にリテラルで書くこと"
+        ) from e
+    if isinstance(value, str):
+        value = (value,)
+    if not (
+        isinstance(value, (list, tuple))
+        and value
+        and all(isinstance(v, str) and v for v in value)
+    ):
+        raise DeclarationError(
+            f"{DECL_NAME} は空でない文字列の tuple で書くこと (実際: {value!r})"
+        )
+    return tuple(value)
 
 
 def synth_flows(hosts: tuple[str, ...]) -> bytes:
@@ -572,6 +586,35 @@ def main() -> int:
         rp.write_text(rp.read_text().replace("def redact", "SELFCHECK_DOMAINS = 42\ndef redact", 1))
         if not any("tuple" in e for e in check_contract(rp)):
             print("negative: 形の違う宣言を検出できなかった", file=sys.stderr)
+            failed = True
+        # (m) module 直下で 2 回代入されている形。最初の 1 つで打ち切ると実行時と違う値を
+        #     読み、宣言したはずの root が未検査のまま緑になる。曖昧なので明示的に落とす。
+        rp = write_temp_redact(root / "reassigned_decl", "def redact(s):\n    return s\n")
+        rp.write_text(
+            rp.read_text().replace(
+                "def redact",
+                'SELFCHECK_DOMAINS = ("a.example.com",)\n'
+                'SELFCHECK_DOMAINS = ("a.example.com", "b.example.com")\n'
+                "def redact",
+                1,
+            )
+        )
+        if not any("2 回代入" in e for e in check_contract(rp)):
+            print("negative: 複数回代入された宣言を検出できなかった", file=sys.stderr)
+            failed = True
+        # (m2) += で組み立てる形も静的に読めないので落とす
+        rp = write_temp_redact(root / "augassign_decl", "def redact(s):\n    return s\n")
+        rp.write_text(
+            rp.read_text().replace(
+                "def redact",
+                'SELFCHECK_DOMAINS = ("a.example.com",)\n'
+                'SELFCHECK_DOMAINS += ("b.example.com",)\n'
+                "def redact",
+                1,
+            )
+        )
+        if not any("+=" in e for e in check_contract(rp)):
+            print("negative: += で組み立てた宣言を検出できなかった", file=sys.stderr)
             failed = True
         # (h) 型注記つきの宣言 (AnnAssign) を読めること。読み落とすと、正しく filter する
         #     アプリが既定ホストで検査されて「行数 0」で落ちる。
