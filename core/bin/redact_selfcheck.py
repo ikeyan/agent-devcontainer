@@ -22,7 +22,7 @@
 
     SELFCHECK_HOSTS = ("api.anthropic.com",)   # module 直下・リテラルで書く
 
-宣言があるアプリには「受理ホストの flow N 本 + 落とされるべき 1 本」を流し、出力が
+宣言があるアプリには「受理ホストの flow N 本 + 落とされるべき数本」を流し、出力が
 ちょうど N 行であることを要求する。これで
   - 取りこぼし / 増加の検出力 (== 判定) を緩めずに済む
   - filter そのものが検査対象になる (宣言だけして落としていなければ N+1 行で落ちる)
@@ -40,12 +40,19 @@ method で誤判定した等) は差引きで N 行に収まってしまい、�
 宣言された受理ホストは**全て**検査する。先頭だけを試すと、host[0] は通すが他を落とす
 filter を「成功」と report してしまう (部分成功を成功にしない)。
 
+落とすべき flow は、無関係な sentinel だけでなく**宣言ホストから導いた near-miss** も混ぜる。
+sentinel を 1 本落とせるだけでは allowlist の境界の誤りを検出できない — たとえば
+`host.endswith("anthropic.com")` は `api.anthropic.com` を正しく受理しつつ `apianthropic.com`
+まで受理してしまい、第三者の資格情報が出力に載る。導出は near_miss_hosts() を参照。
+
 宣言は `ast` で静的に読む (import も実行もしない) ので、検査器が consumer のコードを
 自プロセスに取り込むことはない。
 
 negative probe: 「不正 JSON を出す redact」「改行を混ぜて行を増やす redact」「受理ホストを
-宣言しているのに落とさない redact」「受理分を落として非対象を通す filter (行数は一致)」を
-流し、検査器がそれぞれを検出することを pin する (= この検査器自体が機能していることの担保)。
+宣言しているのに落とさない redact」「受理分を落として非対象を通す filter (行数は一致)」
+「宣言ホストの一部しか受理しない filter」「DNS ラベル境界を見ない filter (endswith)」
+「型注記つき宣言 (AnnAssign) を読めること」を流し、検査器がそれぞれを検出/処理することを
+pin する (= この検査器自体が機能していることの担保)。
 
 副作用を残さない: 一時物は TemporaryDirectory に隔離し、subprocess には
 PYTHONDONTWRITEBYTECODE=1 を渡して __pycache__ を残さない。
@@ -92,6 +99,24 @@ REJECT_METHOD = "PATCH"
 REJECT_MARKERS = (REJECTED_HOST, "/should-be-dropped", "THIRD_PARTY_SECRET")
 
 
+def near_miss_hosts(host: str) -> tuple[str, ...]:
+    """宣言ホストから「allowlist の境界を間違えた実装だけが受理する」ホストを導く。
+
+    無関係な sentinel (REJECTED_HOST) を 1 本落とせるだけでは、境界の誤りは検出できない。
+    たとえば `host.endswith("anthropic.com")` は `api.anthropic.com` を正しく受理しつつ
+    `apianthropic.com` も受理してしまい、第三者の資格情報が出力に載る。
+    """
+    out = []
+    if "." in host:
+        # 左境界 (DNS ラベルの区切り) を見ない実装が誤って受理する: api.anthropic.com -> apianthropic.com
+        head, _, rest = host.partition(".")
+        if head and rest:
+            out.append(f"{head}{rest}")
+    # 右端を anchor しない実装 (部分一致) が誤って受理する: <host>.selfcheck-rejected.invalid
+    out.append(f"{host}.{REJECTED_HOST}")
+    return tuple(out)
+
+
 def read_selfcheck_hosts(path: Path) -> tuple[str, ...]:
     """redact_flow.py が module 直下で宣言する SELFCHECK_HOSTS を静的に読む。
 
@@ -104,12 +129,20 @@ def read_selfcheck_hosts(path: Path) -> tuple[str, ...]:
     except (OSError, SyntaxError):
         return ()  # 実行時にも同じ理由で落ちるので、そちらのエラーで報告される
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
+        # `X = ...` と `X: tuple[str, ...] = ...` (AnnAssign) の両方を拾う。型注記付きで書かれた
+        # 宣言を黙って見落とすと、正しく filter するアプリが「行数 0」で落ちる。
+        if isinstance(node, ast.Assign):
+            targets, value_node = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value_node = [node.target], node.value
+        else:
             continue
-        if not any(isinstance(t, ast.Name) and t.id == "SELFCHECK_HOSTS" for t in node.targets):
+        if not any(isinstance(t, ast.Name) and t.id == "SELFCHECK_HOSTS" for t in targets):
             continue
+        if value_node is None:  # 注記のみ (`X: tuple[str, ...]`) は宣言ではない
+            return ()
         try:
-            value = ast.literal_eval(node.value)
+            value = ast.literal_eval(value_node)
         except ValueError:
             return ()
         if isinstance(value, str):
@@ -120,10 +153,10 @@ def read_selfcheck_hosts(path: Path) -> tuple[str, ...]:
     return ()
 
 
-def synth_flows(host: str, *, reject_host: str | None = None) -> bytes:
+def synth_flows(host: str, *, reject_hosts: tuple[str, ...] = ()) -> bytes:
     """秘密らしき値を含む複数の HTTP flow を 1 つの flows バイト列にする。
     GET / POST(ヘッダ+body) / response 無し をそれぞれ 1 本ずつ含め、to_dict の経路を広く通す。
-    全て `host` 宛。`reject_host` を渡すと「落とされるべき」flow を 1 本だけ末尾に足す。"""
+    全て `host` 宛。`reject_hosts` の各ホストについて「落とされるべき」flow を 1 本ずつ足す。"""
     flows = [
         tflow.tflow(
             req=tutils.treq(host=host, method=b"GET", path=b"/api/items?q=1"),
@@ -148,11 +181,13 @@ def synth_flows(host: str, *, reject_host: str | None = None) -> bytes:
     f3.response = None
     flows.append(f3)
 
-    if reject_host is not None:
+    for i, rh in enumerate(reject_hosts):
         flows.append(
             tflow.tflow(
                 req=tutils.treq(
-                    host=reject_host, method=REJECT_METHOD.encode(), path=b"/should-be-dropped"
+                    host=rh,
+                    method=REJECT_METHOD.encode(),
+                    path=f"/should-be-dropped/{i}".encode(),
                 ),
                 resp=tutils.tresp(content=b'{"leaked":"THIRD_PARTY_SECRET"}'),
             )
@@ -177,10 +212,10 @@ def run_redact(redact_path: Path, flows: bytes) -> subprocess.CompletedProcess:
     )
 
 
-def _check_one(redact_path: Path, host: str, *, reject: bool) -> list[str]:
-    """1 つの受理ホストについて契約を検査する。reject=True なら非対象ホストの flow を 1 本混ぜる。"""
+def _check_one(redact_path: Path, host: str, *, reject_hosts: tuple[str, ...] = ()) -> list[str]:
+    """1 つの受理ホストについて契約を検査する。reject_hosts の flow は全て落ちねばならない。"""
     errs: list[str] = []
-    flows = synth_flows(host, reject_host=REJECTED_HOST if reject else None)
+    flows = synth_flows(host, reject_hosts=reject_hosts)
     p = run_redact(redact_path, flows)
     if p.returncode != 0:
         return [f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[:400]}"]
@@ -195,7 +230,7 @@ def _check_one(redact_path: Path, host: str, *, reject: bool) -> list[str]:
             errs.append(f"行 {i} が不正 JSON: {e}")
 
     if len(lines) != N_FLOWS:
-        if reject and not lines:
+        if reject_hosts and not lines:
             errs.append(f"行数 0 — 宣言された受理ホスト ({host}) を filter が受理していない")
         else:
             errs.append(f"行数 {len(lines)} != 受理されるべき flow 数 {N_FLOWS}")
@@ -205,12 +240,14 @@ def _check_one(redact_path: Path, host: str, *, reject: bool) -> list[str]:
     missing = [m for m in ACCEPT_METHODS if m not in methods]
     if missing:
         errs.append(f"受理されるべき flow が出力に無い (method: {', '.join(missing)})")
-    if reject:
-        leaked = [m for m in REJECT_MARKERS if m in out]
-        if REJECT_METHOD in methods or leaked:
-            found = f"method {REJECT_METHOD}" if REJECT_METHOD in methods else repr(leaked[0])
+    if reject_hosts:
+        leaked_hosts = [h for h in reject_hosts if h in out]
+        leaked_marks = [m for m in REJECT_MARKERS if m in out]
+        if REJECT_METHOD in methods or leaked_hosts or leaked_marks:
+            which = leaked_hosts or list(reject_hosts)
+            found = f"method {REJECT_METHOD}" if REJECT_METHOD in methods else repr((leaked_marks or which)[0])
             errs.append(
-                f"非対象ホスト ({REJECTED_HOST}) の flow を落としていない — 出力に {found} が残っている"
+                f"非対象ホスト ({', '.join(which)}) の flow を落としていない — 出力に {found} が残っている"
             )
     return errs
 
@@ -223,10 +260,12 @@ def check_contract(redact_path: Path) -> list[str]:
     上で受理分がちょうど N_FLOWS 行出ることを要求する。"""
     hosts = read_selfcheck_hosts(redact_path)
     if not hosts:
-        return _check_one(redact_path, DEFAULT_HOST, reject=False)
+        return _check_one(redact_path, DEFAULT_HOST)
     errs: list[str] = []
     for host in hosts:
-        errs += [f"[{host}] {e}" for e in _check_one(redact_path, host, reject=True)]
+        # 無関係な sentinel に加えて、この host の境界を間違えた実装だけが受理するホストを混ぜる。
+        rejects = (REJECTED_HOST, *near_miss_hosts(host))
+        errs += [f"[{host}] {e}" for e in _check_one(redact_path, host, reject_hosts=rejects)]
     return errs
 
 
@@ -270,7 +309,11 @@ def main() -> int:
                 print(f"      {e}", file=sys.stderr)
         else:
             hosts = read_selfcheck_hosts(rp)
-            note = f" (SELFCHECK_HOSTS={' '.join(hosts)} / 非対象 1 本の drop も確認)" if hosts else ""
+            note = (
+                f" (SELFCHECK_HOSTS={' '.join(hosts)} / 各ホストで sentinel + near-miss の drop も確認)"
+                if hosts
+                else ""
+            )
             print(f"ok  {rel}{note}")
 
     # 2) negative probe: 検査器が契約違反を実際に検出することを pin する
@@ -335,6 +378,41 @@ def main() -> int:
                 "negative: 宣言した受理ホストの一部しか受理しない filter を検出できなかった",
                 file=sys.stderr,
             )
+            failed = True
+        # (f) DNS ラベル境界を見ない filter (endswith)。宣言ホストは正しく受理するので、
+        #     宣言ホストから導いた near-miss を混ぜないと検出できない。
+        rp = write_temp_app(
+            root / "boundary",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            'SELFCHECK_HOSTS = ("api.anthropic.com",)\n'
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host.endswith("anthropic.com"):\n'
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        if not any("落としていない" in e for e in check_contract(rp)):
+            print("negative: ラベル境界を見ない filter を検出できなかった", file=sys.stderr)
+            failed = True
+        # (g) 型注記つきの宣言 (AnnAssign) を読めること。読み落とすと、正しく filter する
+        #     アプリが既定ホストで検査されて「行数 0」で落ちる。
+        rp = write_temp_app(
+            root / "annassign",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            'SELFCHECK_HOSTS: tuple[str, ...] = ("api.example.com",)\n'
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host == "api.example.com":\n'
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        errs = check_contract(rp)
+        if errs:
+            print(f"negative: 型注記つき宣言を読めていない ({errs[0]})", file=sys.stderr)
             failed = True
 
     if failed:
