@@ -129,6 +129,15 @@ def accepted_hosts(domain: str) -> tuple[str, ...]:
     return (domain, f"{SUB_LABEL}.{domain}", f"{SUB_LABEL}.{SUB_LABEL}.{domain}")
 
 
+class DeclarationError(Exception):
+    """DECL_NAME の宣言はあるが読めない (リテラルでない / 形が違う / 空)。
+
+    「宣言なし」と同じ扱い (空 tuple) にすると fail-open になる — 検査器は既定ホストの
+    flow しか流さなくなり、非対象ホストを落とせるかの検査が丸ごと無効化されるのに緑になる。
+    宣言を書こうとして失敗している以上、黙って検査を降格せず明示的に落とす。
+    """
+
+
 def in_subtree(host: str, domain: str) -> bool:
     """host が domain 自身か、その subdomain か。"""
     return host == domain or host.endswith(f".{domain}")
@@ -152,8 +161,10 @@ def read_selfcheck_domains(path: Path) -> tuple[str, ...]:
     """redact_flow.py が module 直下で宣言する SELFCHECK_DOMAINS を静的に読む。
 
     import も実行もしない (検査器のプロセスに consumer のコードを持ち込まないため)。
-    宣言が無い / リテラルでない / 空 の場合は空 tuple = 「このアプリは flow を落とさない」。
-    宣言を誤った場合は行数の不一致として本検査が落ちるので、ここでは黙って空を返してよい。
+
+    宣言が**無い**場合だけ空 tuple を返す (= このアプリは flow を落とさない)。宣言はあるが
+    読めない場合は DeclarationError — 空 tuple に丸めると非対象ホストの検査が黙って
+    無効化される (fail-open)。
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -176,13 +187,22 @@ def read_selfcheck_domains(path: Path) -> tuple[str, ...]:
             continue
         try:
             value = ast.literal_eval(value_node)
-        except ValueError:
-            return ()
+        except (ValueError, TypeError, SyntaxError) as e:
+            raise DeclarationError(
+                f"{DECL_NAME} がリテラルでないため静的に読めない"
+                " — 検査器は import せず ast で読むので、module 直下にリテラルで書くこと"
+            ) from e
         if isinstance(value, str):
             value = (value,)
-        if isinstance(value, (list, tuple)) and value and all(isinstance(v, str) and v for v in value):
-            return tuple(value)
-        return ()
+        if not (
+            isinstance(value, (list, tuple))
+            and value
+            and all(isinstance(v, str) and v for v in value)
+        ):
+            raise DeclarationError(
+                f"{DECL_NAME} は空でない文字列の tuple で書くこと (実際: {value!r})"
+            )
+        return tuple(value)
     return ()
 
 
@@ -291,7 +311,10 @@ def check_contract(redact_path: Path) -> list[str]:
     root を宣言しているアプリは**宣言された全 root** × **root 自身と subdomain** を検査する
     (一部だけ通る filter を成功と report しないため)。各回、落ちるべきホスト (sentinel と
     root から導いた near-miss) を混ぜ、受理分がちょうど N_FLOWS 行出ることを要求する。"""
-    domains = read_selfcheck_domains(redact_path)
+    try:
+        domains = read_selfcheck_domains(redact_path)
+    except DeclarationError as e:
+        return [str(e)]
     if not domains:
         return _check_one(redact_path, DEFAULT_HOST)
     errs: list[str] = []
@@ -371,7 +394,7 @@ def main() -> int:
             for e in errs:
                 print(f"      {e}", file=sys.stderr)
         else:
-            domains = read_selfcheck_domains(rp)
+            domains = read_selfcheck_domains(rp)  # errs が空 = ここでは投げない
             note = (
                 f" (SELFCHECK_DOMAINS={' '.join(domains)} / root/子/孫の受理と near-miss の drop も確認)"
                 if domains
@@ -508,6 +531,34 @@ def main() -> int:
                 "negative: 孫を落とす filter (部分木の一部だけ対応) を検出できなかった",
                 file=sys.stderr,
             )
+            failed = True
+        # (k) 宣言はあるがリテラルでない (別名を参照) 形。「宣言なし」に丸めると既定ホストの
+        #     flow しか流れず、非対象ホストの検査が黙って無効化されたまま緑になる (fail-open)。
+        #     filter を実装していないアプリを使い、素通りが検出できることまで確かめる。
+        rp = write_temp_app(
+            root / "nonliteral_decl",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            '_DOMAINS = ("example.com",)\n'
+            "SELFCHECK_DOMAINS = _DOMAINS\n"
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            "            if isinstance(f, http.HTTPFlow):\n"
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        if not any("リテラル" in e for e in check_contract(rp)):
+            print(
+                "negative: リテラルでない宣言を「宣言なし」に丸めている (fail-open)",
+                file=sys.stderr,
+            )
+            failed = True
+        # (k2) 宣言の形が違う (文字列の tuple でない) 場合も同様に明示的に落ちること
+        rp = write_temp_redact(root / "bad_shape_decl", "def redact(s):\n    return s\n")
+        rp.write_text(rp.read_text().replace("def redact", "SELFCHECK_DOMAINS = 42\ndef redact", 1))
+        if not any("tuple" in e for e in check_contract(rp)):
+            print("negative: 形の違う宣言を検出できなかった", file=sys.stderr)
             failed = True
         # (h) 型注記つきの宣言 (AnnAssign) を読めること。読み落とすと、正しく filter する
         #     アプリが既定ホストで検査されて「行数 0」で落ちる。
