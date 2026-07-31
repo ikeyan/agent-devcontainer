@@ -122,10 +122,16 @@ TEMPLATE = ENGINE / "redact_flow.template.py"
 def accepted_hosts(domain: str) -> tuple[str, ...]:
     """宣言 root から「受理されねばならない」ホストを導く。
 
-    宣言の意味が「この root 自身とその subdomain」なので、root と subdomain の両方を試す。
-    subdomain を試さないと、部分木を宣言しながら完全一致でしか通さない filter を見逃す。
+    宣言の意味が「この root 自身とその subdomain 全部」なので、root / 1 段下 / 2 段下を試す。
+    root だけだと完全一致でしか通さない filter を、1 段だけだと「直下の子は通すが孫は落とす」
+    filter を見逃す (宣言は部分木全体を約束している)。
     """
-    return (domain, f"{SUB_LABEL}.{domain}")
+    return (domain, f"{SUB_LABEL}.{domain}", f"{SUB_LABEL}.{SUB_LABEL}.{domain}")
+
+
+def in_subtree(host: str, domain: str) -> bool:
+    """host が domain 自身か、その subdomain か。"""
+    return host == domain or host.endswith(f".{domain}")
 
 
 def near_miss_hosts(domain: str) -> tuple[str, ...]:
@@ -290,7 +296,14 @@ def check_contract(redact_path: Path) -> list[str]:
         return _check_one(redact_path, DEFAULT_HOST)
     errs: list[str] = []
     for domain in domains:
-        rejects = (REJECTED_HOST, *near_miss_hosts(domain))
+        # 宣言が重なっているとき (example.com と api.example.com)、後者の近傍
+        # notapi.example.com は前者の部分木に入る = 正しい allowlist なら受理すべき。
+        # 落ちることを要求すると正しいアプリを落とすので、宣言部分木に入る近傍は外す。
+        rejects = tuple(
+            h
+            for h in (REJECTED_HOST, *near_miss_hosts(domain))
+            if not any(in_subtree(h, d) for d in domains)
+        )
         for host in accepted_hosts(domain):
             errs += [f"[{host}] {e}" for e in _check_one(redact_path, host, reject_hosts=rejects)]
     return errs
@@ -360,7 +373,7 @@ def main() -> int:
         else:
             domains = read_selfcheck_domains(rp)
             note = (
-                f" (SELFCHECK_DOMAINS={' '.join(domains)} / root+subdomain の受理と near-miss の drop も確認)"
+                f" (SELFCHECK_DOMAINS={' '.join(domains)} / root/子/孫の受理と near-miss の drop も確認)"
                 if domains
                 else ""
             )
@@ -463,6 +476,36 @@ def main() -> int:
         if not any(e.startswith(f"[{SUB_LABEL}.example.com]") for e in check_contract(rp)):
             print(
                 "negative: 部分木を宣言しながら完全一致でしか通さない filter を検出できなかった",
+                file=sys.stderr,
+            )
+            failed = True
+        # (i) 宣言が重なっている場合 (example.com と api.example.com)。後者の近傍は前者の
+        #     部分木に入るので、除外しないと正しい union allowlist を leak と誤判定する。
+        rp = write_temp_app(
+            root / "overlapping_roots",
+            _app_src(
+                '("example.com", "api.example.com")',
+                '_subtree(f.request.pretty_host, "example.com")',
+            ),
+        )
+        errs = check_contract(rp)
+        if errs:
+            print(f"negative: 重なった宣言を leak と誤判定している ({errs[0]})", file=sys.stderr)
+            failed = True
+        # (j) root と直下の子までは通すが孫を落とす filter。部分木を約束した宣言に対して
+        #     1 段しか試さないと、この部分的な対応を成功と report してしまう。
+        rp = write_temp_app(
+            root / "one_level_only",
+            _app_src(
+                '("example.com",)',
+                'f.request.pretty_host == "example.com" or ('
+                'f.request.pretty_host.endswith(".example.com") '
+                'and f.request.pretty_host.count(".") == 2)',
+            ),
+        )
+        if not any(e.startswith(f"[{SUB_LABEL}.{SUB_LABEL}.example.com]") for e in check_contract(rp)):
+            print(
+                "negative: 孫を落とす filter (部分木の一部だけ対応) を検出できなかった",
                 file=sys.stderr,
             )
             failed = True
