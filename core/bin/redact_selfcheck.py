@@ -128,6 +128,15 @@ def accepted_hosts(domain: str) -> tuple[str, ...]:
     return (domain, f"{SUB_LABEL}.{domain}", f"{SUB_LABEL}.{SUB_LABEL}.{domain}")
 
 
+def _targets_decl(node: ast.AST) -> bool:
+    """node が DECL_NAME への代入 (通常 / 型注記 / 累算) か。"""
+    if isinstance(node, ast.Assign):
+        return any(isinstance(t, ast.Name) and t.id == DECL_NAME for t in node.targets)
+    if isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        return isinstance(node.target, ast.Name) and node.target.id == DECL_NAME
+    return False
+
+
 class DeclarationError(Exception):
     """DECL_NAME の宣言はあるが読めない (リテラルでない / 形が違う / 空)。
 
@@ -170,27 +179,26 @@ def read_selfcheck_domains(path: Path) -> tuple[str, ...]:
     except (OSError, SyntaxError):
         return ()  # 実行時にも同じ理由で落ちるので、そちらのエラーで報告される
 
+    # module 直下以外 (条件分岐・関数の中) の代入は静的に読めない。見えているのに黙って
+    # 「宣言なし」に落とすと、非対象ホストの検査が無効化されたまま緑になる (fail-open)。
+    top_level = [n for n in tree.body if _targets_decl(n)]
+    top_ids = {id(n) for n in top_level}
+    if any(_targets_decl(n) and id(n) not in top_ids for n in ast.walk(tree)):
+        raise DeclarationError(
+            f"{DECL_NAME} が module 直下以外 (条件分岐や関数の中) で代入されている"
+            " — 静的に読めないので module 直下にリテラルで書くこと"
+        )
+
     # module 直下の代入を**全て**集める。最初の 1 つで打ち切ると、後の代入で上書きされる
     # モジュールで実行時と違う値を読んでしまい、宣言したはずの root が未検査のまま緑になる。
     assigns = []
-    for node in tree.body:
+    for node in top_level:
         if isinstance(node, ast.AugAssign):
-            if isinstance(node.target, ast.Name) and node.target.id == DECL_NAME:
-                raise DeclarationError(
-                    f"{DECL_NAME} を += で組み立てないこと — 静的に読めない"
-                )
+            raise DeclarationError(f"{DECL_NAME} を += で組み立てないこと — 静的に読めない")
+        # 注記のみ (`X: tuple[str, ...]`) は宣言ではないので飛ばし、後続の代入を探す。
+        if isinstance(node, ast.AnnAssign) and node.value is None:
             continue
-        if isinstance(node, ast.Assign):
-            targets, value_node = node.targets, node.value
-        elif isinstance(node, ast.AnnAssign):
-            # 注記のみ (`X: tuple[str, ...]`) は宣言ではないので飛ばし、後続の代入を探す。
-            if node.value is None:
-                continue
-            targets, value_node = [node.target], node.value
-        else:
-            continue
-        if any(isinstance(t, ast.Name) and t.id == DECL_NAME for t in targets):
-            assigns.append(value_node)
+        assigns.append(node.value)
 
     if not assigns:
         return ()
@@ -317,6 +325,22 @@ def _check_rejected(redact_path: Path, reject_hosts: tuple[str, ...]) -> list[st
     return errs
 
 
+def _check_accepted_together(redact_path: Path, hosts: tuple[str, ...]) -> list[str]:
+    """全受理ホストを 1 実行にまとめて流す。
+
+    ホストごとに別実行だけだと、flow 間に状態を持つ filter (最初に見たホストに固定して
+    以降を落とす等) が各実行で先頭になるため全て通ってしまう。実際の flows は複数ホストを
+    1 ファイルに含むので、その形でも取りこぼさないことを要求する。"""
+    expected = N_FLOWS * len(hosts)
+    lines, errs = _run_lines(redact_path, synth_flows(hosts))
+    if lines is not None and len(lines) != expected:
+        errs.append(
+            f"行数 {len(lines)} != 受理されるべき flow 数 {expected}"
+            f" ({len(hosts)} ホストを 1 実行にまとめた場合)"
+        )
+    return errs
+
+
 def check_contract(redact_path: Path) -> list[str]:
     """エンジン契約違反のリストを返す (空なら OK)。
 
@@ -332,8 +356,10 @@ def check_contract(redact_path: Path) -> list[str]:
     if not domains:
         return _check_accepted(redact_path, DEFAULT_HOST)
     errs: list[str] = []
+    every_accepted: list[str] = []
     for domain in domains:
         for host in accepted_hosts(domain):
+            every_accepted.append(host)
             errs += [f"[{host}] {e}" for e in _check_accepted(redact_path, host)]
         # 宣言が重なっているとき (example.com と api.example.com)、後者の近傍
         # notapi.example.com は前者の部分木に入る = 正しい allowlist なら受理すべき。
@@ -344,6 +370,10 @@ def check_contract(redact_path: Path) -> list[str]:
             if not any(in_subtree(h, d) for d in domains)
         )
         errs += [f"[{domain} 非受理] {e}" for e in _check_rejected(redact_path, rejects)]
+    errs += [
+        f"[全受理ホスト同時] {e}"
+        for e in _check_accepted_together(redact_path, tuple(every_accepted))
+    ]
     return errs
 
 
@@ -615,6 +645,46 @@ def main() -> int:
         )
         if not any("+=" in e for e in check_contract(rp)):
             print("negative: += で組み立てた宣言を検出できなかった", file=sys.stderr)
+            failed = True
+        # (n) module 直下以外 (条件分岐の中) の宣言。見えているのに「宣言なし」に丸めると
+        #     非対象ホストの検査が無効化されたまま緑になる (fail-open)。
+        rp = write_temp_redact(root / "nested_decl", "def redact(s):\n    return s\n")
+        rp.write_text(
+            rp.read_text().replace(
+                "def redact",
+                'if True:\n    SELFCHECK_DOMAINS = ("example.com",)\n' "def redact",
+                1,
+            )
+        )
+        if not any("module 直下以外" in e for e in check_contract(rp)):
+            print("negative: module 直下以外の宣言を検出できなかった", file=sys.stderr)
+            failed = True
+        # (o) flow 間に状態を持ち、最初に見たホスト以外を落とす filter。ホストごとの実行は
+        #     どれも先頭になるので通ってしまい、まとめた 1 実行だけが捕まえられる。
+        rp = write_temp_app(
+            root / "stateful_first_host",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            'SELFCHECK_DOMAINS = ("example.com",)\n'
+            "_seen = []\n"
+            "def _ok(h):\n"
+            "    if not (h == 'example.com' or h.endswith('.example.com')):\n"
+            "        return False\n"
+            "    if not _seen:\n"
+            "        _seen.append(h)\n"
+            "    return h == _seen[0]\n"
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            "            if isinstance(f, http.HTTPFlow) and _ok(f.request.pretty_host):\n"
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        if not any(e.startswith("[全受理ホスト同時]") for e in check_contract(rp)):
+            print(
+                "negative: flow 間に状態を持ち先頭ホスト以外を落とす filter を検出できなかった",
+                file=sys.stderr,
+            )
             failed = True
         # (h) 型注記つきの宣言 (AnnAssign) を読めること。読み落とすと、正しく filter する
         #     アプリが既定ホストで検査されて「行数 0」で落ちる。
