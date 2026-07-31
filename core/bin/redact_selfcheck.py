@@ -11,16 +11,21 @@
 残っていないか」を assert すると新規アプリで偽陽性になる。秘密の網羅性は、子 claude が
 本物の flow を見ながら対話的に確かめる領分 (それがサンドボックスの存在意義)。
 
-## ホストで flow を落とすアプリ (SELFCHECK_HOSTS)
+## ホストで flow を落とすアプリ (SELFCHECK_DOMAINS)
 
 アプリによっては、対象ドメイン以外の flow を行ごと落とす。これは整理でなく防御である
 ことが多い — ヘッダの redact は「知っている値だけ伏せる」denylist になりがちで、対象
 ドメインの外を通すと未知の auth ヘッダが素通りする。したがって「行数 = 入力 flow 数」を
 全アプリに強制して filter を消させるのは本末転倒になる。
 
-そこでアプリ側に受理ホストを宣言させ、検査器はそれを使って合成 flow を組み立てる:
+そこでアプリ側に**受理する部分木の root ドメイン**を宣言させ、検査器がそれを使って
+合成 flow を組み立てる:
 
-    SELFCHECK_HOSTS = ("api.anthropic.com",)   # module 直下・リテラルで書く
+    SELFCHECK_DOMAINS = ("anthropic.com", "claude.com")   # module 直下・リテラルで書く
+
+宣言の意味は「この root 自身と、その subdomain を受理する」。代表ホスト (api.anthropic.com)
+ではなく root を書くのが要点で、root が分かっていれば「どんな正しい allowlist でも必ず
+落とすホスト」を公開接尾辞の知識なしに作れる (下記)。
 
 宣言があるアプリには「受理ホストの flow N 本 + 落とされるべき数本」を流し、出力が
 ちょうど N 行であることを要求する。これで
@@ -40,10 +45,16 @@ method で誤判定した等) は差引きで N 行に収まってしまい、�
 宣言された受理ホストは**全て**検査する。先頭だけを試すと、host[0] は通すが他を落とす
 filter を「成功」と report してしまう (部分成功を成功にしない)。
 
-落とすべき flow は、無関係な sentinel だけでなく**宣言ホストから導いた near-miss** も混ぜる。
+落とすべき flow は、無関係な sentinel だけでなく**宣言 root から導いた near-miss** も混ぜる。
 sentinel を 1 本落とせるだけでは allowlist の境界の誤りを検出できない — たとえば
-`host.endswith("anthropic.com")` は `api.anthropic.com` を正しく受理しつつ `apianthropic.com`
-まで受理してしまい、第三者の資格情報が出力に載る。導出は near_miss_hosts() を参照。
+`host.endswith("anthropic.com")` は宣言 root を正しく受理しつつ `notanthropic.com` まで
+受理してしまい、第三者の資格情報が出力に載る。
+
+導出が root を要求する理由: 代表ホストからでは「登録可能ドメインの境界がどこか」が決まらない。
+`api.anthropic.com` からラベル位置で近傍を作ろうとすると、`example.co.uk` のような複数ラベルの
+公開接尾辞で破綻する (登録可能ラベルは labels[-2] ではない)。公開接尾辞リストを持ち込むのは
+データ依存が増えるだけなので、代わりに root を宣言させて `not<root>` を作る — これは
+`anthropic.com` でも `example.co.uk` でも一様に「別の登録可能ドメイン」になる。
 
 宣言は `ast` で静的に読む (import も実行もしない) ので、検査器が consumer のコードを
 自プロセスに取り込むことはない。
@@ -87,7 +98,7 @@ ENGINE = Path(__file__).resolve().parents[1] / "redact"
 N_FLOWS = 3
 # tutils.treq の既定ホスト。実在せず、どのアプリの allowlist にも入らない。
 DEFAULT_HOST = "address"
-# SELFCHECK_HOSTS を宣言したアプリが必ず落とすべきホスト。`.invalid` は RFC 2606 の予約 TLD
+# SELFCHECK_DOMAINS を宣言したアプリが必ず落とすべきホスト。`.invalid` は RFC 2606 の予約 TLD
 # なので、正当な allowlist がこれを含むことはない。
 REJECTED_HOST = "selfcheck-rejected.invalid"
 # flow の同一性は HTTP method で見る。URL や本文は「値を伏せる」正当な redact に書き換え
@@ -99,34 +110,35 @@ REJECT_METHOD = "PATCH"
 REJECT_MARKERS = (REJECTED_HOST, "/should-be-dropped", "THIRD_PARTY_SECRET")
 
 
-def near_miss_hosts(host: str) -> tuple[str, ...]:
-    """宣言ホストから「allowlist の境界を間違えた実装だけが受理する」ホストを導く。
+# 宣言 root の subdomain が受理されることを確かめるためのラベル。
+SUB_LABEL = "selfcheck-sub"
 
-    無関係な sentinel (REJECTED_HOST) を 1 本落とせるだけでは、境界の誤りは検出できない。
-    たとえば `host.endswith("anthropic.com")` は `api.anthropic.com` を正しく受理しつつ
-    `apianthropic.com` も受理してしまい、第三者の資格情報が出力に載る。
+
+def accepted_hosts(domain: str) -> tuple[str, ...]:
+    """宣言 root から「受理されねばならない」ホストを導く。
+
+    宣言の意味が「この root 自身とその subdomain」なので、root と subdomain の両方を試す。
+    subdomain を試さないと、部分木を宣言しながら完全一致でしか通さない filter を見逃す。
     """
-    out = []
-    labels = host.split(".")
-    if len(labels) >= 2:
-        # 登録可能ドメインの左境界を見ない実装が誤って受理する。TLD の 1 つ手前のラベルに
-        # 接頭辞を付ける: anthropic.com -> notanthropic.com / api.anthropic.com -> api.notanthropic.com。
-        # 宣言ホストそのものに接頭辞を付ける (notapi.anthropic.com) のは不可 — allowlist の root が
-        # anthropic.com なら正当な subdomain として受理されるべきで、false positive になる。
-        near = list(labels)
-        near[-2] = f"not{near[-2]}"
-        out.append(".".join(near))
-    if len(labels) >= 3:
-        # 宣言ホスト全体に対して左境界を見ない実装が受理する: api.anthropic.com -> apianthropic.com。
-        # 2 ラベルだと dot が消えるだけ (anthropiccom) で誰も受理しないため、3 ラベル以上でのみ作る。
-        out.append(labels[0] + ".".join(labels[1:]))
-    # 右端を anchor しない実装 (部分一致) が誤って受理する: <host>.selfcheck-rejected.invalid
-    out.append(f"{host}.{REJECTED_HOST}")
-    return tuple(out)
+    return (domain, f"{SUB_LABEL}.{domain}")
 
 
-def read_selfcheck_hosts(path: Path) -> tuple[str, ...]:
-    """redact_flow.py が module 直下で宣言する SELFCHECK_HOSTS を静的に読む。
+def near_miss_hosts(domain: str) -> tuple[str, ...]:
+    """宣言 root から「どんな正しい allowlist でも必ず落とす」近傍ホストを導く。
+
+    root が分かっているので公開接尾辞の知識は要らない。`not<root>` は root が
+    anthropic.com でも example.co.uk でも一様に「別の登録可能ドメイン」になる。
+    """
+    return (
+        # 左境界を見ない実装 (endswith) が誤って受理する: anthropic.com -> notanthropic.com
+        f"not{domain}",
+        # 右端を anchor しない実装 (部分一致) が誤って受理する
+        f"{domain}.{REJECTED_HOST}",
+    )
+
+
+def read_selfcheck_domains(path: Path) -> tuple[str, ...]:
+    """redact_flow.py が module 直下で宣言する SELFCHECK_DOMAINS を静的に読む。
 
     import も実行もしない (検査器のプロセスに consumer のコードを持ち込まないため)。
     宣言が無い / リテラルでない / 空 の場合は空 tuple = 「このアプリは flow を落とさない」。
@@ -145,7 +157,7 @@ def read_selfcheck_hosts(path: Path) -> tuple[str, ...]:
             targets, value_node = [node.target], node.value
         else:
             continue
-        if not any(isinstance(t, ast.Name) and t.id == "SELFCHECK_HOSTS" for t in targets):
+        if not any(isinstance(t, ast.Name) and t.id == "SELFCHECK_DOMAINS" for t in targets):
             continue
         if value_node is None:
             # 注記のみ (`X: tuple[str, ...]`)。宣言ではないので、後続の実代入を探しに行く。
@@ -265,17 +277,17 @@ def _check_one(redact_path: Path, host: str, *, reject_hosts: tuple[str, ...] = 
 def check_contract(redact_path: Path) -> list[str]:
     """エンジン契約違反のリストを返す (空なら OK)。
 
-    受理ホストを宣言しているアプリは**宣言された全ホスト**について検査する (一部だけ通る
-    filter を成功と report しないため)。各回、非対象ホストの flow を 1 本混ぜ、それが落ちた
-    上で受理分がちょうど N_FLOWS 行出ることを要求する。"""
-    hosts = read_selfcheck_hosts(redact_path)
-    if not hosts:
+    root を宣言しているアプリは**宣言された全 root** × **root 自身と subdomain** を検査する
+    (一部だけ通る filter を成功と report しないため)。各回、落ちるべきホスト (sentinel と
+    root から導いた near-miss) を混ぜ、受理分がちょうど N_FLOWS 行出ることを要求する。"""
+    domains = read_selfcheck_domains(redact_path)
+    if not domains:
         return _check_one(redact_path, DEFAULT_HOST)
     errs: list[str] = []
-    for host in hosts:
-        # 無関係な sentinel に加えて、この host の境界を間違えた実装だけが受理するホストを混ぜる。
-        rejects = (REJECTED_HOST, *near_miss_hosts(host))
-        errs += [f"[{host}] {e}" for e in _check_one(redact_path, host, reject_hosts=rejects)]
+    for domain in domains:
+        rejects = (REJECTED_HOST, *near_miss_hosts(domain))
+        for host in accepted_hosts(domain):
+            errs += [f"[{host}] {e}" for e in _check_one(redact_path, host, reject_hosts=rejects)]
     return errs
 
 
@@ -287,11 +299,11 @@ def write_temp_app(d: Path, body: str) -> Path:
     return p
 
 
-def write_temp_redact(d: Path, redact_body: str, *, declare_hosts: tuple[str, ...] = ()) -> Path:
+def write_temp_redact(d: Path, redact_body: str, *, declare_domains: tuple[str, ...] = ()) -> Path:
     """core/redact/flows_to_ndjson を使う一時 redact_flow.py を作る (negative probe 用)。
-    declare_hosts を渡すと SELFCHECK_HOSTS を宣言するが filter は実装しない
+    declare_domains を渡すと SELFCHECK_DOMAINS を宣言するが filter は実装しない
     (= 宣言と実装の食い違いを検査器が捕まえるかの probe になる)。"""
-    decl = f"SELFCHECK_HOSTS = {tuple(declare_hosts)!r}\n" if declare_hosts else ""
+    decl = f"SELFCHECK_DOMAINS = {tuple(declare_domains)!r}\n" if declare_domains else ""
     return write_temp_app(
         d,
         "from flows_to_ndjson import flows_to_ndjson\n"
@@ -299,6 +311,29 @@ def write_temp_redact(d: Path, redact_body: str, *, declare_hosts: tuple[str, ..
         f"{redact_body}\n"
         'if __name__ == "__main__":\n'
         "    flows_to_ndjson(redact)\n",
+    )
+
+
+def _app_src(decl: str, cond: str, *, annotated: bool = False, split_annotation: bool = False) -> str:
+    """negative probe 用に「宣言 + host filter」を持つ redact_flow の本体を組み立てる。"""
+    if split_annotation:
+        head = f"SELFCHECK_DOMAINS: tuple[str, ...]\nSELFCHECK_DOMAINS = {decl}\n"
+    elif annotated:
+        head = f"SELFCHECK_DOMAINS: tuple[str, ...] = {decl}\n"
+    else:
+        head = f"SELFCHECK_DOMAINS = {decl}\n"
+    return (
+        "import json\n"
+        "from flows_to_ndjson import to_dict\n"
+        "from mitmproxy import http, io\n"
+        "def _subtree(h, d):\n"
+        "    return h == d or h.endswith('.' + d)\n"
+        f"{head}"
+        'if __name__ == "__main__":\n'
+        "    with sys.stdin.buffer as fp:\n"
+        "        for f in io.FlowReader(fp).stream():\n"
+        f"            if isinstance(f, http.HTTPFlow) and ({cond}):\n"
+        "                print(json.dumps(to_dict(f), ensure_ascii=False))\n"
     )
 
 
@@ -318,10 +353,10 @@ def main() -> int:
             for e in errs:
                 print(f"      {e}", file=sys.stderr)
         else:
-            hosts = read_selfcheck_hosts(rp)
+            domains = read_selfcheck_domains(rp)
             note = (
-                f" (SELFCHECK_HOSTS={' '.join(hosts)} / 各ホストで sentinel + near-miss の drop も確認)"
-                if hosts
+                f" (SELFCHECK_DOMAINS={' '.join(domains)} / root+subdomain の受理と near-miss の drop も確認)"
+                if domains
                 else ""
             )
             print(f"ok  {rel}{note}")
@@ -339,28 +374,25 @@ def main() -> int:
         if not any("行数" in e for e in check_contract(rp)):
             print("negative: 改行混入で行を増やす redact を検出できなかった", file=sys.stderr)
             failed = True
-        # (c) 受理ホストを宣言しながら落とさない redact → 非対象 flow の素通りを検出するはず
+        # (c) root を宣言しながら filter を実装しない redact → 非対象の素通りを検出するはず
         rp = write_temp_redact(
             root / "declared_no_filter",
             "def redact(s):\n    return s\n",
-            declare_hosts=("api.example.com",),
+            declare_domains=("example.com",),
         )
         if not any("落としていない" in e for e in check_contract(rp)):
             print("negative: 宣言だけして落とさない redact を検出できなかった", file=sys.stderr)
             failed = True
-        # (d) 受理分を 1 本落として非対象を 1 本通す filter (host でなく method で誤判定した等)。
-        #     差引きで行数は N のまま合ってしまうので、同一性の検査だけが捕まえられる。
+        # (d) 受理分を 1 本落として非対象を 1 本通す filter。差引きで行数は N のまま合うので、
+        #     同一性の検査だけが捕まえられる。
         rp = write_temp_app(
             root / "wrong_filter",
-            "import json\n"
-            "from flows_to_ndjson import to_dict\n"
-            "from mitmproxy import http, io\n"
-            'SELFCHECK_HOSTS = ("api.example.com",)\n'
-            'if __name__ == "__main__":\n'
-            "    with sys.stdin.buffer as fp:\n"
-            "        for f in io.FlowReader(fp).stream():\n"
-            "            if isinstance(f, http.HTTPFlow) and f.request.method != 'DELETE':\n"
-            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+            _app_src(
+                '("example.com",)',
+                'f.request.method != "DELETE" and ('
+                'f.request.pretty_host == "notexample.com" '
+                'or f.request.pretty_host.endswith("example.com"))',
+            ),
         )
         errs = check_contract(rp)
         if not (any("落としていない" in e for e in errs) and any("出力に無い" in e for e in errs)):
@@ -369,95 +401,76 @@ def main() -> int:
                 file=sys.stderr,
             )
             failed = True
-        # (e) 宣言した受理ホストのうち先頭しか受理しない filter。宣言の一部だけ通るのを
-        #     成功と report しないことを pin する。
+        # (e) 宣言した root のうち先頭しか受理しない filter。宣言の一部だけ通るのを成功と
+        #     report しないことを pin する。
         rp = write_temp_app(
-            root / "partial_hosts",
-            "import json\n"
-            "from flows_to_ndjson import to_dict\n"
-            "from mitmproxy import http, io\n"
-            'SELFCHECK_HOSTS = ("a.example.com", "b.example.com")\n'
-            'if __name__ == "__main__":\n'
-            "    with sys.stdin.buffer as fp:\n"
-            "        for f in io.FlowReader(fp).stream():\n"
-            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host == "a.example.com":\n'
-            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+            root / "partial_domains",
+            _app_src(
+                '("a.example.com", "b.example.com")',
+                '_subtree(f.request.pretty_host, "a.example.com")',
+            ),
         )
         if not any(e.startswith("[b.example.com]") for e in check_contract(rp)):
             print(
-                "negative: 宣言した受理ホストの一部しか受理しない filter を検出できなかった",
+                "negative: 宣言した root の一部しか受理しない filter を検出できなかった",
                 file=sys.stderr,
             )
             failed = True
-        # (f) DNS ラベル境界を見ない filter (endswith)。宣言ホストは正しく受理するので、
-        #     宣言ホストから導いた near-miss を混ぜないと検出できない。
+        # (f) DNS ラベル境界を見ない filter (endswith)。宣言 root は正しく受理するので、
+        #     root から導いた near-miss を混ぜないと検出できない。
         rp = write_temp_app(
             root / "boundary",
-            "import json\n"
-            "from flows_to_ndjson import to_dict\n"
-            "from mitmproxy import http, io\n"
-            'SELFCHECK_HOSTS = ("api.anthropic.com",)\n'
-            'if __name__ == "__main__":\n'
-            "    with sys.stdin.buffer as fp:\n"
-            "        for f in io.FlowReader(fp).stream():\n"
-            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host.endswith("anthropic.com"):\n'
-            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+            _app_src('("anthropic.com",)', 'f.request.pretty_host.endswith("anthropic.com")'),
         )
         if not any("落としていない" in e for e in check_contract(rp)):
             print("negative: ラベル境界を見ない filter を検出できなかった", file=sys.stderr)
             failed = True
-        # (f2) 2 ラベルの root を宣言した場合。dot 除去の near-miss (anthropiccom) は誰も
-        #      受理しないので、接頭辞側 (notanthropic.com) が無いとこの誤りを素通りする。
+        # (f2) 複数ラベルの公開接尾辞 (example.co.uk)。ラベル位置から近傍を作る導出だと
+        #      登録可能ラベルを取り違えてこの誤りを素通りする。root 基準なら一様に効く。
         rp = write_temp_app(
-            root / "boundary_root",
-            "import json\n"
-            "from flows_to_ndjson import to_dict\n"
-            "from mitmproxy import http, io\n"
-            'SELFCHECK_HOSTS = ("anthropic.com",)\n'
-            'if __name__ == "__main__":\n'
-            "    with sys.stdin.buffer as fp:\n"
-            "        for f in io.FlowReader(fp).stream():\n"
-            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host.endswith("anthropic.com"):\n'
-            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+            root / "boundary_psl",
+            _app_src('("example.co.uk",)', 'f.request.pretty_host.endswith("example.co.uk")'),
         )
         if not any("落としていない" in e for e in check_contract(rp)):
             print(
-                "negative: 2 ラベル root でラベル境界を見ない filter を検出できなかった",
+                "negative: 複数ラベル公開接尾辞でラベル境界を見ない filter を検出できなかった",
                 file=sys.stderr,
             )
             failed = True
-        # (g) 型注記つきの宣言 (AnnAssign) を読めること。読み落とすと、正しく filter する
+        # (g) 部分木を宣言しながら完全一致でしか通さない filter → subdomain が受理されない
+        rp = write_temp_app(
+            root / "exact_only",
+            _app_src('("example.com",)', 'f.request.pretty_host == "example.com"'),
+        )
+        if not any(e.startswith(f"[{SUB_LABEL}.example.com]") for e in check_contract(rp)):
+            print(
+                "negative: 部分木を宣言しながら完全一致でしか通さない filter を検出できなかった",
+                file=sys.stderr,
+            )
+            failed = True
+        # (h) 型注記つきの宣言 (AnnAssign) を読めること。読み落とすと、正しく filter する
         #     アプリが既定ホストで検査されて「行数 0」で落ちる。
         rp = write_temp_app(
             root / "annassign",
-            "import json\n"
-            "from flows_to_ndjson import to_dict\n"
-            "from mitmproxy import http, io\n"
-            'SELFCHECK_HOSTS: tuple[str, ...] = ("api.example.com",)\n'
-            'if __name__ == "__main__":\n'
-            "    with sys.stdin.buffer as fp:\n"
-            "        for f in io.FlowReader(fp).stream():\n"
-            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host == "api.example.com":\n'
-            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+            _app_src(
+                '("example.com",)',
+                '_subtree(f.request.pretty_host, "example.com")',
+                annotated=True,
+            ),
         )
         errs = check_contract(rp)
         if errs:
             print(f"negative: 型注記つき宣言を読めていない ({errs[0]})", file=sys.stderr)
             failed = True
-        # (g2) 注記だけを先に書き、あとで実代入する形。注記の行で走査を打ち切ると宣言を
+        # (h2) 注記だけを先に書き、あとで実代入する形。注記の行で走査を打ち切ると宣言を
         #      読み落とし、正しく filter するアプリが「行数 0」で落ちる。
         rp = write_temp_app(
             root / "annassign_split",
-            "import json\n"
-            "from flows_to_ndjson import to_dict\n"
-            "from mitmproxy import http, io\n"
-            "SELFCHECK_HOSTS: tuple[str, ...]\n"
-            'SELFCHECK_HOSTS = ("api.example.com",)\n'
-            'if __name__ == "__main__":\n'
-            "    with sys.stdin.buffer as fp:\n"
-            "        for f in io.FlowReader(fp).stream():\n"
-            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host == "api.example.com":\n'
-            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+            _app_src(
+                '("example.com",)',
+                '_subtree(f.request.pretty_host, "example.com")',
+                split_annotation=True,
+            ),
         )
         errs = check_contract(rp)
         if errs:
