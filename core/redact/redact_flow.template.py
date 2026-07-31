@@ -11,11 +11,13 @@
 代わりに mitmproxy を焼き込んだ python で直接実行する:
   python3 extract/__APP__/redact_flow.py < /input/raw.flows > /tmp/out.jsonl
 
-対象ドメイン外の flow を行ごと落とす場合は、受理ホストを module 直下でリテラル宣言する:
-  SELFCHECK_HOSTS = ("api.example.com",)
+対象ドメイン外の flow を行ごと落とす場合は、**受理する部分木の root** を module 直下で
+リテラル宣言する (代表ホストではなく root を書く):
+  SELFCHECK_DOMAINS = ("example.com",)
 これが無いと check-redact-selfcheck は「1 flow = 1 行」を要求し、filter するアプリは
-落ちる。宣言すると検査器が受理ホストで合成 flow を作り、非対象ホストの 1 本が実際に
-落ちることまで検査する (根拠は core/bin/redact_selfcheck.py の docstring)。
+落ちる。宣言すると検査器が root と subdomain の受理を確かめ、root から導いた近傍
+(notexample.com 等) が実際に落ちることまで検査する (根拠は core/bin/redact_selfcheck.py
+の docstring)。
 """
 
 import sys

@@ -112,6 +112,11 @@ REJECT_MARKERS = (REJECTED_HOST, "/should-be-dropped", "THIRD_PARTY_SECRET")
 
 # 宣言 root の subdomain が受理されることを確かめるためのラベル。
 SUB_LABEL = "selfcheck-sub"
+# アプリ側が使う宣言名。テンプレートと検査器で綴りがずれると、宣言したつもりのアプリが
+# 「宣言なし」扱いになって既定ホストで検査され、行数 0 で落ちる (原因が読み取りにくい)。
+# 単一の出所にして、テンプレートとの一致を negative probe で pin する。
+DECL_NAME = "SELFCHECK_DOMAINS"
+TEMPLATE = ENGINE / "redact_flow.template.py"
 
 
 def accepted_hosts(domain: str) -> tuple[str, ...]:
@@ -157,7 +162,7 @@ def read_selfcheck_domains(path: Path) -> tuple[str, ...]:
             targets, value_node = [node.target], node.value
         else:
             continue
-        if not any(isinstance(t, ast.Name) and t.id == "SELFCHECK_DOMAINS" for t in targets):
+        if not any(isinstance(t, ast.Name) and t.id == DECL_NAME for t in targets):
             continue
         if value_node is None:
             # 注記のみ (`X: tuple[str, ...]`)。宣言ではないので、後続の実代入を探しに行く。
@@ -361,7 +366,20 @@ def main() -> int:
             )
             print(f"ok  {rel}{note}")
 
-    # 2) negative probe: 検査器が契約違反を実際に検出することを pin する
+    # 2) テンプレートと検査器の宣言名の一致 (ずれると新規アプリが「宣言なし」扱いになる)
+    if TEMPLATE.exists():
+        if DECL_NAME not in TEMPLATE.read_text(encoding="utf-8"):
+            print(
+                f"NG  {TEMPLATE.name}: 宣言名 {DECL_NAME} が書かれていない"
+                " — テンプレートに従った新規アプリは宣言なし扱いになり行数 0 で落ちる",
+                file=sys.stderr,
+            )
+            failed = True
+    else:
+        print(f"NG  {TEMPLATE} が無い", file=sys.stderr)
+        failed = True
+
+    # 3) negative probe: 検査器が契約違反を実際に検出することを pin する
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         # (a) 不正 JSON を出す redact → "不正 JSON" を検出するはず
