@@ -10,6 +10,14 @@
 注: redact サンドボックス内では egress を固めてあり uv は外部取得できない。
 代わりに mitmproxy を焼き込んだ python で直接実行する:
   python3 extract/__APP__/redact_flow.py < /input/raw.flows > /tmp/out.jsonl
+
+対象ドメイン外の flow を行ごと落とす場合は、**受理する部分木の root** を module 直下で
+リテラル宣言する (代表ホストではなく root を書く):
+  SELFCHECK_DOMAINS = ("example.com",)
+これが無いと check-redact-selfcheck は「1 flow = 1 行」を要求し、filter するアプリは
+落ちる。宣言すると検査器が root と subdomain の受理を確かめ、root から導いた近傍
+(notexample.com 等) が実際に落ちることまで検査する (根拠は core/bin/redact_selfcheck.py
+の docstring)。
 """
 
 import sys
