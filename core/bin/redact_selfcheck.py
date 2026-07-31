@@ -33,14 +33,17 @@
   - filter そのものが検査対象になる (宣言だけして落としていなければ N+1 行で落ちる)
 宣言が無いアプリは従来どおり、既定ホストの flow N 本に対して N 行を要求する。
 
-行数だけでは足りない: 「受理分を 1 本落として非対象を 1 本通す」filter (host でなく
-method で誤判定した等) は差引きで N 行に収まってしまい、非対象の秘密が出力に載ったまま
-素通りする。そこで行数に加えて**どの flow が出たか**を照合する。
+受理側と非受理側は**別の実行に分ける** (同じ flows に混ぜない):
+  - 受理: 宣言 root / 子 / 孫の各ホストで 3 本流し、3 行出ること
+  - 非受理: sentinel と近傍を流し、0 行であること
+分けると、差引きで辻褄の合う誤り (受理分を 1 本落として非対象を 1 本通す) が原理的に
+隠せなくなる。混ぜて行数だけ見ていた頃はこれが素通りしていた。
 
-同一性は **HTTP method** で見る。URL や本文は「値を伏せる」正当な redact に書き換えられうる
-(数値や query を <num> にする等) ので印にできない — それを印にすると、正しいアプリが CI で
-落ちる。method は enum で秘密を持たないため redact 対象にならない。合成 flow は method が
-互いに重ならないようにしてあり、非対象 flow だけが PATCH を持つ。
+分けたことで**出力に印を仕込む必要も無くなった** — 非受理側は「0 行であること」自体が
+判定なので、redact に書き換えられうる URL や本文を手掛かりにしなくてよい。合成 flow の
+method も受理側と非受理側で同じにしてある。非受理側だけ別の method にすると、host を一切
+見ずにその method を落とすだけの filter が契約を満たしてしまい、第三者宛の GET/POST が
+素通りする。**host 以外の手掛かりを残さない**のが要点。
 
 宣言された受理ホストは**全て**検査する。先頭だけを試すと、host[0] は通すが他を落とす
 filter を「成功」と report してしまう (部分成功を成功にしない)。
@@ -59,11 +62,11 @@ sentinel を 1 本落とせるだけでは allowlist の境界の誤りを検出
 宣言は `ast` で静的に読む (import も実行もしない) ので、検査器が consumer のコードを
 自プロセスに取り込むことはない。
 
-negative probe: 「不正 JSON を出す redact」「改行を混ぜて行を増やす redact」「受理ホストを
-宣言しているのに落とさない redact」「受理分を落として非対象を通す filter (行数は一致)」
-「宣言ホストの一部しか受理しない filter」「DNS ラベル境界を見ない filter (endswith)」
-「型注記つき宣言 (AnnAssign) を読めること」を流し、検査器がそれぞれを検出/処理することを
-pin する (= この検査器自体が機能していることの担保)。
+negative probe: 不正 JSON / 行の増加 / 宣言だけして落とさない / 受理分を落として非対象を
+通す / 宣言 root の一部しか受理しない / ラベル境界を見ない (endswith、複数ラベル公開接尾辞
+を含む) / 完全一致でしか通さない / 孫を落とす / host でなく method で落とすだけ / 宣言が
+リテラルでない / 宣言の形が違う / 型注記つき宣言と注記と代入の分離を読めること — を流し、
+検査器がそれぞれを検出/処理することを pin する (= この検査器自体が機能していることの担保)。
 
 副作用を残さない: 一時物は TemporaryDirectory に隔離し、subprocess には
 PYTHONDONTWRITEBYTECODE=1 を渡して __pycache__ を残さない。
@@ -101,13 +104,9 @@ DEFAULT_HOST = "address"
 # SELFCHECK_DOMAINS を宣言したアプリが必ず落とすべきホスト。`.invalid` は RFC 2606 の予約 TLD
 # なので、正当な allowlist がこれを含むことはない。
 REJECTED_HOST = "selfcheck-rejected.invalid"
-# flow の同一性は HTTP method で見る。URL や本文は「値を伏せる」正当な redact に書き換え
-# られうる (数値や query を <num> にする等) ので印にできないが、method は enum で秘密を
-# 持たないため redact 対象にならない。合成 flow は method が互いに重ならないようにしてある。
-ACCEPT_METHODS = ("GET", "POST", "DELETE")
-REJECT_METHOD = "PATCH"
-# 非対象 flow の取りこぼしを method 以外からも拾う保険 (これらが消されても method で捕まる)。
-REJECT_MARKERS = (REJECTED_HOST, "/should-be-dropped", "THIRD_PARTY_SECRET")
+# 受理側と非受理側で**同じ method** を使う。非受理側だけ別 method (PATCH 等) にすると、
+# host を一切見ずにその method を落とすだけの filter が契約を満たしてしまい、第三者宛の
+# GET/POST が素通りする。host 以外に手掛かりを残さないのが要点。
 
 
 # 宣言 root の subdomain が受理されることを確かめるためのラベル。
@@ -206,10 +205,22 @@ def read_selfcheck_domains(path: Path) -> tuple[str, ...]:
     return ()
 
 
-def synth_flows(host: str, *, reject_hosts: tuple[str, ...] = ()) -> bytes:
-    """秘密らしき値を含む複数の HTTP flow を 1 つの flows バイト列にする。
-    GET / POST(ヘッダ+body) / response 無し をそれぞれ 1 本ずつ含め、to_dict の経路を広く通す。
-    全て `host` 宛。`reject_hosts` の各ホストについて「落とされるべき」flow を 1 本ずつ足す。"""
+def synth_flows(hosts: tuple[str, ...]) -> bytes:
+    """秘密らしき値を含む HTTP flow を 1 つの flows バイト列にする。
+    GET / POST(ヘッダ+body) / response 無し を各ホストにつき 1 本ずつ含め、to_dict の経路を
+    広く通す。ホストごとに同じ 3 本を作るので、受理側と非受理側で method の差は無い。"""
+    flows = []
+    for host in hosts:
+        flows += _flows_for(host)
+
+    buf = io.BytesIO()
+    w = mio.FlowWriter(buf)
+    for f in flows:
+        w.add(f)
+    return buf.getvalue()
+
+
+def _flows_for(host: str) -> list:
     flows = [
         tflow.tflow(
             req=tutils.treq(host=host, method=b"GET", path=b"/api/items?q=1"),
@@ -233,24 +244,7 @@ def synth_flows(host: str, *, reject_hosts: tuple[str, ...] = ()) -> bytes:
     f3 = tflow.tflow(req=tutils.treq(host=host, method=b"DELETE", path=b"/api/items/9"))
     f3.response = None
     flows.append(f3)
-
-    for i, rh in enumerate(reject_hosts):
-        flows.append(
-            tflow.tflow(
-                req=tutils.treq(
-                    host=rh,
-                    method=REJECT_METHOD.encode(),
-                    path=f"/should-be-dropped/{i}".encode(),
-                ),
-                resp=tutils.tresp(content=b'{"leaked":"THIRD_PARTY_SECRET"}'),
-            )
-        )
-
-    buf = io.BytesIO()
-    w = mio.FlowWriter(buf)
-    for f in flows:
-        w.add(f)
-    return buf.getvalue()
+    return flows
 
 
 def run_redact(redact_path: Path, flows: bytes) -> subprocess.CompletedProcess:
@@ -265,60 +259,68 @@ def run_redact(redact_path: Path, flows: bytes) -> subprocess.CompletedProcess:
     )
 
 
-def _check_one(redact_path: Path, host: str, *, reject_hosts: tuple[str, ...] = ()) -> list[str]:
-    """1 つの受理ホストについて契約を検査する。reject_hosts の flow は全て落ちねばならない。"""
-    errs: list[str] = []
-    flows = synth_flows(host, reject_hosts=reject_hosts)
+def _run_lines(redact_path: Path, flows: bytes) -> tuple[list[str] | None, list[str]]:
+    """redact を走らせ (出力行, エラー) を返す。実行自体が失敗したら行は None。
+
+    行数の判定と JSON の判定は独立に report する — 不正 JSON があるときに行数の判定を
+    抑えると、改行を混ぜて行を増やす redact (両方に違反する) を行数側で捕まえられない。"""
     p = run_redact(redact_path, flows)
     if p.returncode != 0:
-        return [f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[:400]}"]
-
-    out = p.stdout.decode()
-    lines = out.splitlines()
-    methods: list[str] = []
+        return None, [f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[:400]}"]
+    lines = p.stdout.decode().splitlines()
+    errs = []
     for i, ln in enumerate(lines):
         try:
-            methods.append(json.loads(ln).get("method"))
+            json.loads(ln)
         except json.JSONDecodeError as e:
             errs.append(f"行 {i} が不正 JSON: {e}")
+    return lines, errs
 
-    if len(lines) != N_FLOWS:
-        if reject_hosts and not lines:
-            errs.append(f"行数 0 — 宣言された受理ホスト ({host}) を filter が受理していない")
-        else:
-            errs.append(f"行数 {len(lines)} != 受理されるべき flow 数 {N_FLOWS}")
 
-    # 行数だけでは「受理分を 1 本落として非対象を 1 本通す」誤った filter が素通りする
-    # (差引きが合ってしまう)。どの flow が出たかを method で照合する。
-    missing = [m for m in ACCEPT_METHODS if m not in methods]
-    if missing:
-        errs.append(f"受理されるべき flow が出力に無い (method: {', '.join(missing)})")
-    if reject_hosts:
-        leaked_hosts = [h for h in reject_hosts if h in out]
-        leaked_marks = [m for m in REJECT_MARKERS if m in out]
-        if REJECT_METHOD in methods or leaked_hosts or leaked_marks:
-            which = leaked_hosts or list(reject_hosts)
-            found = f"method {REJECT_METHOD}" if REJECT_METHOD in methods else repr((leaked_marks or which)[0])
-            errs.append(
-                f"非対象ホスト ({', '.join(which)}) の flow を落としていない — 出力に {found} が残っている"
-            )
+def _check_accepted(redact_path: Path, host: str) -> list[str]:
+    """受理されるべきホストの flow が 1 本も落ちないこと。"""
+    lines, errs = _run_lines(redact_path, synth_flows((host,)))
+    if lines is not None and len(lines) != N_FLOWS:
+        errs.append(f"行数 {len(lines)} != 受理されるべき flow 数 {N_FLOWS}")
+    return errs
+
+
+def _check_rejected(redact_path: Path, reject_hosts: tuple[str, ...]) -> list[str]:
+    """非対象ホストの flow が 1 本も出ないこと。
+
+    受理側と同じ method を使うので、host を見ない filter (特定 method を落とすだけ等) では
+    この検査を満たせない。出力が 0 行であること自体が判定になるので、redact に書き換えられ
+    うる URL や本文を印として使う必要もない。"""
+    if not reject_hosts:
+        return []
+    lines, errs = _run_lines(redact_path, synth_flows(reject_hosts))
+    if lines:
+        named = [h for h in reject_hosts if any(h in ln for ln in lines)]
+        which = ", ".join(named) if named else ", ".join(reject_hosts)
+        errs.append(
+            f"非対象ホスト ({which}) の flow を落としていない — {len(lines)} 行出力された"
+        )
     return errs
 
 
 def check_contract(redact_path: Path) -> list[str]:
     """エンジン契約違反のリストを返す (空なら OK)。
 
-    root を宣言しているアプリは**宣言された全 root** × **root 自身と subdomain** を検査する
-    (一部だけ通る filter を成功と report しないため)。各回、落ちるべきホスト (sentinel と
-    root から導いた near-miss) を混ぜ、受理分がちょうど N_FLOWS 行出ることを要求する。"""
+    root を宣言しているアプリは、宣言された全 root について
+      - 受理: root / 子 / 孫 の各ホストで flow が 1 本も落ちないこと (ホストごとに別実行)
+      - 非受理: sentinel と root から導いた近傍が 1 本も出ないこと (まとめて別実行)
+    を検査する。受理と非受理を**別の実行に分ける**ので、差引きで辻褄が合う誤り (受理分を
+    落として非対象を通す) は原理的に隠せず、印を仕込む必要も無い。"""
     try:
         domains = read_selfcheck_domains(redact_path)
     except DeclarationError as e:
         return [str(e)]
     if not domains:
-        return _check_one(redact_path, DEFAULT_HOST)
+        return _check_accepted(redact_path, DEFAULT_HOST)
     errs: list[str] = []
     for domain in domains:
+        for host in accepted_hosts(domain):
+            errs += [f"[{host}] {e}" for e in _check_accepted(redact_path, host)]
         # 宣言が重なっているとき (example.com と api.example.com)、後者の近傍
         # notapi.example.com は前者の部分木に入る = 正しい allowlist なら受理すべき。
         # 落ちることを要求すると正しいアプリを落とすので、宣言部分木に入る近傍は外す。
@@ -327,8 +329,7 @@ def check_contract(redact_path: Path) -> list[str]:
             for h in (REJECTED_HOST, *near_miss_hosts(domain))
             if not any(in_subtree(h, d) for d in domains)
         )
-        for host in accepted_hosts(domain):
-            errs += [f"[{host}] {e}" for e in _check_one(redact_path, host, reject_hosts=rejects)]
+        errs += [f"[{domain} 非受理] {e}" for e in _check_rejected(redact_path, rejects)]
     return errs
 
 
@@ -449,9 +450,21 @@ def main() -> int:
             ),
         )
         errs = check_contract(rp)
-        if not (any("落としていない" in e for e in errs) and any("出力に無い" in e for e in errs)):
+        if not (any("落としていない" in e for e in errs) and any("行数" in e for e in errs)):
             print(
-                "negative: 受理分を落として非対象を通す filter (行数は一致) を検出できなかった",
+                "negative: 受理分を落として非対象を通す filter を検出できなかった",
+                file=sys.stderr,
+            )
+            failed = True
+        # (d2) host を一切見ず、特定 method を落とすだけの filter。非受理側の flow に受理側と
+        #      違う method を使っていると、これが契約を満たしてしまい第三者宛が素通りする。
+        rp = write_temp_app(
+            root / "method_only",
+            _app_src('("example.com",)', 'f.request.method != "PATCH"'),
+        )
+        if not any("落としていない" in e for e in check_contract(rp)):
+            print(
+                "negative: host を見ず method だけで落とす filter を検出できなかった",
                 file=sys.stderr,
             )
             failed = True
