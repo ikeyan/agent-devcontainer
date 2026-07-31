@@ -28,12 +28,17 @@
   - filter そのものが検査対象になる (宣言だけして落としていなければ N+1 行で落ちる)
 宣言が無いアプリは従来どおり、既定ホストの flow N 本に対して N 行を要求する。
 
+行数だけでは足りない: 「受理分を 1 本落として非対象を 1 本通す」filter (host でなく
+method で誤判定した等) は差引きで N 行に収まってしまい、非対象の秘密が出力に載ったまま
+素通りする。そこで行数に加えて**どの flow が出たか**を印で照合する — 受理分の path が
+全て出力にあり、非対象の印 (ホスト / path / 本文) が 1 つも無いこと。
+
 宣言は `ast` で静的に読む (import も実行もしない) ので、検査器が consumer のコードを
 自プロセスに取り込むことはない。
 
 negative probe: 「不正 JSON を出す redact」「改行を混ぜて行を増やす redact」「受理ホストを
-宣言しているのに落とさない redact」を流し、検査器がそれぞれを検出することを pin する
-(= この検査器自体が機能していることの担保)。
+宣言しているのに落とさない redact」「受理分を落として非対象を通す filter (行数は一致)」を
+流し、検査器がそれぞれを検出することを pin する (= この検査器自体が機能していることの担保)。
 
 副作用を残さない: 一時物は TemporaryDirectory に隔離し、subprocess には
 PYTHONDONTWRITEBYTECODE=1 を渡して __pycache__ を残さない。
@@ -71,6 +76,10 @@ DEFAULT_HOST = "address"
 # SELFCHECK_HOSTS を宣言したアプリが必ず落とすべきホスト。`.invalid` は RFC 2606 の予約 TLD
 # なので、正当な allowlist がこれを含むことはない。
 REJECTED_HOST = "selfcheck-rejected.invalid"
+# 受理されるべき flow を出力の中で一意に見分ける印 (合成 flow の path)。
+ACCEPT_MARKERS = ("/api/items?q=1", "/api/login", "/api/items/9")
+# 非対象 flow が出力に残っていることを示す印 (ホスト・path・本文の 3 経路を見る)。
+REJECT_MARKERS = (REJECTED_HOST, "/should-be-dropped", "THIRD_PARTY_SECRET")
 
 
 def read_selfcheck_hosts(path: Path) -> tuple[str, ...]:
@@ -172,19 +181,28 @@ def check_contract(redact_path: Path) -> list[str]:
     if p.returncode != 0:
         errs.append(f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[:400]}")
         return errs
-    lines = p.stdout.decode().splitlines()
+    out = p.stdout.decode()
+    lines = out.splitlines()
     if len(lines) != N_FLOWS:
-        if hosts and len(lines) == N_FLOWS + 1:
-            errs.append(
-                f"行数 {len(lines)} — SELFCHECK_HOSTS を宣言しているのに "
-                f"{REJECTED_HOST} 宛の flow を落としていない"
-            )
-        elif hosts and not lines:
+        if hosts and not lines:
             errs.append(
                 f"行数 0 — 宣言された SELFCHECK_HOSTS[0] ({hosts[0]}) を filter が受理していない"
             )
         else:
             errs.append(f"行数 {len(lines)} != 受理されるべき flow 数 {N_FLOWS}")
+
+    # 行数だけでは「受理分を 1 本落として非対象を 1 本通す」誤った filter が素通りする
+    # (差引きが合ってしまう)。どの flow が出たかを印で見る。
+    if hosts:
+        leaked = [m for m in REJECT_MARKERS if m in out]
+        if leaked:
+            errs.append(
+                f"非対象ホスト ({REJECTED_HOST}) の flow を落としていない — 出力に {leaked[0]!r} が残っている"
+            )
+    missing = [m for m in ACCEPT_MARKERS if m not in out]
+    if missing:
+        errs.append(f"受理されるべき flow が出力に無い: {', '.join(missing)}")
+
     for i, ln in enumerate(lines):
         try:
             json.loads(ln)
@@ -193,25 +211,27 @@ def check_contract(redact_path: Path) -> list[str]:
     return errs
 
 
+def write_temp_app(d: Path, body: str) -> Path:
+    """任意の本体を持つ一時 redact_flow.py を書く (negative probe 用)。ENGINE を import path に通す。"""
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "redact_flow.py"
+    p.write_text(f"import sys\nsys.path.insert(0, {str(ENGINE)!r})\n{body}")
+    return p
+
+
 def write_temp_redact(d: Path, redact_body: str, *, declare_hosts: tuple[str, ...] = ()) -> Path:
     """core/redact/flows_to_ndjson を使う一時 redact_flow.py を作る (negative probe 用)。
     declare_hosts を渡すと SELFCHECK_HOSTS を宣言するが filter は実装しない
     (= 宣言と実装の食い違いを検査器が捕まえるかの probe になる)。"""
-    d.mkdir(parents=True, exist_ok=True)
     decl = f"SELFCHECK_HOSTS = {tuple(declare_hosts)!r}\n" if declare_hosts else ""
-    src = (
-        "import sys\n"
-        "from pathlib import Path\n"
-        f"sys.path.insert(0, {str(ENGINE)!r})\n"
+    return write_temp_app(
+        d,
         "from flows_to_ndjson import flows_to_ndjson\n"
         f"{decl}"
         f"{redact_body}\n"
         'if __name__ == "__main__":\n'
-        "    flows_to_ndjson(redact)\n"
+        "    flows_to_ndjson(redact)\n",
     )
-    p = d / "redact_flow.py"
-    p.write_text(src)
-    return p
 
 
 def main() -> int:
@@ -255,6 +275,27 @@ def main() -> int:
         )
         if not any("落としていない" in e for e in check_contract(rp)):
             print("negative: 宣言だけして落とさない redact を検出できなかった", file=sys.stderr)
+            failed = True
+        # (d) 受理分を 1 本落として非対象を 1 本通す filter (host でなく method で誤判定した等)。
+        #     差引きで行数は N のまま合ってしまうので、同一性の検査だけが捕まえられる。
+        rp = write_temp_app(
+            root / "wrong_filter",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            'SELFCHECK_HOSTS = ("api.example.com",)\n'
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            "            if isinstance(f, http.HTTPFlow) and f.request.method != 'DELETE':\n"
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        errs = check_contract(rp)
+        if not (any("落としていない" in e for e in errs) and any("出力に無い" in e for e in errs)):
+            print(
+                "negative: 受理分を落として非対象を通す filter (行数は一致) を検出できなかった",
+                file=sys.stderr,
+            )
             failed = True
 
     if failed:
