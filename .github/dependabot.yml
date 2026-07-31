@@ -1,6 +1,6 @@
 # devcontainer の Dockerfile の image を tag+digest 込みで自動更新する (kit が一元管理し、
 # consumer へは installer 再実行 / devcontainer-kit-update.yml で届く)。
-# docker ecosystem は FROM 行だけを解析する (COPY --from= は追従しない。core/docs/verified-facts/dependabot.md)。
+# docker ecosystem は FROM 行だけを解析する (COPY --from= は追従しない。canon: facts/dependabot/copy-from-not-tracked-use-named-stage)。
 version: 2
 updates:
   - package-ecosystem: "docker"
@@ -15,8 +15,7 @@ updates:
       - dependency-name: "node"
         versions: [">= 25"]
         # ユーザーポリシー = 最新 LTS のみ。26 は Current (LTS 化 2026-10-28)。LTS 化したら範囲を
-        # ">= 27" に上げ、26 へ手動 bump する。LTS/範囲の意味論は core/docs/verified-facts/dependabot.md
-        # 「ignore」節。
+        # ">= 27" に上げ、26 へ手動 bump する。LTS/範囲の意味論は canon: facts/dependabot/ignore-versions-blocks-tag-suffix-bumps。
       - dependency-name: "python"
         versions: [">= 3.13"]
         # ユーザーポリシー = bugfix 期間を終えた最新 (現在 3.12 / security phase)。3.13 の bugfix

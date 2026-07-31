@@ -3,7 +3,7 @@
 # SECRETS_PROXY_LOG_REQUESTS=1 と併用し、本物の claude OAuth セッションを通して
 # api.anthropic.com / 認証系へ実際に当たる**アクセス先 (method host)** を docker logs に出す
 # (allow 判定は host 単位 = allow_hosts なので host が分かれば足りる。path は秘密が載りうるので
-# fail-closed で出さない — addon.py / mitmproxy.md)。その host 集合から最小 allow_hosts を確定し、
+# fail-closed で出さない — addon.py / canon: facts/mitmproxy/request-path-includes-query-not-logged)。その host 集合から最小 allow_hosts を確定し、
 # 本番 rules.yaml を作る。危険 endpoint の path 単位 block は API 仕様等から別途 rules.yaml に書く。
 #
 # 使い方 (discovery):

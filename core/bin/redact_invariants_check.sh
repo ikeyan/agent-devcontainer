@@ -19,7 +19,7 @@
 #   5. compose.yaml の NO_PROXY (project/.env の PROJECT_NO_PROXY 込み) は proxy 経由ホスト (rules.yaml の
 #      api/uploads.github.com) を suffix 一致でバイパスしない。NO_PROXY は末尾一致なので bare github.com が
 #      api.github.com (gh の substitute 先) を直結させ token 置換が無効化された回帰の pin (curl/Go 共通。
-#      docs/verified-facts/network.md「proxy bypass / NO_PROXY」)。
+#      canon: facts/network/no-proxy-suffix-match-and-trailing-comma)。
 #   6. secrets-proxy の Web UI (mitmweb) は既定 mitmdump / opt-in の分岐を保ち、bind は container loopback
 #      (127.0.0.1) 固定・token (web_password) 必須。0.0.0.0/:: 化や token 抜けは平文 cred が dev/LAN から
 #      見える経路になる (SECURITY-MODEL 不変条件 1/4)。
@@ -33,8 +33,8 @@
 #  10. マージ済み compose config のセキュリティ姿勢を直接 pin する: dev の cap 集合 / privileged 不在 /
 #      network 所属 / secrets-proxy 専用 volume の非漏洩 / docker.sock bind 不在 / project の name: 宣言。
 #      根拠: 複数 -f の「後勝ちで core 優先」が効くのは core が明示宣言したスカラー限定で、list merge
-#      (cap_add/networks/volumes) や core 未宣言キーは project 値が通る (docs/verified-facts/docker.md
-#      「compose 複数 -f」)。ゆえに後勝ちの一般則に頼らず「マージ結果そのもの」を検査する。
+#      (cap_add/networks/volumes) や core 未宣言キーは project 値が通る
+#      (canon: facts/docker/compose-project-directory-and-env-resolution)。ゆえに後勝ちの一般則に頼らず「マージ結果そのもの」を検査する。
 #  11. 複数ファイルに同じ literal が現れて初めて機能する配線 (PROJECT_GH_USER の sudoers env_keep /
 #      compose environment / init-firewall reader の 3 点、redact auth volume 名の redact-flow /
 #      redact/compose.yaml の 2 点) の一致。片側だけの改名は CI 緑のまま実行時に fail する (§9 と同類)。
@@ -135,7 +135,7 @@ rm -f "$probe"
 #       route_localnet=0 の下で他コンテナの loopback へ到達できない (martian drop。weak host model
 #       でも迂回不可)。publish も張らない (section 7)。host は docker exec 踏み台経由でだけ届く。
 #   (b) token: 常時 ON の web_password token (dev は取得不能) が defense-in-depth。
-# (docs/verified-facts/mitmproxy.md / SECURITY-MODEL 不変条件 1/4)
+# (canon: facts/mitmproxy/final-loopback-bind-and-docker-exec-tunnel / SECURITY-MODEL 不変条件 1/4)
 EP=core/secrets-proxy/entrypoint.sh
 grep -Eq 'SECRETS_PROXY_WEB' "$EP" || fail "entrypoint に SECRETS_PROXY_WEB ゲートが無い"
 grep -Eq '^[[:space:]]*exec mitmdump' "$EP" || fail "entrypoint の既定分岐が mitmdump を exec しない"
@@ -168,7 +168,7 @@ grep -Eq '^[[:space:]]*exec mitmweb.*flow_detail' <<<"$probe_joined" \
     || { rm -f "$probe"; fail "negative: flow_detail 検出器が継続行に混ぜたケースを見逃す"; }
 rm -f "$probe"
 # web_open_browser=false だと mitmweb は token をログに出さない (v11.1.3 webaddons.py: web_url を出すのは
-# browser 起動失敗パスのみ。docs/verified-facts/mitmproxy.md)。entrypoint が token を生成し web_password に
+# browser 起動失敗パスのみ。canon: facts/mitmproxy/mitmweb-token-not-logged-when-headless)。entrypoint が token を生成し web_password に
 # 固定して URL を echo することで token を surface する。これが外れると「token 取得不能」に逆戻りするので pin。
 grep -Eq '^[[:space:]]*exec mitmweb.*web_password' <<<"$EP_JOINED" \
     || fail "mitmweb 分岐が web_password を設定していない (token がログに出ず取得不能になる)"
@@ -229,8 +229,8 @@ grep -q '/etc/agent-devcontainer/allow-domains.txt' "$DC/init-firewall.sh" \
 
 # --- 10. マージ済み compose のセキュリティ姿勢 (config を直接検査) ----------------
 # 複数 -f の「後勝ちで core 優先」が守るのは core が明示宣言したスカラーだけ。list (cap_add/networks/
-# volumes) は追記マージ、core 未宣言キーは project 値が通る (docs/verified-facts/docker.md「compose 複数
-# -f」)。よって project 層の編集で崩れうる「マージ結果そのもの」の姿勢を、後勝ちの一般則でなく
+# volumes) は追記マージ、core 未宣言キーは project 値が通る
+# (canon: facts/docker/compose-project-directory-and-env-resolution)。よって project 層の編集で崩れうる「マージ結果そのもの」の姿勢を、後勝ちの一般則でなく
 # config 出力を直接検査して pin する。検査項目と negative probe (違反注入を検出器が弾く --selftest) は
 # bin/check_compose_posture.py。compose は #1〜#9 と違いこの段でだけ要る (無ければ自然エラー)。
 if command -v docker >/dev/null 2>&1; then COMPOSE=(docker compose); else COMPOSE=(podman compose); fi
@@ -248,9 +248,9 @@ EXPECTED_NAME=$(bash "$DC/bin/compose-project-name" "$P/compose.yaml") \
 merged=$(mktemp); mergederr=$(mktemp)
 # stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
 # (`${VAR:?}` 宣言のもの) の不足による interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
-# env -u: ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きし (docker.md「project 名の
-# 優先順位」) EXPECTED_NAME との突合が偽赤になる。COMPOSE_ENV_FILES は補間に使う .env を余所へ
-# 差し替える (同「補間に使う .env の差替え」)。
+# env -u: ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きし
+# EXPECTED_NAME との突合が偽赤になる。COMPOSE_ENV_FILES は補間に使う .env を余所へ
+# 差し替える (canon: facts/docker/compose-project-directory-and-env-resolution)。
 env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES "${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config > "$merged" 2>"$mergederr" \
     || { cat "$mergederr" >&2; rm -f "$merged" "$mergederr"; fail "§10: compose config が失敗 (原因は直上の stderr)"; }
 rm -f "$mergederr"
@@ -291,7 +291,7 @@ grep -qF 'chown -R root:root /home/node/.config/gh' "$DC/Dockerfile" \
 grep -qF 'chmod 644 /home/node/.config/gh/hosts.yml' "$DC/Dockerfile" \
     || fail "§11: Dockerfile が hosts.yml を 644 にしていない (node 書込可だとトークン焼込を封じられない)"
 # node home を o+x にする traverse 権が無いと、init-firewall (sudo root, cap_drop:ALL で DAC_OVERRIDE
-# 無し) が hosts.yml を読めず postStart が EACCES で落ち devcontainer が開けない (docs/incidents.md)。
+# 無し) が hosts.yml を読めず postStart が EACCES で落ち devcontainer が開けない (canon: incidents/gh-seed-check-home-traverse-blocks-devcontainer-open)。
 # runtime coverage は check-devcontainer-up (smoke) が持つが重い/明示実行なので、標準 check でも
 # source を静的 pin して Dockerfile 編集での消失を毎回捕まえる。
 grep -qF 'chmod o+x /home/node' "$DC/Dockerfile" \
@@ -317,8 +317,8 @@ vol_compose=$(sed -n 's/^  *name: \([A-Za-z0-9_-]*\).*/\1/p' "$DC/redact/compose
     || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"
 
 # --- 12. ambient compose 変数の隔離が全 compose 入口で揃っているか ---------------------
-# COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES は file 宣言を黙って上書き/差替えする (docker.md「project
-# 名の優先順位」「補間に使う .env の差替え」)。compose を呼ぶ入口はどれも両方を無害化する必要があり、
+# COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES は file 宣言を黙って上書き/差替えする
+# (canon: facts/docker/compose-project-directory-and-env-resolution)。compose を呼ぶ入口はどれも両方を無害化する必要があり、
 # 1 つでも抜けると稼働中 stack と別 namespace/別 .env を操作する (この PR で隔離対象が 1→2 変数に
 # 増えた際、全入口を手で直す必要があった)。新しい ambient 変数はこの iso_vars に足す = 全入口の
 # 欠落が loud に出る (異なる runtime = make/bash/python に跨るため DRY でなく pin で束ねる)。

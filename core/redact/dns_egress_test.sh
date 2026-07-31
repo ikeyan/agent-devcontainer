@@ -20,8 +20,7 @@
 #
 # pin するのは docker (embedded DNS) の挙動。podman は DNS 実装が別物 (aardvark-dns) なので対象外。
 # 重い & docker daemon/ネットを使うので既定の `make check` 集約には入れない (check-redact-image と
-# 同じ扱い) — kit CI と投入ホストで明示実行する。出典: docs/verified-facts/docker.md
-# 「internal network の DNS」。
+# 同じ扱い) — kit CI と投入ホストで明示実行する。出典: canon: facts/docker/compose-internal-network-dns-servfail。
 set -euo pipefail
 
 docker info >/dev/null   # daemon 必須 (無ければ docker 自身のエラーで止まる)
@@ -79,7 +78,7 @@ skip_unless_required() {  # $1=理由
 # $1=net $2=name で nslookup し、解決できたら 0。busybox nslookup は解決成功時だけ `Name:` 行を出す
 # (SERVFAIL/NXDOMAIN では出さない)。server 行 (`Address: 127.0.0.11:53`) は `Name:` 判定なら誤検知しない。
 # --dns-search=. は host 継承の search domain を外す誤修正ガード (外すと peer 名が空振りし本命も
-# 覆い隠される。理由は docs/verified-facts/docker.md「internal network の DNS」)。
+# 覆い隠される。理由は canon: facts/docker/compose-internal-network-dns-servfail)。
 resolves_on() {  # $1=net $2=name
     local out
     out="$(timeout 15 docker run --rm --dns-search=. --network "$1" "$IMG" nslookup "$2" 2>&1 || true)"

@@ -5,7 +5,8 @@
 #
 # なぜ要る: CI の build-images は image を build するだけで postStartCommand を実行しない。だが
 # devcontainers CLI 経路でしか出ない runtime 契約 — overrideCommand が compose 宣言 entrypoint を
-# 捨てる / cap_drop:ALL の root が node 所有パスを traverse できず EACCES 等 (docs/incidents.md) —
+# 捨てる (canon: incidents/gh-seed-check-three-rewrites-runtime-contract-assumed) / cap_drop:ALL の root が
+# node 所有パスを traverse できず EACCES 等 (canon: incidents/gh-seed-check-home-traverse-blocks-devcontainer-open) —
 # は build では捕まらず、consumer の初 rebuild で初めて露見してきた。ここで実際に up して postStart
 # まで走らせ、その class を回帰 pin する。要 docker + @devcontainers/cli。
 #
@@ -18,14 +19,14 @@
 #
 # 隔離: **daemon 全体で一意な** basename (dcup-smoke-<mktemp 乱数>) の temp dir に scaffold する。
 #   - devcontainers CLI が UID 調整で建てる image 名は cwd 由来 (getFolderImageName =
-#     vsc-<basename(cwd)>-<sha256(cwd)>-uid; devcontainers-cli.md) で project 名では隔離できない。basename を
+#     vsc-<basename(cwd)>-<sha256(cwd)>-uid; canon: facts/devcontainer/image-naming-and-safe-cleanup) で project 名では隔離できない。basename を
 #     一意名にすると、compose の <proj>-<svc> image も folder 系 vsc-<proj>-<hash> image も全て proj token を
 #     持つ一意な tag 名になり、user が同じ folder で開いている実 devcontainer の tag とは別名になる。token を
 #     PID でなく mktemp 乱数から採るのは共有 daemon を別 PID namespace の probe が叩くと $$ が衝突しうるため。
 #     COMPOSE_PROJECT_NAME も同名にして container/volume/network を隔離する。
 #   - image content は Dockerfile + core/+project/ + build-arg で決まり workspace は bind mount なので、probe
 #     image は user の実 image と同じ content-addressable ID を持ちうる。ゆえに cleanup は ID でなく tag 名で
-#     rmi する (共有 ID の user tag を巻き込まない)。契約と限界は docs/verified-facts/devcontainers-cli.md。
+#     rmi する (共有 ID の user tag を巻き込まない)。契約と限界は canon: facts/devcontainer/image-naming-and-safe-cleanup。
 set -uo pipefail
 expect_user=${1:?usage: check_devcontainer_up.sh <expected-gh-user>}
 command -v devcontainer >/dev/null 2>&1 || { echo "@devcontainers/cli が要る (npm i -g @devcontainers/cli)" >&2; exit 1; }
@@ -60,7 +61,7 @@ cleanup() {
     rm -rf "$tmproot"
     # image は tag 名で child-first に消す (ID だと共有 content-ID の user tag を巻き込む)。子 (folder 系
     # uid image) → 親 (compose 系) の順。separator anchor で別 probe token との取り違えを防ぐ。契約と限界は
-    # docs/verified-facts/devcontainers-cli.md。
+    # canon: facts/devcontainer/image-naming-and-safe-cleanup。
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=vsc-$proj-*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
     docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$proj-*" --filter "reference=${proj}_*" 2>/dev/null | sort -u | xargs -r docker rmi -f >/dev/null 2>&1
     # fail-closed self-check: proj token を含む docker 資源 + temp tree の残留を検出。daemon が落ちて検査

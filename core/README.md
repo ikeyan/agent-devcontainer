@@ -13,7 +13,7 @@ anthropics/claude-code の公式 `.devcontainer` がベース。2 コンテナ�
 ## 公式 devcontainer からのセキュリティ強化
 
 - **capability 最小化**: `--cap-drop=ALL` した上で `NET_ADMIN` / `NET_RAW` / `SETUID` / `SETGID` の 4 つだけ付与
-  (各 cap の要否は `compose.yaml` の per-cap コメントと `docs/verified-facts/capabilities.md`)
+  (各 cap の要否は `compose.yaml` の per-cap コメントと canon (`facts/capabilities/`))
 - **DNS をリゾルバ限定**: 公式は任意ホストへの udp/53 を全許可 (DNS トンネリングで持ち出し可能) だが、/etc/resolv.conf のリゾルバ宛てのみに限定
 - **SSH 全許可を削除**: 公式は任意ホストへの tcp/22 を全許可だが削除。GitHub への git+ssh は ipset の GitHub IP レンジで引き続き通る
 - **fail-open 修正**: 公式は DNS 解決失敗で DROP ポリシー適用前に abort する (= firewall なしで起動)。警告して続行に変更
@@ -186,7 +186,7 @@ dev は VS Code が管理しているので **無停止のまま** proxy だけ�
 
 以前検討した「admin IP に bind + admin ネット隔離」は NET_ADMIN dev に weak host model で破られ (経路隔離に
 ならず)、加えて Docker Desktop の publish 先 container IP が admin IP と一致せず Empty reply になったため
-撤去した (経緯は `docs/verified-facts/mitmproxy.md`)。loopback bind は dev を経路で確実に締め出しつつ、
+撤去した (経緯は canon: facts/mitmproxy/weak-host-model-bypasses-admin-ip-bind と canon: facts/mitmproxy/admin-ip-bind-breaks-docker-desktop-publish)。loopback bind は dev を経路で確実に締め出しつつ、
 publish に依存しないので Empty reply も起きない。踏み台トンネルは接続ごとに `docker exec` を起こすので
 多少もたつくが、debug 用途には十分。
 
@@ -235,7 +235,7 @@ Python の venv も同様: `/workspace/.devcontainer/.venv` (Dockerfile の `UV_
 
 許可先には 2 系統ある:
 
-1. **直結する (proxy をバイパスする) インフラ系ドメイン** — このリポジトリ固有の依存先は `.devcontainer/project/allow-domains.txt` (iptables 直結許可。1 行 1 ドメイン) と `.devcontainer/project/.env` の `PROJECT_NO_PROXY` (proxy バイパス。カンマ区切り) の**両方に対で**追記する。前者は image へ COPY され `init-firewall.sh` が `ALLOWED_DOMAINS` に合流させ、後者は `compose.yaml` の `NO_PROXY` アンカー末尾に補間される。**編集後はイメージの rebuild が必要** (allow-domains.txt は COPY されるため)。kit 本体 (Claude Code / VS Code / GitHub 系等) 用の直結許可は `core/init-firewall.sh` の `ALLOWED_DOMAINS` と `core/compose.yaml` の `NO_PROXY` にあるが、通常はリポジトリ側で編集しない。**注意: NO_PROXY は suffix 一致**なので、proxy 経由にしたいサブドメインを持つ親 (apex) を NO_PROXY に置かないこと — 例えば `github.com` を置くと gh の `api.github.com` (proxy が token を substitute) まで直結し substitute が無効化される。git 用の `github.com` は NO_PROXY でなく `passthrough_hosts` で素通しする (docs/verified-facts/network.md「proxy bypass / NO_PROXY」)。
+1. **直結する (proxy をバイパスする) インフラ系ドメイン** — このリポジトリ固有の依存先は `.devcontainer/project/allow-domains.txt` (iptables 直結許可。1 行 1 ドメイン) と `.devcontainer/project/.env` の `PROJECT_NO_PROXY` (proxy バイパス。カンマ区切り) の**両方に対で**追記する。前者は image へ COPY され `init-firewall.sh` が `ALLOWED_DOMAINS` に合流させ、後者は `compose.yaml` の `NO_PROXY` アンカー末尾に補間される。**編集後はイメージの rebuild が必要** (allow-domains.txt は COPY されるため)。kit 本体 (Claude Code / VS Code / GitHub 系等) 用の直結許可は `core/init-firewall.sh` の `ALLOWED_DOMAINS` と `core/compose.yaml` の `NO_PROXY` にあるが、通常はリポジトリ側で編集しない。**注意: NO_PROXY は suffix 一致**なので、proxy 経由にしたいサブドメインを持つ親 (apex) を NO_PROXY に置かないこと — 例えば `github.com` を置くと gh の `api.github.com` (proxy が token を substitute) まで直結し substitute が無効化される。git 用の `github.com` は NO_PROXY でなく `passthrough_hosts` で素通しする (canon: facts/network/no-proxy-suffix-match-and-trailing-comma)。
 2. **proxy 経由で出す Web/API ホスト** — `.devcontainer/project/rules.yaml` に書く。秘密注入が要るなら `hosts:` に (Vaultwarden 側に対応アイテムがあること)、要らないが通したいだけなら `allow_hosts:` に。proxy 再起動だけで反映され、dev の rebuild も `init-firewall.sh` の編集も不要。
 
 allowlist は起動時に DNS 解決した IP を ipset に入れる方式なので、CDN の IP ローテーションで時間が経つと繋がらなくなることがある。その場合はコンテナ内で再実行:

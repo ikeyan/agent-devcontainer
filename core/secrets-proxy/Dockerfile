@@ -11,7 +11,7 @@ ENV TZ=Asia/Tokyo
 # を確認すること。linux arm64 の単体バイナリは 2026.4 以降のみ配布される。
 # https://github.com/bitwarden/clients/releases
 # 成果物は version と sha256 を対で固定し sha256sum -c で検証する (出典は GitHub API の asset
-# .digest。docs/verified-facts/github-releases-sha256.md「GitHub Releases 成果物の sha256」)。version 更新時は sha256 も更新。
+# .digest。canon: facts/github-releases-sha256/release-artifact-checksum-sources)。version 更新時は sha256 も更新。
 ARG BW_CLI_VERSION=2026.5.0
 ARG BW_CLI_SHA256_amd64=5ddbf5383bec9c71613d7b699ffa5249b5e7b68b2a3d15b4c75738ba8a8f9a19
 ARG BW_CLI_SHA256_arm64=5b744b976ab49400c8b4470b1db51c2911e66cdd7a8398ad36a5ab6a85568d27

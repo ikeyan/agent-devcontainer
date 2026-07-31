@@ -10,7 +10,7 @@
 # LAN に晒せない。防御は 2 段で、経路と token の両方で締め出す:
 #   - 経路: mitmweb の Web UI を container の loopback (127.0.0.1) にだけ bind する (entrypoint 既定)。
 #     dev は別コンテナなので route_localnet=0 の下で他コンテナの loopback へ到達できない
-#     (martian drop。NET_ADMIN でも weak host model で迂回不可。docs/verified-facts/mitmproxy.md)。
+#     (martian drop。NET_ADMIN でも weak host model で迂回不可。canon: facts/mitmproxy/final-loopback-bind-and-docker-exec-tunnel)。
 #     publish は張らない = LAN/dev への露出ゼロ。host は proxy-web-tunnel.py の docker exec 踏み台
 #     経由でだけ届く (dev は docker socket を持たず exec できない)。
 #   - token: mitmweb 常時 ON の token (128bit/起動毎、entrypoint が web_password に固定) が defense-in-depth。

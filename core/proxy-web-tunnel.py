@@ -12,8 +12,7 @@ publish は張らないので LAN/dev への露出はゼロ。host は docker ex
 要件は host の python3 と docker/compose のみ (socat 不要)。COMPOSE env に `-f` 一式 (project 層
 先頭 + core, 例: `docker compose -f ../project/compose.yaml -f compose.yaml`) を含めて渡すこと —
 project 名 (top-level `name:`) は project/compose.yaml が供給するため、それを欠くと `exec` が別 project
-namespace を見て secrets-proxy を見つけられない (core/docs/verified-facts/docker.md
-「compose 複数 -f / project directory / .env」)。カレントは .devcontainer/core を想定。
+namespace を見て secrets-proxy を見つけられない (canon: facts/docker/compose-project-directory-and-env-resolution)。カレントは .devcontainer/core を想定。
 Ctrl-C で閉じる。secrets-proxy 本体は動いたまま。
 """
 import os

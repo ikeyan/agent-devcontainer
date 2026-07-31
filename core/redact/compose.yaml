@@ -1,12 +1,12 @@
 # project 名は consumer ごとに変える (固定名だと複数 consumer repo で compose namespace が衝突する)。
 # redact-flow が consumer の正式 project 名から <project>-redact を導出して export する。手動起動で
-# 未設定なら fail-closed に落ちる (top-level name の :? は docs/verified-facts/docker.md「compose 複数 -f」)。
+# 未設定なら fail-closed に落ちる (top-level name の :? は canon: facts/docker/compose-project-directory-and-env-resolution)。
 name: ${REDACT_PROJECT:?set REDACT_PROJECT (通常は bin/redact-flow が導出)}
 
 # redact サンドボックス。.devcontainer/core/bin/redact-flow が REDACT_* を export して
 #   docker compose -p "$REDACT_PROJECT" -f .devcontainer/core/redact/compose.yaml run --rm redact
 # で起動する。この compose を直に叩く場合も -p を明示し (ambient な COMPOSE_PROJECT_NAME が
-# name: を黙って上書きする — docs/verified-facts/docker.md「project 名の優先順位」)、external
+# name: を黙って上書きする — canon: facts/docker/compose-project-directory-and-env-resolution)、external
 # volume を先に用意すること:
 #   docker volume create agent-devcontainer-redact-auth
 # (redact-flow 経由なら自動で用意される。無いと compose が external volume not found で止まる)。
@@ -24,7 +24,7 @@ services:
       - ALL
     cap_add:
       - NET_ADMIN        # iptables / ipset
-      - NET_RAW          # iptables -m set が raw socket で ipset を問い合わせる (docs/verified-facts/capabilities.md「Linux capabilities」)
+      - NET_RAW          # iptables -m set が raw socket で ipset を問い合わせる (canon: facts/capabilities/ipset-requires-net-raw)
       - NET_BIND_SERVICE # dnsmasq が 127.0.0.1:53 を bind
       - SETUID           # dnsmasq の権限降格 + runuser で node へ降格
       - SETGID
@@ -66,7 +66,7 @@ volumes:
   # 未認証で起動してしまう。固定名は意図した共有 — どの consumer repo (どの project 名) からでも
   # 1 回の事前認証を ro マウントで使い回す。external にする: compose 管理名義のままだと volume の
   # project label と今の project 名の不一致で compose が毎回警告する (project 名が consumer ごとに
-  # 変わったため必ず起きる — docs/verified-facts/docker.md「固定名 volume と project label」)。
+  # 変わったため必ず起きる — canon: facts/docker/compose-project-directory-and-env-resolution)。
   # external は compose が作成しない宣言なので、redact-flow が起動前に冪等に用意する。
   redact-claude:
     external: true

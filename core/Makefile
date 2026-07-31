@@ -22,13 +22,13 @@ PY := $(CURDIR)/../.venv/bin/python
 # compose 検証エンジン: CI は docker、devcontainer は podman (provider = docker compose plugin)。
 # docker が無ければ podman を採用する。どちらも無い環境は次の呼び出しが自然にエラーになる。
 # env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES を変数自体に焼き込む: ambient な
-# COMPOSE_PROJECT_NAME は file の name: を黙って上書きし (docs/verified-facts/docker.md「project 名の
-# 優先順位」)、COMPOSE_ENV_FILES は --env-file 不在時の既定として project/.env の代わりに余所の
-# .env を補間に使わせる (同「補間に使う .env の差替え」)。放置すると bootstrap/proxy-web が稼働中
+# COMPOSE_PROJECT_NAME は file の name: を黙って上書きし、COMPOSE_ENV_FILES は --env-file 不在時の
+# 既定として project/.env の代わりに余所の .env を補間に使わせる
+# (canon: facts/docker/compose-project-directory-and-env-resolution)。放置すると bootstrap/proxy-web が稼働中
 # stack と別 namespace を操作し (例: BW session.key が余所の volume へ入り secrets-proxy が未認証の
 # まま)、検査系は偽赤/偽緑になる。全 target を一律に隔離する。
 # 前提: devcontainers CLI 側も file の name: で stack を立てていること。CLI は自プロセス環境の
-# COMPOSE_PROJECT_NAME を最優先する (devcontainers-cli.md「project 名の fallback」) ため、shell の
+# COMPOSE_PROJECT_NAME を最優先する (canon: facts/devcontainer/compose-project-name-fallback) ため、shell の
 # 一時 export はこの env -u で無害化できるが、.zshenv/launchctl 級の常設 export は VS Code 側の
 # stack 自体が別名になる — その変数を常設しないのが kit の前提 (file name: が唯一の正)。
 COMPOSE_ENGINE := $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
@@ -37,12 +37,12 @@ COMPOSE_ENGINE := $(shell command -v docker >/dev/null 2>&1 && echo "docker comp
 # project/.env を検査対象にする (init-firewall の照合は Config.Env を直読みするので影響しない)。
 COMPOSE := env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES -u PROJECT_GH_USER $(COMPOSE_ENGINE)
 # compose は常に project 層 (../project/compose.yaml) を先頭に重ねる。先頭ファイルのディレクトリが
-# project directory になり project/.env が補間に効く。後勝ちで core が優先 (docs/verified-facts/docker.md)。
+# project directory になり project/.env が補間に効く。後勝ちで core が優先 (canon: facts/docker/compose-project-directory-and-env-resolution)。
 COMPOSE_FILES := -f ../project/compose.yaml -f compose.yaml
 # redact-image 実ビルド用エンジン (daemonless の podman も可)。docker が無ければ podman を採用する。
 ENGINE := $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 # podman は OCI 出力フォーマット (既定) だと Dockerfile の SHELL を無視するため docker フォーマットで建て、
-# sha256 検証 pipe の pipefail を honor させる (出典・理由は docs/verified-facts/podman.md「podman build / SHELL (OCI vs docker フォーマット)」。
+# sha256 検証 pipe の pipefail を honor させる (出典・理由は canon: facts/podman/build-format-oci-ignores-shell。
 # docker engine は --format を取らないので podman 時だけ付ける)。
 BUILD_FORMAT := $(shell [ "$(ENGINE)" = podman ] && echo "--format docker")
 
@@ -106,7 +106,7 @@ check-compose: ## compose.yaml を compose config で検証 (docker/podman compo
 
 # マージ済み compose config のホスト側パス (build.context / type:bind の source / security_opt の
 # seccomp ファイル) が実在するかを stat で pin する。相対ホストパスは project directory (= 最初の -f =
-# ../project/) 基準で解決される (docs/verified-facts/devcontainers-cli.md / docker.md「compose 複数 -f」)。
+# ../project/) 基準で解決される (canon: facts/devcontainer/compose-f-flags-preserve-order-no-project-directory) (canon: facts/docker/compose-project-directory-and-env-resolution)。
 # core/ を意図した ./X が project/ 基準で不在パスに解決される誤アンカーは compose config 自体は素通す
 # ため、ここで fail-closed に捕まえる。config は daemon 不要。yq 非依存 (python3+PyYAML = $(PY))。
 # negative probe: 不在 bind source を注入した override を重ね、検出器が弾くことを確認する。
@@ -225,7 +225,7 @@ check-dockerfile: ## Dockerfile (template + 生成物) を hadolint (CI/devconta
 
 # Dockerfile (template + 生成物 + secrets-proxy) の外部 image 依存を AST で検査する:
 # 外部 FROM は @sha256 digest 固定 / COPY --from は先行ステージ alias のみ (Dependabot 追従性)。
-# 根拠と AST node 名は check_dockerfile_deps.py header + docs/verified-facts/{dependabot,tree-sitter-containerfile}.md。
+# 根拠と AST node 名は check_dockerfile_deps.py header + canon: facts/dependabot/copy-from-not-tracked-use-named-stage + canon: facts/tree-sitter-containerfile/dockerfile-ast-node-names。
 # tree_sitter は kit venv ($(PY)) に入っている。
 check-dockerfile-deps: ## Dockerfile 外部 image の digest 固定 / COPY --from alias を AST 検査 (tree-sitter 必須)
 	@$(PY) bin/check_dockerfile_deps.py Dockerfile ../Dockerfile secrets-proxy/Dockerfile
@@ -286,7 +286,7 @@ check-redact-invariants: ## redact の意味的不変条件を pin (bin/redact_i
 #     変わり得る — 形式 drift を image build の分かりにくい失敗でなくここで捕まえる (パターンは
 #     Dockerfile の assert と対応)。
 # (2) migration no-op: config.yml+hosts.yml を temp に渡し gh を 1 回走らせ、byte 不変なら no-op =
-#     ro 安全 (詳細: docs/verified-facts/gh.md「gh CLI / config マイグレーション」)。committed の
+#     ro 安全 (詳細: canon: facts/gh/config-migration-version-seed)。committed の
 #     template 形と、@@GITHUB_USER@@ を実 user 名へ置換した runtime 形の両方で検査する — dev が
 #     実際に読むのは置換後の形であり、置換で migration 挙動が変わる回帰は template 形だけでは
 #     捕まらない。gh は CI/devcontainer 必須。
@@ -318,7 +318,7 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 		|| { echo "gh-hosts-user.awk が single-quote 形の user を抽出できない (init-firewall の quote 除去)" >&2; exit 1; }; \
 	echo "ok  gh-seed (形式 pin + template/runtime migration no-op + parser fixture)"
 
-# 挙動と理由: docs/verified-facts/gh.md「gh CLI / config マイグレーション」。生成後は diff を確認し、
+# 挙動と理由: canon: facts/gh/config-migration-version-seed。生成後は diff を確認し、
 # make check (check-gh-seed が template 形式を pin) を通してから commit する。gh の round-trip は
 # コメント/quote を落とし得る (gh 2.46 は double→single quote に再シリアライズ) — その場合
 # @@GITHUB_USER@@ 節と double-quote を手で復元する。check-gh-seed の quote 形式 fail は意図した
@@ -353,7 +353,8 @@ check-redact-image: ## redact イメージを実ビルドし node 子の python3
 # devcontainer を実際に up して postStart (init-firewall の gh seed 整合検査 + firewall) まで
 # 完走するかを end-to-end で検査する (build-images は build のみで postStart を実行しない)。
 # devcontainers CLI 経路でしか出ない runtime 契約 (overrideCommand の entrypoint 破棄 / capped root の
-# traverse 不可 EACCES 等 — docs/incidents.md) を回帰 pin する。実体・前提は bin/check_devcontainer_up.sh。
+# traverse 不可 EACCES 等 — canon: incidents/gh-seed-check-three-rewrites-runtime-contract-assumed
+# / canon: incidents/gh-seed-check-home-traverse-blocks-devcontainer-open) を回帰 pin する。実体・前提は bin/check_devcontainer_up.sh。
 # 期待 user は compose config の build.args (= project/.env の PROJECT_GH_USER。COMPOSE は -u 済) から取る。
 # 要 docker + @devcontainers/cli。重い/ネット要のため check 集約には入れず CI と投入ホストで明示実行する。
 check-devcontainer-up: ## devcontainer を up し postStart (gh seed 検査) まで通るか end-to-end 検査 (要 docker + @devcontainers/cli; kit-only, 重い、明示実行)
@@ -361,7 +362,7 @@ check-devcontainer-up: ## devcontainer を up し postStart (gh seed 検査) ま
 
 # Docker `internal:` network が外部 DNS を転送しない (= internal net 自体が DNS exfil を塞ぐ) ことを
 # 実機で pin する。redact を proxy 中継 + internal net へ移す設計の要石を回帰で守る
-# (docs/verified-facts/docker.md「internal network の DNS」参照)。pin 対象は docker の埋め込み DNS —
+# (canon: facts/docker/compose-internal-network-dns-servfail 参照)。pin 対象は docker の埋め込み DNS —
 # podman (aardvark-dns) は対象外なので $(ENGINE) でなく docker 固定。daemon + busybox 系イメージ +
 # 外部 DNS が要るので check 集約には入れず、kit CI (.github/workflows/check.yml) と投入ホストで明示実行する。
 check-redact-dns-egress: ## internal net が外部 DNS を転送しないことを実機 pin (docker+ネット必須; 重いので明示実行)
@@ -388,7 +389,7 @@ check-proxychains: ## proxychains の config 整合性 + 透過ルーティン�
 
 # tailored seccomp profile (rootless Podman 用)。gen-seccomp が gen-seccomp.ts の出力を seccomp.json に
 # 書き、check-seccomp は再生成結果と commit 済みを diff する。設計と追従は PODMAN.md。
-# node が .ts を直接実行する (型ストリッピング、node>=23.6。docs/verified-facts/nodejs.md)。
+# node が .ts を直接実行する (型ストリッピング、node>=23.6。canon: facts/nodejs/ts-type-stripping-direct-execution)。
 SECCOMP_GEN := node podman/gen-seccomp.ts
 SECCOMP_JSON := podman/seccomp.json
 gen-seccomp: ## seccomp.json を再生成 (HTTP_CACHE_REFRESH=1 で default.json も再取得)

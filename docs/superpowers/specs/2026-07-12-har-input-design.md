@@ -20,7 +20,7 @@
    - negative probe を追加: 先頭が `{` の壊れた入力を流し、0 行の静かな成功でなく非零 exit で fail することを pin。入力パースは全 app 共有の経路なので、per-app でなくエンジン直接実行 (`flows_to_ndjson.py`) に対して 1 回行う。
 2. `core/redact/flows_to_ndjson.py` — docstring のみ。「mitmproxy flows file または HAR (FlowReader が自動判別)」と契約に明記。コード変更なし。
 3. `core/bin/redact-flow` — usage/header のみ。`<raw.flows|raw.har>` を受けることを明記。mount 名は `/input/raw.flows` のまま (中身で自動判別されるため固定名でよい)。
-4. `core/docs/verified-facts/mitmproxy.md` — 新節「FlowReader は HAR を自動判別して読む」。判別機構・har.py の処理範囲・response 無し entry の全体 fail・12.2.3 実測を、同梱 `io/io.py`・`io/har.py` を出典に記録。
+4. canon (`facts/mitmproxy/`) — 新規ページ「FlowReader は HAR を自動判別して読む」。判別機構・har.py の処理範囲・response 無し entry の全体 fail・12.2.3 実測を、同梱 `io/io.py`・`io/har.py` を出典に記録。
 
 ## エラー処理
 

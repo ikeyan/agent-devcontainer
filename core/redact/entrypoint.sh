@@ -173,7 +173,7 @@ fi
 # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 (=1 にはしない): =1 は cred 隔離を bubblewrap で行うため
 # cap_drop:ALL (CAP_SYS_ADMIN 無し) では claude が起動不能。かつ scrub は同一 uid の子には無効で、
 # cred の実保護は別層 (egress 固定 + ephemeral home + cred ファイルを置かない) が担う。詳細は
-# docs/verified-facts/claude-code.md / SECURITY-MODEL.md 不変条件 2。
+# canon: facts/claude-code/subprocess-env-scrub-requires-bwrap / SECURITY-MODEL.md 不変条件 2。
 cd /workspace
 exec runuser -u node -- \
     env CLAUDE_CONFIG_DIR="$CLAUDE_HOME" \

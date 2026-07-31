@@ -1,17 +1,17 @@
 # このリポジトリでの作業規則
 
-この repo の `core/` は installer で各 consumer repo に同期される source of truth — ここでの変更が下流全部に効く。consumer 側の「`core/` 手編集禁止」の裏返しで、kit 由来物の修正はすべてここで行う。redact サンドボックスの脅威モデルは `core/redact/SECURITY-MODEL.md`、外部依存の確定仕様は verified-facts ledger (`core/docs/verified-facts/`)、過去の事故の台帳は `core/docs/incidents.md` を参照 (いずれも必要時に読む)。
+この repo の `core/` は installer で各 consumer repo に同期される source of truth — ここでの変更が下流全部に効く。consumer 側の「`core/` 手編集禁止」の裏返しで、kit 由来物の修正はすべてここで行う。redact サンドボックスの脅威モデルは `core/redact/SECURITY-MODEL.md`、外部依存の確定仕様と過去の事故の台帳は canon (`ikeyan/canon` の `facts/<topic>/` と `incidents/`) を参照 (いずれも必要時に読む)。
 
 ## ワークフロー
 
-- 外部依存 (自分が書いていないもの — CLI・ライブラリ・カーネル・API) の挙動に依存するコードは、契約を一次情報で確認してから書く。記憶で断定しない。ledger に確定済みならそれを引き、無ければ `man` / 公式 docs / `--test` で裏を取り、ledger に出典つきで追記してから使う。
+- 外部依存 (自分が書いていないもの — CLI・ライブラリ・カーネル・API) の挙動に依存するコードは、契約を一次情報で確認してから書く。記憶で断定しない。canon (`ikeyan/canon` の `facts/<topic>/`) に確定済みならそれを引き、無ければ `man` / 公式 docs / `--test` で裏を取り、出典つきで canon に追記してから使う。
 - 作業が論理単位に達したら `/code-review` でレビューする (このリポジトリの観点は `REVIEW.md` に定義、レビューエージェントへ自動注入される)。findings は採否を判断して直し、OK ならコミットする。
   - `REVIEW.md` の正本は [`ikeyan/agent-files`](https://github.com/ikeyan/agent-files)。変更は正本側へコミットする (repo 固有のパス・語彙を持ち込まない)。正本との一致は CI (`make check-review-md`) が検査する。
 - レビュー指摘は「その 1 箇所を直す」で終えず、同種の指摘が二度出にくい構造にする。指摘のたびに「この class の指摘が再発しないための構造変更は何か」を自問する。
   - 誤用は型・既定値で構造的に防ぐ
   - 検査の抜けはその場で検査器に足して pin する (「検証」節)
   - fail-open な既定は fail-closed にする
-  - 事故 (実害、またはレビューを貫通した欠陥) は `core/docs/incidents.md` に短く残し、規律の文言か検査に反映する
+  - 事故 (実害、またはレビューを貫通した欠陥) は canon (`ikeyan/canon` の `incidents/`) に短く残し、規律の文言か検査に反映する
 - レビュー指摘の修正も初回実装と同じ規律を通す (契約確認・検証)。レビュー起点のコードは未検証のまま積み上がりやすい。機構の作り直しを要する指摘が出たら修正の連鎖を止め、契約確認 → 実測 → 再設計に戻る。反復の終了条件は「実害シナリオつき correctness 指摘の消滅」— cleanup 指摘のゼロは目指さず、却下した指摘は理由を明文化して次のレビューへ除外条件として引き継ぐ。
 - コメントや文字列で自然言語を書く場合、その読者を想定して書く。
 

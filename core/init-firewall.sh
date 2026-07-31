@@ -219,10 +219,10 @@ fi
 # たびに現在値を入れる env (core/compose.yaml の environment) と焼込値を照合して止める。env は
 # sudoers の env_keep (Dockerfile が sudoers と対で焼き、visudo -c で検証) で sudo を通す —
 # /proc/1/environ の root 読取は cap_drop:ALL では EACCES (node 所有 0400 + CAP_DAC_OVERRIDE 無し。
-# docs/verified-facts/capabilities.md) なので使えない。
+# canon: facts/capabilities/proc-environ-unreadable-cross-uid) なので使えない。
 # 所有者検査にしない理由: devcontainers CLI の updateRemoteUserUID (uid≠1000 の Linux ホスト) が
-# home を chown -R し root 所有が剥がれるため所有者は信号にならない (docs/verified-facts/
-# devcontainers-cli.md)。この検査より古いイメージには検査自体が入っていない — その窓の扱いは
+# home を chown -R し root 所有が剥がれるため所有者は信号にならない
+# (canon: facts/devcontainer/update-remote-user-uid-chowns-home)。この検査より古いイメージには検査自体が入っていない — その窓の扱いは
 # README「更新に伴う既知の移行」。
 baked_gh_user=$(awk -f /usr/local/bin/gh-hosts-user.awk /home/node/.config/gh/hosts.yml)
 current_gh_user="${PROJECT_GH_USER:-}"
