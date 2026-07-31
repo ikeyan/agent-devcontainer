@@ -107,11 +107,19 @@ def near_miss_hosts(host: str) -> tuple[str, ...]:
     `apianthropic.com` も受理してしまい、第三者の資格情報が出力に載る。
     """
     out = []
-    if "." in host:
-        # 左境界 (DNS ラベルの区切り) を見ない実装が誤って受理する: api.anthropic.com -> apianthropic.com
-        head, _, rest = host.partition(".")
-        if head and rest:
-            out.append(f"{head}{rest}")
+    labels = host.split(".")
+    if len(labels) >= 2:
+        # 登録可能ドメインの左境界を見ない実装が誤って受理する。TLD の 1 つ手前のラベルに
+        # 接頭辞を付ける: anthropic.com -> notanthropic.com / api.anthropic.com -> api.notanthropic.com。
+        # 宣言ホストそのものに接頭辞を付ける (notapi.anthropic.com) のは不可 — allowlist の root が
+        # anthropic.com なら正当な subdomain として受理されるべきで、false positive になる。
+        near = list(labels)
+        near[-2] = f"not{near[-2]}"
+        out.append(".".join(near))
+    if len(labels) >= 3:
+        # 宣言ホスト全体に対して左境界を見ない実装が受理する: api.anthropic.com -> apianthropic.com。
+        # 2 ラベルだと dot が消えるだけ (anthropiccom) で誰も受理しないため、3 ラベル以上でのみ作る。
+        out.append(labels[0] + ".".join(labels[1:]))
     # 右端を anchor しない実装 (部分一致) が誤って受理する: <host>.selfcheck-rejected.invalid
     out.append(f"{host}.{REJECTED_HOST}")
     return tuple(out)
@@ -139,8 +147,10 @@ def read_selfcheck_hosts(path: Path) -> tuple[str, ...]:
             continue
         if not any(isinstance(t, ast.Name) and t.id == "SELFCHECK_HOSTS" for t in targets):
             continue
-        if value_node is None:  # 注記のみ (`X: tuple[str, ...]`) は宣言ではない
-            return ()
+        if value_node is None:
+            # 注記のみ (`X: tuple[str, ...]`)。宣言ではないので、後続の実代入を探しに行く。
+            # ここで return すると「注記 + 代入」を分けて書いたアプリの宣言を読み落とす。
+            continue
         try:
             value = ast.literal_eval(value_node)
         except ValueError:
@@ -396,6 +406,26 @@ def main() -> int:
         if not any("落としていない" in e for e in check_contract(rp)):
             print("negative: ラベル境界を見ない filter を検出できなかった", file=sys.stderr)
             failed = True
+        # (f2) 2 ラベルの root を宣言した場合。dot 除去の near-miss (anthropiccom) は誰も
+        #      受理しないので、接頭辞側 (notanthropic.com) が無いとこの誤りを素通りする。
+        rp = write_temp_app(
+            root / "boundary_root",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            'SELFCHECK_HOSTS = ("anthropic.com",)\n'
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host.endswith("anthropic.com"):\n'
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        if not any("落としていない" in e for e in check_contract(rp)):
+            print(
+                "negative: 2 ラベル root でラベル境界を見ない filter を検出できなかった",
+                file=sys.stderr,
+            )
+            failed = True
         # (g) 型注記つきの宣言 (AnnAssign) を読めること。読み落とすと、正しく filter する
         #     アプリが既定ホストで検査されて「行数 0」で落ちる。
         rp = write_temp_app(
@@ -413,6 +443,25 @@ def main() -> int:
         errs = check_contract(rp)
         if errs:
             print(f"negative: 型注記つき宣言を読めていない ({errs[0]})", file=sys.stderr)
+            failed = True
+        # (g2) 注記だけを先に書き、あとで実代入する形。注記の行で走査を打ち切ると宣言を
+        #      読み落とし、正しく filter するアプリが「行数 0」で落ちる。
+        rp = write_temp_app(
+            root / "annassign_split",
+            "import json\n"
+            "from flows_to_ndjson import to_dict\n"
+            "from mitmproxy import http, io\n"
+            "SELFCHECK_HOSTS: tuple[str, ...]\n"
+            'SELFCHECK_HOSTS = ("api.example.com",)\n'
+            'if __name__ == "__main__":\n'
+            "    with sys.stdin.buffer as fp:\n"
+            "        for f in io.FlowReader(fp).stream():\n"
+            '            if isinstance(f, http.HTTPFlow) and f.request.pretty_host == "api.example.com":\n'
+            "                print(json.dumps(to_dict(f), ensure_ascii=False))\n",
+        )
+        errs = check_contract(rp)
+        if errs:
+            print(f"negative: 注記と代入を分けた宣言を読めていない ({errs[0]})", file=sys.stderr)
             failed = True
 
     if failed:
