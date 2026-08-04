@@ -6,7 +6,7 @@
 
 FROM ghcr.io/astral-sh/uv:0.11.27@sha256:4d01caf3b22dfd11003455e2e68153da08c4ee1fa54fdbd166c6282d22693419 AS uv
 
-FROM node:24.17.0-trixie@sha256:61db8992b5c481488fe236ea69fe94035ba73df76a474051ed2e9713f3a15e5a AS base
+FROM node:24.18.1-trixie@sha256:dfa43abae25030f5456007944f725379d1f5be4bb723bd501ac39ac72ffa5474 AS base
 
 # sha256 検証の `… | sha256sum -c -` を pipefail 下で走らせる (左辺の失敗も拾う。hadolint DL4006)。
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
