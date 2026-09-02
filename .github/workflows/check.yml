@@ -27,9 +27,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck dnsmasq-base proxychains4
           sudo ln -sf /usr/sbin/dnsmasq /usr/local/bin/dnsmasq
-          # hadolint: devcontainer 側 (core/Dockerfile の hadolint ステージ) と版を合わせる (手動更新)
+          # hadolint: 版は .tool-versions が正。ここに直書きせず導出する (直書き site が増えるほど
+          # check-hadolint-version の grep pin だけが頼りになり、コメント等への誤 match で drift が
+          # 素通りし得る。導出できる site は導出で消す)
+          hver=$(awk '$1=="hadolint"{print $2}' .tool-versions)
           sudo curl -fsSL -o /usr/local/bin/hadolint \
-            https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64
+            "https://github.com/hadolint/hadolint/releases/download/v${hver}/hadolint-Linux-x86_64"
           sudo chmod +x /usr/local/bin/hadolint
       - name: lint (workflow のみ — actionlint は CI でだけ取得。残る lint は make check 配下)
         run: |

@@ -11,7 +11,7 @@ MAKEFLAGS += --output-sync=target
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
 
-OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination
+OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version
 .PHONY: help check check-offline check-online setup check-review-md sync-review-md $(OFFLINE_CHECKS)
 
 help: ## 一覧
@@ -59,6 +59,38 @@ sync-review-md: ## REVIEW.md を正本 (ikeyan/agent-files) の最新版で上�
 check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無いか (要 setup 済み)
 	@grep -rq '@@PROJECT_NAME@@' templates || { echo "negative probe: templates に @@PROJECT_NAME@@ が無い — 検査対象の token が drift" >&2; exit 1; }
 	@grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile; [ $$? -eq 1 ] && echo "ok  placeholder (@@PROJECT_NAME@@ 置換済み)"
+
+# hadolint の版は .tool-versions (host の asdf) を正とする。check.yml (CI の curl) はそこから
+# 導出するので直書き site は core/Dockerfile (devcontainer の image stage — FROM tag はファイル参照
+# できない) だけ。ずれると同じ Dockerfile の lint 結果が環境で食い違うのに、どの検査も赤にならず
+# 静かに drift する (版差の実例は canon: facts/hadolint/v2.15-findings-on-v2.14-clean-dockerfile)。
+# 版の bump は kit 発なので、consumer 側 (tools の check-hadolint-version) だけでなく発生源のここでも
+# pin する: Dockerfile の FROM tag、check.yml が導出を使い続けていること (直書き URL の復活は grep が
+# コメント等に誤 match して素通りし得るため、存在自体を拒否)、実際に PATH から解決される hadolint の
+# 版。負のプローブは temp ファイルでなく抽出器 (sed) と重複行の拒否を合成入力で自己テストする —
+# 抽出器が退化すると全 pin が空文字で素通しになる。
+check-hadolint-version: ## hadolint の版が .tool-versions / check.yml(導出) / core/Dockerfile / 実行バイナリで一致するか
+	@extract() { sed -nE 's/^hadolint ([0-9][0-9.]*)$$/\1/p'; }; \
+	binver() { sed -nE 's/^Haskell Dockerfile Linter ([0-9][0-9.]*)$$/\1/p'; }; \
+	[ "$$(printf 'hadolint 9.9.9\n' | extract)" = 9.9.9 ] && [ "$$(printf 'Haskell Dockerfile Linter 9.9.9\n' | binver)" = 9.9.9 ] \
+		|| { echo "negative: check-hadolint-version の抽出器が合成入力から版を取れない" >&2; exit 1; }; \
+	[ "$$(printf 'hadolint 1.0.0\nhadolint 2.0.0\n' | extract | wc -l)" -eq 2 ] \
+		|| { echo "negative: check-hadolint-version の抽出器が重複行を 1 行に潰している" >&2; exit 1; }; \
+	want=$$(extract < .tool-versions); \
+	[ "$$(printf '%s' "$$want" | grep -c .)" -eq 1 ] \
+		|| { echo ".tool-versions の 'hadolint <version>' 行がちょうど 1 行でない (無い / 重複 / fallback 併記): '$$want'" >&2; exit 1; }; \
+	grep -qF 'awk '\''$$1=="hadolint"{print $$2}'\'' .tool-versions' .github/workflows/check.yml \
+		|| { echo "check.yml が hadolint 版を .tool-versions から導出していない" >&2; exit 1; }; \
+	grep -E 'hadolint/releases/download/v[0-9]' .github/workflows/check.yml; st=$$?; \
+	[ "$$st" -eq 1 ] || { echo "check.yml に hadolint 版の直書き URL がある (導出に一本化する。grep exit=$$st)" >&2; exit 1; }; \
+	grep -qF "FROM hadolint/hadolint:v$$want-" core/Dockerfile \
+		|| { echo "core/Dockerfile の hadolint stage が .tool-versions ($$want) と不一致 (版を上げたら .tool-versions を追従)" >&2; exit 1; }; \
+	command -v hadolint >/dev/null \
+		|| { echo "hadolint が PATH に無い (asdf plugin add hadolint https://github.com/ikeyan/asdf-hadolint.git && asdf install hadolint)" >&2; exit 1; }; \
+	raw=$$(hadolint --version) || exit 1; have=$$(printf '%s\n' "$$raw" | binver); \
+	[ -n "$$have" ] || { echo "hadolint --version の出力を解釈できない: '$$raw'" >&2; exit 1; }; \
+	[ "$$have" = "$$want" ] || { echo "PATH の hadolint ($$have) が .tool-versions ($$want) と不一致 (asdf install hadolint / brew 版が shim を覆っていないか)" >&2; exit 1; }; \
+	echo "ok  hadolint-version ($$want)"
 
 # 実体は bin/check_contamination.sh (設計コメント・token 定義・negative probe 群もそちら)。
 # 検出器自体が複雑な bash なので、Makefile 埋込でなくスクリプトにして shellcheck の圏内に置く

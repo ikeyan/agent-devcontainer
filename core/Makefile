@@ -258,7 +258,8 @@ check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出�
 	rm -f "$$t"; echo "ok  redact-config (settings/compose/dnsmasq/project 名導出)"
 
 # extract/*/redact_flow.py を合成 flow で round-trip し、エンジン契約 (valid NDJSON / 行数一致 /
-# 例外なし) を検査する。詳細と切り分けは bin/redact_selfcheck.py の docstring。mitmproxy は
+# 例外なし) を検査する。host で flow を丸ごと落とすアプリは SELFCHECK_DOMAINS を宣言すると
+# 行数一致の代わりに受理境界が検査される。詳細と切り分けは bin/redact_selfcheck.py の docstring。mitmproxy は
 # kit venv ($(PY)) に入っている。__pycache__ を残さない。
 check-redact-selfcheck: ## extract/*/redact_flow.py のエンジン契約を検査 (mitmproxy 必須)
 	@PYTHONDONTWRITEBYTECODE=1 $(PY) bin/redact_selfcheck.py
