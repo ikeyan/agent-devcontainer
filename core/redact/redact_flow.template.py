@@ -4,6 +4,17 @@
 このアプリの flow を観察して、秘密 (トークン/Cookie/個人情報など) を伏せる redact を実装する。
 最初は恒等 (無 redaction)。flow を見て pattern を足していく。
 
+特定ドメイン以外の flow を丸ごと落とす作りにする場合は、
+SELFCHECK_DOMAINS = ("受理する root ドメイン", ...) を module トップレベルに 1 回だけ宣言し、
+その同じ tuple で filter を実装する — 単純な形なら
+flows_to_ndjson(redact, keep_domains=SELFCHECK_DOMAINS)、__main__ を自作するなら engine の
+iter_flow_dicts(sys.stdin.buffer, SELFCHECK_DOMAINS) で読む (自前の正規表現や読み取りループを
+書き直さない。宣言と実装がずれるし、Host ヘッダ偽装に強い実接続先 host 基準の filter も
+engine 側にある)。check-redact-selfcheck が「1 flow = 1 行」の代わりに受理境界を検査し、
+受理した各 flow は「1 flow = 1 つの JSON object の行、url の host が読める形」で出力する
+契約になる (redact で url の host まで伏せない。詳細は
+.devcontainer/core/bin/redact_selfcheck.py の docstring)。
+
 使い方 (リポジトリルートから):
   uv run extract/__APP__/redact_flow.py < raw.flows > flows_redacted.jsonl
 

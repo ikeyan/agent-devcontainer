@@ -52,6 +52,14 @@ R=core/redact
 P=project
 fail() { echo "NG: $*" >&2; exit 1; }
 
+# バックスラッシュ継続を論理行に畳む。`{N;s/\\\n//;ba}` を 1 つの -e に入れる書き方は GNU sed
+# 限定 (BSD sed は label/brace を含む複合式を解釈できず落ちる)。さらに BSD sed は最終行で N が
+# 未出力のまま quit する (末尾が dangling backslash の入力で最終論理行が消え、`! grep` 系の検査が
+# fail-open) ので、echo 2 発で「改行終端 + 空行 1 行」を足して N を常に成立させる。余分な末尾空行は
+# 呼び側の $(...) が捨てる。この形は GNU sed 4.9 / BSD sed (macOS 26.6.1) / busybox sed (alpine 3.20)
+# で全 edge (末尾 dangling backslash の改行有無を含む) 実測一致 (canon: facts/shell/bsd-sed-block-one-liners)。
+join_continuations() { { cat "$1"; echo; echo; } | sed -e ':a' -e '/\\$/{N' -e 's/\\\n//' -e 'ba' -e '}'; }
+
 # --- 1. redact-flow の app 名検証 (negative probe = 拒否方向だけ pin) ---------
 # 正常名は docker build まで進む (重い副作用) ので走らせない。危険名が検証段階で exit 2 する
 # ことだけ確認する (どれも mkdir / docker 到達前に弾かれるので副作用なし)。
@@ -155,7 +163,7 @@ rm -f "$probe"
 # が、mitmdump 専用オプションを混ぜず invocation を正直に保つため mitmweb 行には置かない (mitmdump 行だけ)。
 # exec は複数行に \ 継続する (mitmweb 分岐は現に3行の継続を持つ) ので、line-anchor な grep のままだと
 # 「継続行として flow_detail が足された」回帰を見逃す。バックスラッシュ継続を論理行に畳んでから判定する。
-EP_JOINED=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$EP")
+EP_JOINED=$(join_continuations "$EP")
 grep -Eq '^[[:space:]]*exec mitmdump.*flow_detail' <<<"$EP_JOINED" \
     || fail "flow_detail が mitmdump 分岐に無い"
 ! grep -Eq '^[[:space:]]*exec mitmweb.*flow_detail' <<<"$EP_JOINED" \
@@ -163,7 +171,7 @@ grep -Eq '^[[:space:]]*exec mitmdump.*flow_detail' <<<"$EP_JOINED" \
 # negative probe: 継続行として紛れ込んだ flow_detail (mitmweb の既存3継続行と同じ書き方) も畳んだ後に捕まえる
 probe=$(mktemp)
 printf 'exec mitmweb "${COMMON_OPTS[@]}" \\\n  --set web_open_browser=false \\\n  --set flow_detail=0 \\\n  --set web_port="${web_port}"\n' > "$probe"
-probe_joined=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$probe")
+probe_joined=$(join_continuations "$probe")
 grep -Eq '^[[:space:]]*exec mitmweb.*flow_detail' <<<"$probe_joined" \
     || { rm -f "$probe"; fail "negative: flow_detail 検出器が継続行に混ぜたケースを見逃す"; }
 rm -f "$probe"
@@ -177,7 +185,7 @@ grep -Eq 'token=\$\{?web_token' "$EP" \
 # negative probe: web_password 未設定の mitmweb exec を検出器が確かに捕まえる
 probe=$(mktemp)
 printf 'exec mitmweb "${COMMON_OPTS[@]}" \\\n  --set web_host="${SECRETS_PROXY_WEB_HOST}"\n' > "$probe"
-probe_joined=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$probe")
+probe_joined=$(join_continuations "$probe")
 grep -Eq '^[[:space:]]*exec mitmweb.*web_password' <<<"$probe_joined" \
     && { rm -f "$probe"; fail "negative: web_password 検出器が未設定を見逃す"; }
 rm -f "$probe"
