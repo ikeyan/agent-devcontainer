@@ -69,6 +69,12 @@ jobs:
           consumer=$(mktemp -d)
           cd "$consumer" && git init -q .
           bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
+          for f in .devcontainer/project/repos.txt CLAUDE.md .claude/settings.json; do
+            [ -f "$f" ] || { echo "初回 install が $f を scaffold していない" >&2; exit 1; }
+          done
+          # 初回 scaffold の repos.txt (宣言 0 件) を workspace-repos が受理し、workspace root = consumer root と導出する
+          bash .devcontainer/core/bin/workspace-repos check | grep -qF "workspace: $consumer" \
+            || { echo "workspace-repos が scaffold 直後の repos.txt を受理しない / workspace root の導出が違う" >&2; exit 1; }
           git add -A && git -c user.email=ci@example.com -c user.name=ci commit -qm scaffold
           bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
           [ -z "$(git status --porcelain)" ] || { echo "2 回目の install.sh が差分を出した:"; git status --porcelain; exit 1; }
@@ -78,6 +84,16 @@ jobs:
           rm .github/dependabot.yml
           bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
           [ ! -e .github/dependabot.yml ] || { echo "更新実行 (core 既存) で consumer が削除した glue (.github/dependabot.yml) が再scaffoldされた" >&2; exit 1; }
+          # core が要求する project ファイルの欠落 (この変数の導入前に scaffold した consumer) は更新実行でも補完される
+          rm .devcontainer/project/repos.txt
+          bash "$GITHUB_WORKSPACE/install.sh" --src "$GITHUB_WORKSPACE"
+          [ -f .devcontainer/project/repos.txt ] || { echo "更新実行が欠落した project/repos.txt を補完しない (check-repos が止まる)" >&2; exit 1; }
+          # 補完 template を持たない古い payload (--ref v0.x 相当) でも installer は最後まで走る
+          old=$(mktemp -d); cp -Rp "$GITHUB_WORKSPACE"/. "$old"; rm "$old/templates/project/repos.txt"
+          rm .devcontainer/project/repos.txt .devcontainer/Dockerfile
+          bash "$GITHUB_WORKSPACE/install.sh" --src "$old"
+          [ -f .devcontainer/Dockerfile ] && [ ! -e .devcontainer/project/repos.txt ] \
+            || { echo "補完 template の無い payload で installer が途中で止まった / 無い template を scaffold した" >&2; exit 1; }
 
   build-images:
     runs-on: ubuntu-latest

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# workspace root (dev compose が /workspace に bind する dir = 直下に repo を並べる dir) を stdout へ出す。
+# core/bin/ からの相対位置だけで決まる (host でもコンテナ内でも同じ):
+#   consumer:       <devcontainer dir>/.. (= .devcontainer/ の親。git 管理外でもよい)
+#   kit checkout:   その checkout 自身 (core/ と並んで templates/project と install.sh がある root layout)。
+#                   親 dir (通常 $HOME 等) を workspace と誤認し、redact サンドボックスへ ro mount したり
+#                   extract/ を作ったり配下の redact_flow.py を実行したりしない。
+# bin/workspace-repos / bin/redact-flow / bin/redact_selfcheck.py が共有する唯一の導出経路。
+set -euo pipefail
+devc="$(cd "$(dirname "$0")/../.." && pwd)"
+if [ -d "$devc/templates/project" ] && [ -f "$devc/install.sh" ]; then
+    printf '%s\n' "$devc"
+else
+    cd "$devc/.." && pwd
+fi

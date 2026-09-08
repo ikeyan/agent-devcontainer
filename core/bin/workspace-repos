@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# workspace 直下の repo を project/repos.txt の宣言どおりに揃える。
+#   usage: workspace-repos list    宣言を "<dir>\t<url>" で列挙する (構文検証込み。ネット不要)
+#          workspace-repos check   構文・パス封じ込め・既に在る dir の整合 (git repo か / origin 一致) を検証する (ネット不要)
+#          workspace-repos sync    check + 無い dir を git clone する。workspace root が git 管理なら
+#                                  .git/info/exclude に /<dir>/ を登録する (workspace repo の git status を汚さない)
+#
+# workspace root は bin/workspace-root が導出する (<devcontainer dir> の親 = core/compose.yaml が /workspace に bind
+# する dir。ホスト (<ws>/.devcontainer/core/bin) でもコンテナ内 (/workspace/.devcontainer/core/bin) でも同じ dir)。
+#
+# project/repos.txt (1 行 1 repo。# 以降はコメント、空行可):
+#   <owner>/<repo> [<dir>]    GitHub (owner は login の形 [A-Za-z0-9][A-Za-z0-9-]*)。https://github.com/<owner>/<repo>.git を
+#                             clone する。<dir> 既定は <repo> (dot 始まり等 <dir> の形に合わない repo 名は <dir> を明示)
+#   <git URL> <dir>           https:// ssh:// git:// file:// user@host:path。<dir> は必須
+# <dir> は workspace 直下の 1 要素 ([A-Za-z0-9][A-Za-z0-9_.-]* — . / .. / dot 始まりは不可) で、実体が workspace
+# 直下の実ディレクトリ (symlink でない) であることを realpath で確認する (外部値→パスの封じ込め)。
+# fail-closed: 宣言が 1 行でも不正なら何もせず exit 1。既存 dir が git repo でない / origin が宣言と違う
+# (host/path を小文字化・.git 無視で比較) も exit 1 にし、上書き・削除はしない。
+# clone の認証は環境の git に任せる (VS Code の credential 転送 / ssh-agent 転送 / host の credential helper)。
+set -euo pipefail
+
+usage() { echo "usage: workspace-repos list|check|sync" >&2; exit 2; }
+[ $# -eq 1 ] || usage
+case "$1" in list|check|sync) MODE=$1 ;; *) usage ;; esac
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEVC_DIR="$(cd "$SELF_DIR/../.." && pwd)"
+WS="$("$SELF_DIR/workspace-root")"
+WS_REAL="$(realpath "$WS")"
+REPOS_FILE="$DEVC_DIR/project/repos.txt"
+[ -f "$REPOS_FILE" ] || { echo "無い: $REPOS_FILE (kit の templates/project/repos.txt を置く。宣言 0 件でも可)" >&2; exit 1; }
+
+# --- 宣言を読む → DIRS[i] / URLS[i] (bash 3.2 (macOS host) 互換: 連想配列・mapfile は使わない) ---
+DIRS=() URLS=()
+lineno=0
+while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    line="${line%%#*}"; line="${line%$'\r'}"   # CRLF (Windows host / autocrlf) の CR は不可視なので剥がす
+    read -ra f <<<"$line"
+    [ "${#f[@]}" -gt 0 ] || continue
+    [ "${#f[@]}" -le 2 ] || { echo "$REPOS_FILE:$lineno: 項目が 3 つ以上 (<repo> [<dir>] の形にする): $line" >&2; exit 1; }
+    src="${f[0]}"; dir="${f[1]:-}"
+    if [[ "$src" =~ ^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9_.-]+)$ ]]; then
+        repo="${BASH_REMATCH[2]%.git}"   # owner/repo.git とも書ける (URL に .git を二重に付けない)
+        url="https://github.com/${BASH_REMATCH[1]}/$repo.git"
+        [ -n "$dir" ] || dir="$repo"
+    elif [[ "$src" =~ ^(https?|ssh|git|file)://[^[:space:]]+$ || "$src" =~ ^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[^[:space:]]+$ ]]; then
+        url="$src"
+        [ -n "$dir" ] || { echo "$REPOS_FILE:$lineno: URL 形式は <dir> が必須: $src" >&2; exit 1; }
+    else
+        echo "$REPOS_FILE:$lineno: <owner>/<repo> でも git URL でもない: $src" >&2; exit 1
+    fi
+    [[ "$dir" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+        || { echo "$REPOS_FILE:$lineno: dir が不正 (workspace 直下の 1 要素 [A-Za-z0-9][A-Za-z0-9_.-]*): $dir" >&2; exit 1; }
+    for d in ${DIRS[@]+"${DIRS[@]}"}; do
+        [ "$d" != "$dir" ] || { echo "$REPOS_FILE:$lineno: dir '$dir' が重複" >&2; exit 1; }
+    done
+    DIRS+=("$dir"); URLS+=("$url")
+done < "$REPOS_FILE"
+
+# git URL → "host/path" (小文字化、.git と末尾 / を除去)。https / ssh:// / scp 形 / file:// を同一視して origin と比較する。
+norm_url() {
+    local u="$1" host path
+    u="${u%/}"; u="${u%.git}"
+    case "$u" in
+        *://*) u="${u#*://}"; u="${u#*@}"; host="${u%%/*}"; host="${host%%:*}"; path="${u#*/}" ;;
+        *:*)   u="${u#*@}"; host="${u%%:*}"; path="${u#*:}" ;;
+        *)     host=""; path="$u" ;;
+    esac
+    path="${path#/}"
+    printf '%s/%s\n' "$host" "$path" | tr '[:upper:]' '[:lower:]'
+}
+
+# $1=dir $2=url。dir が無ければ 1 を返す。在るが宣言と食い違えば exit 1 (fail-closed)。
+verify_present() {
+    local dir="$1" url="$2" p="$WS/$1" real origin
+    [ -e "$p" ] || [ -L "$p" ] || return 1
+    real="$(realpath "$p")" || { echo "$dir: realpath を解決できない (壊れた symlink?)" >&2; exit 1; }
+    [ "$real" = "$WS_REAL/$dir" ] || { echo "$dir: workspace 直下の実ディレクトリでない (symlink?): $real" >&2; exit 1; }
+    [ -d "$p/.git" ] || [ -f "$p/.git" ] || { echo "$dir: 既存だが git repo でない (退避してから再実行)" >&2; exit 1; }
+    origin="$(git -C "$p" remote get-url origin)" || { echo "$dir: origin remote を読めない (直上の git エラー参照)" >&2; exit 1; }
+    [ "$(norm_url "$origin")" = "$(norm_url "$url")" ] \
+        || { echo "$dir: origin が宣言と不一致 (origin: $origin / 宣言: $url)。repos.txt か remote を直す" >&2; exit 1; }
+}
+
+# workspace root が git 管理なら /<prefix><dir>/ を info/exclude に登録する (冪等)。管理外なら何もしない。
+sync_exclude() {
+    local dir="$1" excl prefix entry
+    git -C "$WS" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    excl="$(git -C "$WS" rev-parse --git-path info/exclude)"
+    case "$excl" in /*) ;; *) excl="$WS/$excl" ;; esac
+    prefix="$(git -C "$WS" rev-parse --show-prefix)"
+    entry="/$prefix$dir/"
+    mkdir -p "$(dirname "$excl")"
+    grep -qxF -- "$entry" "$excl" 2>/dev/null && return 0
+    # 改行なし末尾に >> すると前の行と癒着して両方死ぬ (grep -x も二度と一致せず毎回追記) — 末尾改行を保証してから追記
+    [ ! -s "$excl" ] || [ -z "$(tail -c1 "$excl")" ] || echo >> "$excl"
+    printf '%s\n' "$entry" >> "$excl"
+}
+
+for ((i = 0; i < ${#DIRS[@]}; i++)); do
+    dir="${DIRS[$i]}"; url="${URLS[$i]}"
+    case "$MODE" in
+        list)
+            printf '%s\t%s\n' "$dir" "$url" ;;
+        check)
+            if verify_present "$dir" "$url"; then echo "ok  $dir (clone 済み) $url"; else echo "ok  $dir (未 clone) $url"; fi ;;
+        sync)
+            if verify_present "$dir" "$url"; then
+                echo "ok  $dir (clone 済み)"
+            else
+                echo "clone $url -> $WS/$dir"
+                git clone -- "$url" "$WS/$dir" || {
+                    [ -z "${HTTPS_PROXY:-}" ] || echo "hint: proxy 経由 (HTTPS_PROXY) で失敗した場合、secrets-proxy の project/rules.yaml に github.com の passthrough_hosts が要る (kit の templates/project/rules.yaml 参照)" >&2
+                    exit 1
+                }
+                verify_present "$dir" "$url" || { echo "$dir: clone 後に存在しない" >&2; exit 1; }
+            fi
+            sync_exclude "$dir" ;;
+    esac
+done
+[ "$MODE" = list ] || echo "ok  repos (${#DIRS[@]} 件宣言 / workspace: $WS)"

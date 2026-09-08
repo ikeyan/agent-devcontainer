@@ -3,7 +3,7 @@
 ホストの sandbox と sfw が共存できない問題への対応。隔離境界を「コマンド単位の sandbox」から「コンテナ」に移す:
 
 - Claude Code はコンテナ内で sandbox なし (`--dangerously-skip-permissions`) で動かす
-- ホストの保護はコンテナが担う (書けるのは bind mount したこのリポジトリだけ)
+- ホストの保護はコンテナが担う (書けるのは bind mount した workspace root = `.devcontainer/` の親、コンテナ内 `/workspace` だけ。直下に 1 つ以上の repo を並べる)
 - ネットワークは iptables の egress allowlist (`init-firewall.sh`) で制限
 - `pnpm` / `npm` / `npx` / `pip` / `uv` は PATH 先頭の shim (`sfw-shim.sh`) により常に sfw 経由。alias 不要で、非対話シェル (Claude の Bash ツール) でも確実に効く
 - **秘密情報 (スコープを切れない Web パスワード等) は dev コンテナに置かず、別コンテナ `secrets-proxy` だけが保持する。** dev は普通のリクエストを送るだけで、proxy が宛先ホストごとに秘密を注入する。サプライチェーン攻撃で dev が侵害されても秘密は読めない (後述)
@@ -194,7 +194,10 @@ publish に依存しないので Empty reply も起きない。踏み台トン�
 
 ## 使い方
 
-VS Code: コマンドパレットから "Dev Containers: Reopen in Container"。
+VS Code: workspace root (`.devcontainer/` の親) を開き、コマンドパレットから "Dev Containers: Reopen in Container"。
+コンテナ内では workspace root が `/workspace` になり、直下の各 repo (`.devcontainer/project/repos.txt` に宣言し
+`make -C .devcontainer/core clone-repos` で揃える。host でもコンテナ内でも同じ dir に clone される) がそのまま見える。
+複数 repo の扱い方・claude の起動位置・認証は root README「workspace と複数リポジトリ」。
 
 CLI:
 
@@ -215,11 +218,7 @@ claude --dangerously-skip-permissions
 
 ## 初回セットアップ
 
-`node_modules` はコンテナ専用の named volume (ホストの darwin-arm64 バイナリ入り node_modules を Linux 用バイナリで壊さないため)。初回は空なので:
-
-```shell
-pnpm install   # 自動的に sfw 経由になる
-```
+node project の `node_modules` を host のものと分けたい (darwin-arm64 バイナリ入りを Linux 用で壊さない) なら、`project/compose.yaml` で named volume を当てる (初回は空なので `pnpm install`。自動的に sfw 経由になる)。mount 先が bind mount (`/workspace`) 配下 — workspace レイアウトなら `/workspace/<repo>/node_modules` — の場合は、image 側に同じパスを node 所有で作っておく (`project/Dockerfile.dev` に `RUN mkdir -p /workspace/<repo>/node_modules && chown node:node ...`)。image にその dir が無いと空 volume が root 所有で初期化され node が書けない (docker は volume の初期内容と所有権を image 側の mount 先からコピーする — 実測 2026-09-08 docker 29.3: image に dir 無し → root 所有で `touch` が EACCES、node 所有で作成済み → 1000:1000 で書込可)。
 
 Python の venv も同様: `/workspace/.devcontainer/.venv` (Dockerfile の `UV_PROJECT_ENVIRONMENT` で固定。pyproject.toml/uv.lock 自体も同じ `.devcontainer/core/` 配下) を `node_modules` と同じく named volume (`venv`) で覆い、ホストの mac 用 venv を隠したコンテナ専用にする。
 
