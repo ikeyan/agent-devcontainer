@@ -15,7 +15,7 @@
 # <dir> は workspace 直下の 1 要素 ([A-Za-z0-9][A-Za-z0-9_.-]* — . / .. / dot 始まりは不可) で、実体が workspace
 # 直下の実ディレクトリ (symlink でない) であることを realpath で確認する (外部値→パスの封じ込め)。
 # fail-closed: 宣言が 1 行でも不正なら何もせず exit 1。既存 dir が git repo でない / origin が宣言と違う
-# (host/path を小文字化・.git 無視で比較) も exit 1 にし、上書き・削除はしない。
+# (host は小文字化、path は大文字小文字もそのまま、.git 無視で比較) も exit 1 にし、上書き・削除はしない。
 # clone の認証は環境の git に任せる (VS Code の credential 転送 / ssh-agent 転送 / host の credential helper)。
 set -euo pipefail
 
@@ -58,7 +58,9 @@ while IFS= read -r line || [ -n "$line" ]; do
     DIRS+=("$dir"); URLS+=("$url")
 done < "$REPOS_FILE"
 
-# git URL → "host/path" (小文字化、.git と末尾 / を除去)。https / ssh:// / scp 形 / file:// を同一視して origin と比較する。
+# git URL → "host/path" (.git と末尾 / を除去)。https / ssh:// / scp 形 / file:// を同一視して origin と比較する。
+# host だけ小文字化する (DNS は大文字小文字を区別しない)。path はそのまま — file:// やホストによっては case-sensitive
+# なので、大文字小文字違いの別 repo を同一視しない (宣言の大文字小文字は origin に合わせて書く)。
 norm_url() {
     local u="$1" host path
     u="${u%/}"; u="${u%.git}"
@@ -68,7 +70,7 @@ norm_url() {
         *)     host=""; path="$u" ;;
     esac
     path="${path#/}"
-    printf '%s/%s\n' "$host" "$path" | tr '[:upper:]' '[:lower:]'
+    printf '%s/%s\n' "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" "$path"
 }
 
 # $1=dir $2=url。dir が無ければ 1 を返す。在るが宣言と食い違えば exit 1 (fail-closed)。

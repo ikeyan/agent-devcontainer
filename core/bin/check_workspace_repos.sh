@@ -109,12 +109,14 @@ printf 'file://%s/bare/a.git a\n' "$T" > "$sub/.devcontainer/project/repos.txt"
 bash "$sub/.devcontainer/core/bin/workspace-repos" sync >"$T/out" 2>&1 || { echo "subdir workspace の sync が失敗:" >&2; cat "$T/out" >&2; exit 1; }
 grep -qxF '/sub/a/' "$T/mono/.git/info/exclude" || { echo "subdir workspace の exclude が toplevel 相対 (/sub/a/) でない:" >&2; cat "$T/mono/.git/info/exclude" >&2; exit 1; }
 
-# --- origin の同一視 (scp 形 / 大文字 / .git 有無) -----------------------------------------
-git init -q "$WS/r"; git -C "$WS/r" remote add origin git@github.com:Example-Org/Example-Repo.git
-printf 'example-org/example-repo r\n' > "$R"; expect_ok check "scp 形 origin と slug 宣言の同一視"
+# --- origin の同一視 (scp 形 / host の大文字 / .git 有無) と、path の大文字小文字違いは別 repo ----------
+git init -q "$WS/r"; git -C "$WS/r" remote add origin git@GitHub.com:example-org/example-repo.git
+printf 'example-org/example-repo r\n' > "$R"; expect_ok check "scp 形 + host 大文字の origin と slug 宣言の同一視"
 grep -q '^ok  r (clone 済み)' "$T/out" || { echo "r を clone 済みと判定しない:" >&2; cat "$T/out" >&2; exit 1; }
 git -C "$WS/r" remote set-url origin https://github.com/example-org/example-repo
 expect_ok check ".git 無し https origin と slug 宣言の同一視"
+git -C "$WS/r" remote set-url origin https://github.com/Example-Org/Example-Repo.git
+expect_fail check "path の大文字小文字違い (case-sensitive な remote では別 repo)" "origin が宣言と不一致"
 
 # --- 拒否 (sync/check とも): 非 git dir / origin 不一致 / symlink / origin 無し / 到達不能 URL ---
 mkdir "$WS/c"; printf 'file://%s/bare/a.git c\n' "$T" > "$R"
