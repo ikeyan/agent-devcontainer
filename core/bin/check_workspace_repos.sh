@@ -117,6 +117,12 @@ git -C "$WS/r" remote set-url origin https://github.com/example-org/example-repo
 expect_ok check ".git 無し https origin と slug 宣言の同一視"
 git -C "$WS/r" remote set-url origin https://github.com/Example-Org/Example-Repo.git
 expect_fail check "path の大文字小文字違い (case-sensitive な remote では別 repo)" "origin が宣言と不一致"
+# 明示 port は endpoint の一部: 同じ port なら一致、違う port は別 (scp 形は port を持たず ssh:// の port 無しと同一視)
+git -C "$WS/r" remote set-url origin ssh://git@example.invalid:2222/x/w.git
+printf 'ssh://git@example.invalid:2222/x/w.git r\n' > "$R"; expect_ok check "同じ明示 port の origin"
+printf 'ssh://git@example.invalid:22/x/w.git r\n' > "$R"; expect_fail check "port 違いの origin" "origin が宣言と不一致"
+git -C "$WS/r" remote set-url origin git@example.invalid:x/w.git
+printf 'ssh://git@example.invalid/x/w.git r\n' > "$R"; expect_ok check "scp 形 origin と port 無し ssh:// 宣言の同一視"
 
 # --- 拒否 (sync/check とも): 非 git dir / origin 不一致 / symlink / origin 無し / 到達不能 URL ---
 mkdir "$WS/c"; printf 'file://%s/bare/a.git c\n' "$T" > "$R"
