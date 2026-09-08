@@ -92,8 +92,9 @@ jobs:
           old=$(mktemp -d); cp -Rp "$GITHUB_WORKSPACE"/. "$old"; rm "$old/templates/project/repos.txt"
           rm .devcontainer/project/repos.txt .devcontainer/Dockerfile
           bash "$GITHUB_WORKSPACE/install.sh" --src "$old"
-          [ -f .devcontainer/Dockerfile ] && [ ! -e .devcontainer/project/repos.txt ] \
-            || { echo "補完 template の無い payload で installer が途中で止まった / 無い template を scaffold した" >&2; exit 1; }
+          if [ ! -f .devcontainer/Dockerfile ] || [ -e .devcontainer/project/repos.txt ]; then
+            echo "補完 template の無い payload で installer が途中で止まった / 無い template を scaffold した" >&2; exit 1
+          fi
 
   build-images:
     runs-on: ubuntu-latest
