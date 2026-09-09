@@ -121,7 +121,8 @@ VS Code の git 拡張は開いたフォルダ直下 1 階層の repo を既定�
 
 - **宣言と clone**: 直下に置く repo は `.devcontainer/project/repos.txt` に宣言し (`<owner>/<repo> [<dir>]` または
   `<git URL> <dir>`。形式と封じ込めは `core/bin/workspace-repos` 冒頭)、`make -C .devcontainer/core clone-repos` で
-  揃える。冪等で、clone 済みは origin が宣言と一致することだけ検査する (不一致・非 git dir・symlink は止める)。
+  揃える。冪等で、clone 済みは origin が宣言と一致することだけ検査する (不一致・非 git dir・symlink は止める。URL は
+  `.git` 接尾辞と末尾 `/` 以外そのまま比較するので、宣言は origin と同じ形 — transport・login・port を含めて — で書く)。
   host でもコンテナ内でも同じ dir に clone される。`make -C .devcontainer/core check` (`check-repos`) は宣言の
   構文とパス封じ込め、clone 済み repo の origin 整合を検査する — 未 clone は正常 (CI は workspace repo 単体を checkout する)。
 - **workspace root を git 管理する場合**: clone した repo は workspace repo の追跡対象にしない。`clone-repos` が

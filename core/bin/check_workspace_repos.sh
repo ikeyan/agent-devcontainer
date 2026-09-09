@@ -109,20 +109,21 @@ printf 'file://%s/bare/a.git a\n' "$T" > "$sub/.devcontainer/project/repos.txt"
 bash "$sub/.devcontainer/core/bin/workspace-repos" sync >"$T/out" 2>&1 || { echo "subdir workspace の sync が失敗:" >&2; cat "$T/out" >&2; exit 1; }
 grep -qxF '/sub/a/' "$T/mono/.git/info/exclude" || { echo "subdir workspace の exclude が toplevel 相対 (/sub/a/) でない:" >&2; cat "$T/mono/.git/info/exclude" >&2; exit 1; }
 
-# --- origin の同一視 (scp 形 / host の大文字 / .git 有無) と、path の大文字小文字違いは別 repo ----------
-git init -q "$WS/r"; git -C "$WS/r" remote add origin git@GitHub.com:example-org/example-repo.git
-printf 'example-org/example-repo r\n' > "$R"; expect_ok check "scp 形 + host 大文字の origin と slug 宣言の同一視"
-grep -q '^ok  r (clone 済み)' "$T/out" || { echo "r を clone 済みと判定しない:" >&2; cat "$T/out" >&2; exit 1; }
-git -C "$WS/r" remote set-url origin https://github.com/example-org/example-repo
-expect_ok check ".git 無し https origin と slug 宣言の同一視"
-git -C "$WS/r" remote set-url origin https://github.com/Example-Org/Example-Repo.git
-expect_fail check "path の大文字小文字違い (case-sensitive な remote では別 repo)" "origin が宣言と不一致"
-# 明示 port は endpoint の一部: 同じ port なら一致、違う port は別 (scp 形は port を持たず ssh:// の port 無しと同一視)
-git -C "$WS/r" remote set-url origin ssh://git@example.invalid:2222/x/w.git
-printf 'ssh://git@example.invalid:2222/x/w.git r\n' > "$R"; expect_ok check "同じ明示 port の origin"
-printf 'ssh://git@example.invalid:22/x/w.git r\n' > "$R"; expect_fail check "port 違いの origin" "origin が宣言と不一致"
-git -C "$WS/r" remote set-url origin git@example.invalid:x/w.git
-printf 'ssh://git@example.invalid/x/w.git r\n' > "$R"; expect_ok check "scp 形 origin と port 無し ssh:// 宣言の同一視"
+# --- origin 比較: 同一視するのは .git 接尾辞と末尾 / だけ。scheme / login / host の大文字小文字 / port / path の違いは別 endpoint ---
+git init -q "$WS/r"; git -C "$WS/r" remote add origin placeholder
+same() { git -C "$WS/r" remote set-url origin "$1"; printf '%s\n' "$2" > "$R"; expect_ok check "origin $1 と宣言 '$2' の一致"
+         grep -q '^ok  r (clone 済み)' "$T/out" || { echo "r を clone 済みと判定しない:" >&2; cat "$T/out" >&2; exit 1; }; }
+diff_() { git -C "$WS/r" remote set-url origin "$1"; printf '%s\n' "$2" > "$R"; expect_fail check "origin $1 と宣言 '$2'" "origin が宣言と不一致"; }
+same  https://github.com/example-org/example-repo        'example-org/example-repo r'   # .git 無し
+same  https://github.com/example-org/example-repo.git/   'example-org/example-repo r'   # 末尾 /
+same  git@example.invalid:x/w.git                        'git@example.invalid:x/w.git r'
+same  ssh://git@example.invalid:2222/x/w.git             'ssh://git@example.invalid:2222/x/w.git r'
+diff_ git@github.com:example-org/example-repo.git        'example-org/example-repo r'   # transport (ssh vs https)
+diff_ https://github.com/Example-Org/Example-Repo.git    'example-org/example-repo r'   # path の大文字小文字
+diff_ https://GitHub.com/example-org/example-repo.git    'example-org/example-repo r'   # host の大文字小文字 (同一視しない)
+diff_ ssh://git@example.invalid:22/x/w.git               'ssh://git@example.invalid:2222/x/w.git r'   # port
+diff_ alice@example.invalid:team/repo.git                'bob@example.invalid:team/repo.git r'          # login
+diff_ ssh://git@example.invalid/x/w.git                  'git@example.invalid:x/w.git r'                # scp 形 vs ssh://
 
 # --- 拒否 (sync/check とも): 非 git dir / origin 不一致 / symlink / origin 無し / 到達不能 URL ---
 mkdir "$WS/c"; printf 'file://%s/bare/a.git c\n' "$T" > "$R"
