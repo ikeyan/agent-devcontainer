@@ -53,11 +53,12 @@ from mitmproxy import io as mio
 from mitmproxy.test import tflow, tutils
 
 # ENGINE はこのスクリプトの位置基準 (kit root 直下 core/ でも consumer の .devcontainer/core/ でも合う)。
-# REPO (extract/*/redact_flow.py の走査 root) は git toplevel — consumer ではリポジトリ root、
-# kit repo では extract/ が無く「検査対象なし」の note になる (negative probe は常に走る)。
+# REPO (extract/*/redact_flow.py の走査 root) は workspace root — bin/redact-flow が extract/<app> を置く root と
+# 同じ導出 (bin/workspace-root: consumer では .devcontainer/ の親、kit checkout ではその checkout 自身)。kit repo では
+# extract/ が無く「検査対象なし」の note になる (negative probe は常に走る)。
 REPO = Path(
     subprocess.run(
-        ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--show-toplevel"],
+        [str(Path(__file__).resolve().parent / "workspace-root")],
         check=True,
         capture_output=True,
         text=True,

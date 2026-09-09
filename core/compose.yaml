@@ -19,7 +19,7 @@ x-gh-user: &gh_user ${PROJECT_GH_USER:-}
 #   .devcontainer/project/ になる。よってこの core/compose.yaml 内の相対ホストパス (bind source /
 #   build context / seccomp ファイル) は core/ ではなく project/ 基準で解決される。core/ 配下を指すには
 #   ./X ではなく ../core/X と書くこと (./X に戻すと project/X = 不在パスを指して壊れる)。
-#   project/ と core/ は .devcontainer/ 直下の同深度なので、.devcontainer/ 自身やリポジトリルートを指す
+#   project/ と core/ は .devcontainer/ 直下の同深度なので、.devcontainer/ 自身や workspace root を指す
 #   `..` / `../..` / `../project` はどちらの基準でも同じ絶対パスに解決される (既存のこれらが正しい理由)。
 #   ホスト側パスの実在は make check-compose-paths が stat で pin する。
 services:
@@ -77,7 +77,7 @@ services:
       SSL_CERT_FILE: *ca_bundle
       CURL_CA_BUNDLE: *ca_bundle
     volumes:
-      - ../..:/workspace:delegated  # project/ 基準でも core/ 基準でもリポジトリルート (同深度)
+      - ../..:/workspace:delegated  # project/ 基準でも core/ 基準でも workspace root (= .devcontainer の親。同深度)
       # ホストの .claude/settings.local.json (ローカル設定) を {} で覆ってコンテナの claude に入るのを防ぐ。
       # bind 先は devcontainer.json の initializeCommand が事前に用意する (canon: facts/docker/desktop-macos-bind-mount-missing-target)。
       - ../core/claude/local-mask.json:/workspace/.claude/settings.local.json:ro  # project directory (project/) 基準 → core/ 配下

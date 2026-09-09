@@ -26,12 +26,15 @@ RAW="$2"
 # <app> はディレクトリ名兼 mount パスに使うので、安全な文字だけ許す。
 [[ "$APP" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "app 名が不正 (英数 . _ - のみ): $APP" >&2; exit 2; }
 # . / .. は弾く: APP は extract/<app> の path component なので、APP=.. だと OUT や compose の
-# rw bind 元/先が extract/<app> の外 (=リポジトリ root) を指し、repo 全体が rw で露出してしまう。
+# rw bind 元/先が extract/<app> の外 (= workspace root) を指し、workspace 全体が rw で露出してしまう。
 case "$APP" in .|..) echo "app 名に . / .. は使えない: $APP" >&2; exit 2 ;; esac
 [ -r "$RAW" ] || { echo "raw flows が読めない: $RAW" >&2; exit 2; }
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(git -C "$SELF_DIR" rev-parse --show-toplevel)"
+DEVC_DIR="$(cd "$SELF_DIR/../.." && pwd)"  # consumer では .devcontainer/、kit repo ではリポジトリ root
+# サンドボックスに ro で見せ、extract/<app> を置く root = workspace root (導出は bin/workspace-root: consumer では
+# .devcontainer/ の親 = dev compose が /workspace に bind する dir、kit checkout ではその checkout 自身)。
+REPO="$("$SELF_DIR/workspace-root")"
 HERE="$(cd "$SELF_DIR/.." && pwd)/redact"
 
 command -v docker >/dev/null 2>&1 || { echo "docker が無い。docker のあるホストで実行してください。" >&2; exit 1; }
@@ -42,7 +45,6 @@ docker info >/dev/null 2>&1 || { echo "docker daemon に接続できない。doc
 # name: の literal を読む (compose config を経ない理由は compose-project-name 冒頭コメント)。
 # 名前は compose へ -p でも渡す: ambient な COMPOSE_PROJECT_NAME が file の name: を黙って上書きする
 # ため、-p (最優先) で導出値に固定する (canon: facts/docker/compose-project-directory-and-env-resolution)。
-DEVC_DIR="$(cd "$SELF_DIR/../.." && pwd)"  # consumer では .devcontainer/、kit repo ではリポジトリ root
 project_name="$("$SELF_DIR/compose-project-name" "$DEVC_DIR/project/compose.yaml")"
 REDACT_PROJECT="${project_name}-redact"
 export REDACT_PROJECT  # compose.yaml の name: ${REDACT_PROJECT:?} 補間用 (build/run 共通)
@@ -75,7 +77,7 @@ real_repo="$(realpath "$REPO")"
 real_out="$(realpath "$OUT")"
 case "$real_out" in
     "$real_repo"/extract/*) : ;;
-    *) echo "extract/$APP の実体が repo の extract/ 外を指している ($real_out)。" >&2; exit 2 ;;
+    *) echo "extract/$APP の実体が workspace の extract/ 外を指している ($real_out)。" >&2; exit 2 ;;
 esac
 if [ ! -e "$OUT/redact_flow.py" ]; then
     echo "[redact-flow] scaffold extract/$APP/redact_flow.py (identity テンプレ)"
