@@ -1,0 +1,10 @@
+# workspace 直下に clone する repo (1 行 1 repo。# コメント・空行可)。揃えるのは
+#   make -C .devcontainer/core clone-repos   (host でもコンテナ内でも可。冪等)
+# 形式:
+#   <owner>/<repo> [<dir>]    GitHub (https://github.com/<owner>/<repo>.git)。<dir> 既定は <repo>
+#   <git URL> <dir>           任意の git URL (https:// ssh:// user@host:path)。<dir> 必須
+# <dir> は workspace 直下の 1 要素 ([A-Za-z0-9][A-Za-z0-9_.-]*)。private repo の clone/push 認証は
+# 環境の git に任せる (VS Code の credential / ssh-agent 転送、host の credential helper)。
+# 例:
+#   example-org/example-repo
+#   example-org/example-tools tools

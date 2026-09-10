@@ -3,7 +3,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --ref v0.1.0 --dir .devcontainer
 # 再実行 = 更新 (冪等)。core/ は毎回全置換 (手編集禁止領域)、scaffold 済みファイルは二度と触らない。
-# 実行場所: 導入先リポジトリの root。
+# 実行場所: workspace root (= .devcontainer/ を置く dir。コンテナ内では /workspace になり、直下に repo を
+# 並べる。単一 repo ならその root)。
 set -euo pipefail
 
 REPO_SLUG="ikeyan/agent-devcontainer"
@@ -55,11 +56,11 @@ printf '%s\n' "$REF" > "$DIR/core/VERSION"
 echo "synced: $DIR/core ($REF)"
 
 # --- project 層 / glue: 無ければ scaffold、有れば触らない ---------------------------
-# compose project 名 = カレントディレクトリ名を compose の名前制約 [a-z0-9][a-z0-9_-]* に整形
+# compose project 名 = workspace root のディレクトリ名を compose の名前制約 [a-z0-9][a-z0-9_-]* に整形
 name=$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | sed 's/^[_-]*//')
 [ -n "$name" ] || name=devcontainer
 
-scaffold() { # $1=templates 内の src ($SRC 相対) $2=先 (導入先 repo 相対)。既存なら 1 を返す
+scaffold() { # $1=templates 内の src ($SRC 相対) $2=先 (workspace root 相対)。既存なら 1 を返す
   if [ -e "$2" ]; then return 1; fi
   mkdir -p "$(dirname "$2")"
   # 明示 exit: 呼び出し側の || が「既存 (return 1)」許容のため errexit が外れるコンテキストで走る。
@@ -72,12 +73,18 @@ scaffold() { # $1=templates 内の src ($SRC 相対) $2=先 (導入先 repo 相�
 if scaffold project "$DIR/project"; then
   sed -i.bak "s/@@PROJECT_NAME@@/$name/" "$DIR/project/compose.yaml" && rm -f "$DIR/project/compose.yaml.bak"
 fi
+# project/ 自体は初回だけ scaffold するが、後から core が要求するようになった project ファイルは欠落分だけ補完する
+# (既存ファイルは触らない)。無いと make check (check-repos) が止まるので、kit 更新の PR に補完ごと乗せる。
+# 補完は payload (--ref / --src) にその template がある版でだけ行う — それより古い版の core は要求もしないので、
+# 新しい installer で古い ref を取る (--ref v0.x) 実行を途中で落とさない。
+[ ! -e "$SRC/templates/project/repos.txt" ] || scaffold project/repos.txt "$DIR/project/repos.txt" || true
 if scaffold devcontainer.json "$DIR/devcontainer.json"; then
   sed -i.bak "s/@@PROJECT_NAME@@/$name/" "$DIR/devcontainer.json" && rm -f "$DIR/devcontainer.json.bak"
 fi
 # 更新実行 (core が既にある) は glue を触らない — consumer の「不採用」判断を安定させる。既存
 # .devcontainer から移行する consumer は templates/ から手動コピー (README 参照)。
 if [ "$first_install" = 1 ]; then
+  scaffold CLAUDE.md CLAUDE.md || true
   scaffold github/workflows/devcontainer-check.yml .github/workflows/devcontainer-check.yml || true
   scaffold github/workflows/devcontainer-kit-update.yml .github/workflows/devcontainer-kit-update.yml || true
   scaffold github/dependabot.yml .github/dependabot.yml \
@@ -93,8 +100,9 @@ echo "generated: $DIR/Dockerfile"
 cat <<EOF
 done. 次の手順:
   1. git diff で取り込み内容をレビューして commit
-  2. project/ を編集 (allow-domains.txt / .env / rules.yaml / Dockerfile.{top,dev})。
+  2. project/ を編集 (allow-domains.txt / .env / rules.yaml / repos.txt / Dockerfile.{top,dev})。
      Dockerfile fragment 変更後: make -C $DIR/core gen-dockerfile
   3. 検証: make -C $DIR/core check
   4. secrets-proxy 初回認証: make -C $DIR/core bootstrap
+  5. workspace 直下へ repo を clone (project/repos.txt の宣言): make -C $DIR/core clone-repos
 EOF

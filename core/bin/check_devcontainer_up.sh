@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # devcontainer を実際に up して postStartCommand (init-firewall.sh の gh seed 整合検査 + firewall +
-# install-proxy-ca.sh) まで end-to-end で完走するかを検査する。
+# install-proxy-ca.sh) まで end-to-end で完走するか、および workspace レイアウト (temp root = コンテナ内
+# /workspace、その直下に sibling repo / project/repos.txt の clone) が実コンテナで成立するかを検査する。
 #   usage: check_devcontainer_up.sh <expected-gh-user>
 #
 # なぜ要る: CI の build-images は image を build するだけで postStartCommand を実行しない。だが
@@ -97,6 +98,12 @@ sed -i "s/@@PROJECT_NAME@@/smoke/g" "$probe_ws/project/compose.yaml" "$probe_ws/
     && mv "$probe_ws/project/.env.tmp" "$probe_ws/project/.env" || { echo "project/.env の PROJECT_GH_USER 設定に失敗" >&2; exit 1; }
 ( cd "$probe_ws" && bash core/bin/gen-dockerfile.sh ) > "$probe_ws/Dockerfile" || { echo "Dockerfile の生成に失敗" >&2; exit 1; }
 cfg="$probe_ws/devcontainer.json"
+# workspace レイアウト: tmproot (= compose が /workspace に bind する probe_ws の親) 直下に sibling repo を置き、
+# project/repos.txt に「clone 済み (origin 照合のみ)」と「未 clone (コンテナ内から実 clone: firewall + proxy
+# passthrough + bind mount 越しに host へ現れる)」を 1 つずつ宣言する。後者は公開の固定 repo。
+git init -q "$tmproot/probe-repo" && git -C "$tmproot/probe-repo" remote add origin https://github.com/example-org/probe-repo.git \
+    || { echo "sibling repo の用意に失敗" >&2; exit 1; }
+printf 'example-org/probe-repo\noctocat/Hello-World hello-world\n' > "$probe_ws/project/repos.txt"
 
 out=$(COMPOSE_PROJECT_NAME="$proj" devcontainer up --workspace-folder "$probe_ws" --config "$cfg" 2>&1); rc=$?
 if [ "$rc" -ne 0 ]; then
@@ -111,4 +118,22 @@ docker ps -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null | gre
 # up が exit 0 でも、gh seed 整合検査が実際に走り期待 user で通ったことを pin する (検査の素通り防止)。
 printf '%s\n' "$out" | grep -qF "gh seed user consistency OK ($expect_user)" \
     || { echo "postStart の gh seed 整合検査が走っていない/期待 user '$expect_user' と不一致 (下記末尾を確認):" >&2; printf '%s\n' "$out" | tail -30 >&2; exit 1; }
-echo "ok  devcontainer-up (postStart 完走 + gh seed OK: $expect_user)"
+# --- workspace レイアウトの runtime pin (node として exec。workspace root = /workspace の導出とその書込を実測) ---
+# GIT_TERMINAL_PROMPT=0: 対話端末から走らせても git の資格情報プロンプトで止まらず失敗させる (negative probe の決定性)。
+exec_in() { COMPOSE_PROJECT_NAME="$proj" devcontainer exec --workspace-folder "$probe_ws" --config "$cfg" --remote-env GIT_TERMINAL_PROMPT=0 "$@"; }
+exec_in test -d /workspace/probe-repo/.git \
+    || { echo "sibling repo が /workspace 直下に見えない (bind mount の基準が .devcontainer の親でない?)" >&2; exit 1; }
+out=$(exec_in bash "/workspace/$proj/core/bin/workspace-repos" sync 2>&1); rc=$?
+if [ "$rc" -ne 0 ] || ! printf '%s\n' "$out" | grep -qF "ok  probe-repo (clone 済み)"; then
+    echo "コンテナ内 workspace-repos sync が失敗 / sibling repo を clone 済みと判定しない (rc=$rc):" >&2
+    printf '%s\n' "$out" | tail -20 >&2; exit 1
+fi
+[ -d "$tmproot/hello-world/.git" ] \
+    || { echo "コンテナ内で clone した repo が host の workspace root に現れない ($tmproot/hello-world)" >&2; exit 1; }
+# negative: 存在しない repo の宣言は sync を止め、partial dir を残さない (fail-closed)
+printf 'example-org/no-such-repo-probe\n' >> "$probe_ws/project/repos.txt"
+if exec_in bash "/workspace/$proj/core/bin/workspace-repos" sync >/dev/null 2>&1; then
+    echo "negative: 存在しない repo の宣言で sync が成功扱い" >&2; exit 1
+fi
+[ ! -e "$tmproot/no-such-repo-probe" ] || { echo "失敗した clone が partial dir を残した" >&2; exit 1; }
+echo "ok  devcontainer-up (postStart 完走 + gh seed OK: $expect_user / workspace: sibling 可視 + コンテナ内 clone が host に出現 + 未存在 repo で fail-closed)"

@@ -10,9 +10,9 @@ SHELL := /bin/bash
 # 走った」ことを意味するようにする)。python 依存 target は kit 専用 venv ($(PY)、後述) に一元化する。
 MAKEFLAGS += --output-sync=target
 
-# shebang ではなく拡張子で走査 (この配下の .sh は全て bash)。redact-flow / compose-project-name は
-# 拡張子なしのため明示。
-SHELL_SRCS := $(wildcard *.sh bin/*.sh secrets-proxy/*.sh redact/*.sh) bin/redact-flow bin/compose-project-name
+# shebang ではなく拡張子で走査 (この配下の .sh は全て bash)。redact-flow / compose-project-name /
+# workspace-root / workspace-repos は拡張子なしのため明示。
+SHELL_SRCS := $(wildcard *.sh bin/*.sh secrets-proxy/*.sh redact/*.sh) bin/redact-flow bin/compose-project-name bin/workspace-root bin/workspace-repos
 
 # kit 専用 python (uv sync で作る venv。CI (.github/workflows/check.yml) と devcontainer
 # (Dockerfile の UV_PROJECT_ENVIRONMENT) の両方が $(CURDIR)/../.venv = .devcontainer/.venv に作る
@@ -51,6 +51,7 @@ CHECKS := \
 	check-compose \
 	check-compose-paths \
 	check-project-env \
+	check-repos \
 	check-proxy-web-config \
 	check-shell \
 	check-shellcheck \
@@ -71,7 +72,7 @@ CHECKS := \
 	check-seccomp
 
 # check-redact-image / check-redact-dns-egress は重い/ネット要のため check 集約には入れず明示実行する (下記)。
-.PHONY: help check gh-seed proxy-web proxy-web-off check-redact-image check-redact-dns-egress check-devcontainer-up gen-seccomp gen-dockerfile $(CHECKS)
+.PHONY: help check gh-seed proxy-web proxy-web-off clone-repos check-redact-image check-redact-dns-egress check-devcontainer-up gen-seccomp gen-dockerfile $(CHECKS)
 
 help: ## 一覧
 	@sed -nE 's/^([a-zA-Z_-]+):.*## (.*)$$/  \1\t\2/p' $(MAKEFILE_LIST) | expand -t 20
@@ -90,6 +91,18 @@ check-project-env: ## project/.env の PROJECT_GH_USER が GitHub user 名とし
 	[[ "$$val" =~ ^[A-Za-z0-9-]+$$ ]] \
 		|| { echo "PROJECT_GH_USER が未設定/不正 (compose が build.args に解決した値: '$$val')。project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定" >&2; exit 1; }; \
 	echo "ok  project-env (PROJECT_GH_USER 妥当)"
+
+# workspace 直下の repo は project/repos.txt に宣言し bin/workspace-repos が揃える (形式・封じ込めは同 script 冒頭)。
+# check は宣言の構文とパス封じ込め、在る dir の整合 (git repo か / origin 一致) をネット無しで見る —
+# 未 clone は正常 (consumer CI は workspace repo 単体を checkout する) なので存在は要求しない。
+# fixture (bin/check_workspace_repos.sh) は受理/拒否・sync の冪等・exclude 登録を temp + ローカル bare で pin。
+check-repos: ## project/repos.txt の構文・封じ込め・既存 clone の origin 整合 + workspace-repos の fixture (git 必須)
+	@bash bin/workspace-repos check && bash bin/check_workspace_repos.sh
+
+# 宣言した repo を workspace root (<devcontainer dir> の親 = コンテナ内 /workspace) 直下に clone する。冪等
+# (clone 済みは origin 照合のみ)。host でもコンテナ内でも同じ dir に揃う。認証は環境の git に任せる。
+clone-repos: ## project/repos.txt の repo を workspace 直下へ clone (冪等。host / コンテナ内どちらでも可)
+	@bash bin/workspace-repos sync
 
 # config は daemon 不要 (パース + マージのみ)。docker/podman compose は CI/devcontainer 必須。
 check-compose: ## compose.yaml を compose config で検証 (docker/podman compose 必須)

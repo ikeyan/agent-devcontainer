@@ -105,9 +105,10 @@ check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / to
 # scaffold は project.tmp に組み立ててから mv する — 途中失敗の半端な project/ を残すと存在ガードで
 # 再実行が no-op になり回復不能になるため (@@PROJECT_NAME@@ の残存は check-placeholder が pin 済み)。
 # PROJECT_GH_USER の書込は後段の補完 (backfill) に一本化する — 新規 scaffold (template の空行を
-# 置換) も、この変数の導入前に scaffold した既存 checkout の修復も同じ経路を通す。既存 project/ は
-# それ以外触らない (kit repo の project/ は gitignore された検査用 artifact であり consumer 所有物
-# ではない)。補完は .env の実在と末尾改行を保証してから追記する (改行なし末尾に >> すると前の変数に
+# 置換) も、この変数の導入前に scaffold した既存 checkout の修復も同じ経路を通す。project/repos.txt も
+# 同様に、その導入前に scaffold した既存 checkout へ template を補完する (無いと check-repos が止まる)。
+# 既存 project/ はそれ以外触らない (kit repo の project/ は gitignore された検査用 artifact であり
+# consumer 所有物ではない)。補完は .env の実在と末尾改行を保証してから追記する (改行なし末尾に >> すると前の変数に
 # 癒着して静かに壊す) + 追記結果を grep で assert (sed s/// は不一致でも exit 0 のため)。
 # PROJECT_NAME / GH_USER は recipe へ export で渡す (`$(VAR)` の本文テキスト展開でなくシェル環境経由 =
 # 値はデータ扱い、シェルの再展開・quote 破壊・バッククォート実行を受けない)。gate はこの値を検証し、
@@ -116,13 +117,14 @@ check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / to
 PROJECT_NAME ?= kitci
 GH_USER ?= kitci
 export PROJECT_NAME GH_USER
-setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv (既存 project は PROJECT_GH_USER 欠落だけ補完)
+setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv (既存 project は PROJECT_GH_USER / repos.txt の欠落だけ補完)
 	@[[ "$$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$$ ]] || { echo "PROJECT_NAME が不正 ([a-z0-9][a-z0-9_-]*): '$$PROJECT_NAME'" >&2; exit 1; }
 	@[[ "$$GH_USER" =~ ^[A-Za-z0-9-]+$$ ]] || { echo "GH_USER が不正 (GitHub user 名 [A-Za-z0-9-]+): '$$GH_USER'" >&2; exit 1; }
 	@[ -e project ] || { rm -rf project.tmp && cp -Rp templates/project project.tmp \
 		&& sed -i "s/@@PROJECT_NAME@@/$$PROJECT_NAME/" project.tmp/compose.yaml \
 		&& mv project.tmp project || { rm -rf project.tmp; exit 1; }; }
 	@[ -f project/.env ] || : > project/.env
+	@[ -e project/repos.txt ] || cp -p templates/project/repos.txt project/repos.txt
 	@grep -q '^PROJECT_GH_USER=..*' project/.env || { \
 		sed -i '/^PROJECT_GH_USER=$$/d' project/.env \
 		&& { [ -z "$$(tail -c1 project/.env)" ] || echo >> project/.env; } \

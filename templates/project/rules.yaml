@@ -17,7 +17,14 @@ block_unlisted: true
 # 既定 true (block_unlisted と同じ SecretsProxy 既定)。
 detect_leaks: true
 
-# ---- 到達を許可するだけのホスト (inject/capture なし。block_unlisted の例外) ----
+# ---- MITM せず生 TLS のまま素通しするホスト (block/capture/leak 検知は効かない = 無検査路) ----
+# github.com は git clone/fetch/push (https) 用。NO_PROXY に置くと suffix 一致で api.github.com (gh の
+# token substitute 先) まで直結してしまうので、NO_PROXY でなくここで素通しする
+# (canon: facts/network/no-proxy-suffix-match-and-trailing-comma)。
+passthrough_hosts:
+  - "github.com"
+
+# ---- 到達を許可するだけのホスト (MITM はするが inject/capture なし。block_unlisted の例外) ----
 # allow_hosts:
 #   - "example.com"
 
