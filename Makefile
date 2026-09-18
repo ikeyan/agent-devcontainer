@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-# リポジトリルートの検証ハブ。`check` = `check-offline` (ルート成果物 + core) + `check-online` (ネット要)。
+# リポジトリルートの検証ハブ。`check` = `check-offline` (ルート成果物 + core)。
 # 流儀は core/Makefile 冒頭コメントが規範 (相互独立・並列可・skip ガード無し・副作用なし)。
 # 検査は consumer 相当の project 層と kit venv を前提にする — fresh clone では先に `make setup`。
 # CI (.github/workflows/check.yml) 限定でここに入らない検査: workflow lint (actionlint は CI でだけ
@@ -12,12 +12,12 @@ MAKEFLAGS += --output-sync=target
 PY := $(CURDIR)/.venv/bin/python
 
 OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version
-.PHONY: help check check-offline check-online setup check-review-md sync-review-md $(OFFLINE_CHECKS)
+.PHONY: help check check-offline setup $(OFFLINE_CHECKS)
 
 help: ## 一覧
 	@sed -nE 's/^([a-zA-Z_-]+):.*## (.*)$$/  \1\t\2/p' $(MAKEFILE_LIST) | expand -t 20
 
-check: check-offline check-online ## 全検証 (offline + online)
+check: check-offline ## 全検証
 
 check-offline: $(OFFLINE_CHECKS) ## ルート成果物 + core のネット不要検証
 
@@ -31,26 +31,6 @@ check-templates: ## templates と .github の JSON/YAML が parse 可能か (kit
 	@python3 -c 'import json; json.load(open("templates/claude/settings.json")); json.load(open("templates/devcontainer.json"))' \
 	&& $(PY) -c 'import yaml; yaml.safe_load(open("templates/github/dependabot.yml")); yaml.safe_load(open(".github/dependabot.yml"))' \
 	&& echo "ok  templates (json/yaml)"
-
-check-online: check-review-md ## ネット必須の検証 (REVIEW.md 正本一致)
-
-REVIEW_MD_UPSTREAM := https://raw.githubusercontent.com/ikeyan/agent-files/main/REVIEW.md
-
-# 正本は外部 repo の main なので、drift は PR の内容と無関係に発生し得る。PR の CI は DRIFT_CHECK=warn で
-# 警告 (GitHub annotation) に降格する (check.yml)。既定は fail。降格するのは「比較が成立して不一致
-# (diff exit 1)」のみ — 取得失敗・比較不能は warn でも fail (未検査を緑にしない)。
-check-review-md: ## REVIEW.md が正本 (ikeyan/agent-files) の最新版と一致するか (ネット要。DRIFT_CHECK=warn で drift を警告降格)
-	@tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
-	curl -fsSL $(REVIEW_MD_UPSTREAM) -o "$$tmp" || exit; \
-	diff "$$tmp" REVIEW.md; st=$$?; \
-	case $$st in \
-	  0) echo "ok  REVIEW.md (agent-files 正本と一致)";; \
-	  1) [ "$$DRIFT_CHECK" = warn ] && echo "::warning::REVIEW.md が agent-files 正本から drift — make sync-review-md で追従";; \
-	  *) exit $$st;; \
-	esac
-
-sync-review-md: ## REVIEW.md を正本 (ikeyan/agent-files) の最新版で上書き (ネット要)
-	@curl -fsSL --remove-on-error $(REVIEW_MD_UPSTREAM) -o REVIEW.md
 
 # 置換漏れの devcontainer.json 等は silent に出荷されるため pin (AGENTS.md 再発防止の規律「既定は fail-closed」)。
 # 1 行目は negative probe — 検出対象の token が templates で実際に使われていることを確認し、

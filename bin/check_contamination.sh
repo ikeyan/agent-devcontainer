@@ -68,7 +68,7 @@ syms=$(find "$@" -type l) || { echo "symlink 走査が find エラーで不完�
 
 IFS='|' read -ra TOKS <<< "$FORBIDDEN_RE"
 
-# 全 probe dir をスコープ終端で解放する (獲得と解放を対に。REVIEW.md 簡素化)。
+# 全 probe dir をスコープ終端で解放する (review-perspectives「獲得した資源は失敗経路でも解放する」)。
 probe='' clean='' nprobe='' sprobe=''
 trap 'rm -rf "$probe" "$clean" "$nprobe" "$sprobe"' EXIT
 
