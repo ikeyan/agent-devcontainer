@@ -5,8 +5,7 @@
 ## ワークフロー
 
 - 外部依存 (自分が書いていないもの — CLI・ライブラリ・カーネル・API) の挙動に依存するコードは、契約を一次情報で確認してから書く。記憶で断定しない。canon (`ikeyan/canon` の `facts/<topic>/`) に確定済みならそれを引き、無ければ `man` / 公式 docs / `--test` で裏を取り、出典つきで canon に追記してから使う。
-- 作業が論理単位に達したら `/code-review` でレビューする (このリポジトリの観点は `REVIEW.md` に定義、レビューエージェントへ自動注入される)。findings は採否を判断して直し、OK ならコミットする。
-  - `REVIEW.md` の正本は [`ikeyan/agent-files`](https://github.com/ikeyan/agent-files)。変更は正本側へコミットする (repo 固有のパス・語彙を持ち込まない)。正本との一致は CI (`make check-review-md`) が検査する。
+- 作業が論理単位に達したら review-perspectives skill でレビューする。findings は採否を判断して直し、OK ならコミットする。観点の変更は正本 [`ikeyan/agent-files`](https://github.com/ikeyan/agent-files) へコミットする (repo 固有のパス・語彙を持ち込まない)。
 - レビュー指摘は「その 1 箇所を直す」で終えず、同種の指摘が二度出にくい構造にする。指摘のたびに「この class の指摘が再発しないための構造変更は何か」を自問する。
   - 誤用は型・既定値で構造的に防ぐ
   - 検査の抜けはその場で検査器に足して pin する (「検証」節)
