@@ -316,6 +316,11 @@ check-redact-invariants: ## redact の意味的不変条件を pin (bin/redact_i
 #     template 形と、@@GITHUB_USER@@ を実 user 名へ置換した runtime 形の両方で検査する — dev が
 #     実際に読むのは置換後の形であり、置換で migration 挙動が変わる回帰は template 形だけでは
 #     捕まらない。gh は CI/devcontainer 必須。
+# (3) negative probe は gh の版に依存させない: 検出器 seed_noop には合成の書換え (fake_rewrite) を渡して
+#     捕捉を確かめる。起動操作 gh_touch が migration 経路に届くかは、起動時 migration がある版
+#     (< 2.101.0) でだけ hosts.yml だけの dir から config.yml が作られることで確かめる。gh 2.101.0 は
+#     起動時 migration 自体を撤去した (cli/cli#14430) ので、そこでは (2) が自明に通る
+#     (canon: facts/gh/config-migration-version-seed)。
 check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き換えないか検証 (gh 必須)
 	@[ "$$(grep -c '@@GITHUB_USER@@' gh/hosts.yml)" -eq 2 ] \
 		|| { echo "gh/hosts.yml の @@GITHUB_USER@@ が 2 箇所 (users: キー / user: 値) に無い (gh-seed 再生成で template token が崩れた? Dockerfile の焼込が空回りする)" >&2; exit 1; }; \
@@ -323,20 +328,30 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 		|| { echo "gh/hosts.yml の oauth_token が Dockerfile の期待形式 (double-quote 値 x2) と不一致 (gh-seed 再生成が quote/構造を変えた? 手で復元して commit)" >&2; exit 1; }; \
 	[ "$$(grep -c '^ *user: "@@GITHUB_USER@@"$$' gh/hosts.yml)" -eq 1 ] \
 		|| { echo "gh/hosts.yml の user: 行が double-quote 形でない (init-firewall.sh の整合検査 parser と対 — 形式を復元して commit)" >&2; exit 1; }; \
-	seed_noop() { local d=$$1 before after; \
+	gh_touch() { GH_CONFIG_DIR="$$1" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; }; \
+	fake_rewrite() { printf '# rewritten by probe\n' >> "$$1/hosts.yml"; }; \
+	seed_noop() { local d=$$1 run=$$2 before after; \
 		before=$$(cat "$$d/config.yml" "$$d/hosts.yml" | md5sum); \
-		GH_CONFIG_DIR="$$d" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
+		"$$run" "$$d"; \
 		after=$$(cat "$$d/config.yml" "$$d/hosts.yml" | md5sum); \
 		[ "$$before" = "$$after" ]; }; \
+	ver_ge() { awk -v a="$$1" -v b="$$2" 'BEGIN { split(a, x, "."); split(b, y, "."); for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 0 }'; }; \
 	tmp=$$($(MKTEMP) -d) || exit 1; cp gh/config.yml gh/hosts.yml "$$tmp/"; \
-	seed_noop "$$tmp"; st=$$?; rm -rf "$$tmp"; \
+	seed_noop "$$tmp" gh_touch; st=$$?; rm -rf "$$tmp"; \
 	[ $$st -eq 0 ] || { echo "gh-seed: installed gh が seed を migration で書換える (root 所有 seed だと dev の gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
 	tmp3=$$($(MKTEMP) -d) || exit 1; sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
-	seed_noop "$$tmp3"; st=$$?; rm -rf "$$tmp3"; \
+	seed_noop "$$tmp3" gh_touch; st=$$?; rm -rf "$$tmp3"; \
 	[ $$st -eq 0 ] || { echo "gh-seed: 置換後 (実 user 名) の hosts.yml を installed gh が書換える — root 所有 seed だと dev の gh が起動時に落ちる。migration 内容を確認して seed 形式を追従" >&2; exit 1; }; \
+	tmp4=$$($(MKTEMP) -d) || exit 1; cp gh/config.yml gh/hosts.yml "$$tmp4/"; \
+	if seed_noop "$$tmp4" fake_rewrite; then echo "negative: gh-seed 検出器 (seed_noop) が seed の書換えを捕捉できない" >&2; rm -rf "$$tmp4"; exit 1; fi; \
+	rm -rf "$$tmp4"; \
+	{ ver_ge 2.101.0 2.101.0 && ver_ge 2.110.0 2.101.0 && ver_ge 3.0.0 2.101.0 && ! ver_ge 2.100.9 2.101.0 && ! ver_ge 2.99.0 2.101.0; } \
+		|| { echo "negative: check-gh-seed の版比較 (ver_ge) が合成入力で誤る" >&2; exit 1; }; \
+	ghraw=$$(gh --version) || exit 1; ghv=$$(printf '%s\n' "$$ghraw" | sed -nE '1s/^gh version ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p'); \
+	[ -n "$$ghv" ] || { echo "gh --version の出力を解釈できない: '$$ghraw'" >&2; exit 1; }; \
 	tmp2=$$($(MKTEMP) -d) || exit 1; cp gh/hosts.yml "$$tmp2/hosts.yml"; \
-	GH_CONFIG_DIR="$$tmp2" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
-	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
+	gh_touch "$$tmp2"; \
+	if [ ! -f "$$tmp2/config.yml" ] && ! ver_ge "$$ghv" 2.101.0; then echo "negative: gh $$ghv (起動時 migration がある < 2.101.0) で gh_touch が migration を起こさない — seed_noop の起動操作が migration 経路に届いていない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
 	rm -rf "$$tmp2"; \
 	[ "$$(sed 's/@@GITHUB_USER@@/rtprobe/g' gh/hosts.yml | awk -f gh-hosts-user.awk)" = rtprobe ] \
 		|| { echo "gh-hosts-user.awk が committed hosts.yml (置換後) から user を抽出できない — init-firewall の整合検査が毎起動 誤 mismatch する" >&2; exit 1; }; \
