@@ -29,6 +29,9 @@ ALLOWED_DOMAINS=(
     # --- GitHub Releases のアセット配信 (sfw 自動更新 / uv の Python 取得) ---
     "objects.githubusercontent.com"
     "release-assets.githubusercontent.com"
+    # --- GitHub の tarball 配信 (install.sh の archive 取得 / gh api .../tarball の redirect 先)。
+    # compose の NO_PROXY で直結するので、ここにも要る (NO_PROXY ⊆ 許可は redact_invariants_check.sh §13)。
+    "codeload.github.com"
     # --- VS Code ---
     "marketplace.visualstudio.com"
     "vscode.blob.core.windows.net"

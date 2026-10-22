@@ -39,6 +39,11 @@
 #  11. 複数ファイルに同じ literal が現れて初めて機能する配線 (PROJECT_GH_USER の sudoers env_keep /
 #      compose environment / init-firewall reader の 3 点、redact auth volume 名の redact-flow /
 #      redact/compose.yaml の 2 点) の一致。片側だけの改名は CI 緑のまま実行時に fail する (§9 と同類)。
+#  12. ambient compose 変数 (COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES) の隔離が全 compose 入口で揃う。
+#  13. NO_PROXY (proxy バイパス = 直結) のホストは firewall の許可対象でもある: core の x-no-proxy ⊆
+#      init-firewall.sh の ALLOWED_DOMAINS、project の PROJECT_NO_PROXY ⊆ その ∪ project/allow-domains.txt。
+#      片側だけだと直結が dev 自身の firewall に REJECT され、proxy 経由なら通るのに失敗する
+#      (codeload.github.com で実際に起きた)。
 #
 # 方針: #1〜#9 は git と grep だけで動く。#10 だけは compose config が要る (docker/podman compose +
 # PyYAML)。CI/devcontainer には両方あるので常時走らせ、無い環境では #10 が自然エラーになる (skip しない
@@ -344,4 +349,41 @@ for v in "${iso_vars[@]}"; do
     done
 done
 
-echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10 / literal 配線 §11 / ambient 隔離 §12)"
+# --- 13. NO_PROXY ⊆ firewall 許可 (直結するホストは iptables 側でも許可する) ----------------
+# 抽出器: compose の x-no-proxy アンカー値 (PROJECT_NO_PROXY 補間を除く) / init-firewall.sh の
+# ALLOWED_DOMAINS=( ... ) 配列の quote 文字列 / allow-domains.txt の非コメント行。どれも入力ファイルを
+# 引数に取り、下の negative probe で合成入力に対して同じ関数を走らせる。
+NP_EXEMPT=" localhost 127.0.0.1 ::1 host.docker.internal "  # loopback / host gateway (ドメイン解決の許可対象外)
+np_core()  { sed -n 's/^x-no-proxy: &no_proxy "\(.*\)"$/\1/p' "$1" | sed 's/\${PROJECT_NO_PROXY:-}//' | tr ',' '\n' | sed '/^$/d'; }
+np_proj()  { sed -n 's/^PROJECT_NO_PROXY=//p' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d'; }
+fw_core()  { awk '/^ALLOWED_DOMAINS=\(/{f=1; next} f && /^\)/{f=0} f' "$1" | sed -n 's/^[[:space:]]*"\([^"]*\)".*/\1/p'; }
+fw_proj()  { sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' "$1"; }
+np_missing() { # $1=NO_PROXY 一覧 $2=許可一覧 (改行区切り) → 許可に無い NO_PROXY ホスト
+    local h
+    while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        case "$NP_EXEMPT" in *" $h "*) continue ;; esac
+        printf '%s\n' "$2" | grep -qxF -- "$h" || printf '%s\n' "$h"
+    done <<<"$1"
+}
+np_c=$(np_core "$DC/compose.yaml"); fw_c=$(fw_core "$DC/init-firewall.sh")
+[ "$(printf '%s\n' "$np_c" | grep -c .)" -ge 5 ] || fail "§13: compose.yaml の x-no-proxy を抽出できない (形式 drift?)"
+[ "$(printf '%s\n' "$fw_c" | grep -c .)" -ge 5 ] || fail "§13: init-firewall.sh の ALLOWED_DOMAINS を抽出できない (形式 drift?)"
+miss=$(np_missing "$np_c" "$fw_c")
+[ -z "$miss" ] || fail "§13: core の NO_PROXY にあるが init-firewall.sh の ALLOWED_DOMAINS に無い (直結が REJECT される): $(echo $miss)"
+np_p=$(np_proj "$P/.env"); fw_p=$(printf '%s\n%s\n' "$fw_c" "$([ -f "$P/allow-domains.txt" ] && fw_proj "$P/allow-domains.txt")")
+miss=$(np_missing "$np_p" "$fw_p")
+[ -z "$miss" ] || fail "§13: project/.env の PROJECT_NO_PROXY にあるが project/allow-domains.txt に無い (直結が REJECT される): $(echo $miss)"
+# negative probe: 合成入力で片側欠落を検出し、揃っていれば通し、PROJECT_NO_PROXY 補間と exempt を除外する
+probe=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
+printf 'x-no-proxy: &no_proxy "localhost,a.example,b.example,${PROJECT_NO_PROXY:-}"\n' > "$probe/c.yaml"
+printf 'ALLOWED_DOMAINS=(\n    # c\n    "a.example"\n)\nOTHER=("b.example")\n' > "$probe/fw.sh"
+printf 'PROJECT_NO_PROXY=p.example, q.example\n' > "$probe/env"
+printf '# c\np.example # x\n' > "$probe/allow.txt"
+[ "$(np_missing "$(np_core "$probe/c.yaml")" "$(fw_core "$probe/fw.sh")")" = b.example ] \
+    || { rm -rf "$probe"; fail "negative: §13 が core NO_PROXY の片側欠落 (配列外の b.example) を検出しない"; }
+[ "$(np_missing "$(np_proj "$probe/env")" "$(fw_proj "$probe/allow.txt")")" = q.example ] \
+    || { rm -rf "$probe"; fail "negative: §13 が PROJECT_NO_PROXY の片側欠落を検出しない"; }
+rm -rf "$probe"
+
+echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10 / literal 配線 §11 / ambient 隔離 §12 / NO_PROXY⊆firewall §13)"
