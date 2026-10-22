@@ -5,6 +5,8 @@
 /core/VERSION
 # ローカル環境物
 /.venv/
+# superpowers plugin の作業物
+.superpowers/
 # 手動 python 実行が残す bytecode (make 経由は PYTHONDONTWRITEBYTECODE=1)
 __pycache__/
 *.pyc

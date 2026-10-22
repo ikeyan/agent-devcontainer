@@ -11,7 +11,7 @@ MAKEFLAGS += --output-sync=target
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
 
-OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version
+OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version check-pre-push-hook
 .PHONY: help check check-offline setup $(OFFLINE_CHECKS)
 
 help: ## 一覧
@@ -73,6 +73,43 @@ check-hadolint-version: ## hadolint の版が .tool-versions / check.yml(導出)
 	[ -n "$$have" ] || { echo "hadolint --version の出力を解釈できない: '$$raw'" >&2; exit 1; }; \
 	[ "$$have" = "$$want" ] || { echo "PATH の hadolint ($$have) が .tool-versions ($$want) と不一致 (asdf install hadolint / brew 版が shim を覆っていないか)" >&2; exit 1; }; \
 	echo "ok  hadolint-version ($$want)"
+
+# 検査でなく状態を揃える段: hooks/pre-push を git が呼ぶ場所へ写す (無いときだけ。扱いは
+# bin/install_pre_push_hook.sh 冒頭)。副作用は意図したもので、この 1 ファイルに限る。
+# negative probe は使い捨てのリポで、上書きの拒否・core.hooksPath の拒否・2 回目の no-op を確かめる。
+# probe は subshell の中で利用者の global/system の git 設定から切り離す (global の core.hooksPath があると、
+# 別の理由で落ちて probe が素通りする)。落ちた理由は文言で区別する。実リポへの写しは subshell の外で、
+# push と同じ利用者の設定で判定する。
+check-pre-push-hook: ## hooks/pre-push を $$GIT_COMMON_DIR/hooks へ写す (無いとき) + 置き換え拒否の negative probe
+	@t=$$(mktemp -d "$${TMPDIR:-/tmp}/pre-push-hook.XXXXXX") || exit 1; trap 'rm -rf "$$t"' EXIT; \
+	( unset $$(git rev-parse --local-env-vars); export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1; \
+	for d in fresh foreign hookspath dangling noexec globalpath; do git init -q "$$t/$$d" || exit 1; done; \
+	printf '#!/bin/sh\n' > "$$t/foreign/.git/hooks/pre-push" && chmod +x "$$t/foreign/.git/hooks/pre-push" \
+		&& git -C "$$t/hookspath" config core.hooksPath "$$t/elsewhere" \
+		&& ln -s "$$t/nowhere" "$$t/dangling/.git/hooks/pre-push" \
+		&& cp hooks/pre-push "$$t/noexec/.git/hooks/pre-push" && chmod -x "$$t/noexec/.git/hooks/pre-push" \
+		&& printf '[core]\n\thooksPath = %s\n' "$$t/elsewhere" > "$$t/gitconfig" \
+		&& git -C "$$t/fresh" -c user.name=probe -c user.email=probe@invalid commit -q --allow-empty -m probe \
+		&& git -C "$$t/fresh" worktree add -q "$$t/linked" || exit 1; \
+	bin/install_pre_push_hook.sh "$$t/linked" >/dev/null && cmp -s hooks/pre-push "$$t/fresh/.git/hooks/pre-push" \
+		|| { echo "negative: linked worktree から共有の hooks へ写せない" >&2; exit 1; }; \
+	bin/install_pre_push_hook.sh "$$t/dangling" >/dev/null && [ -f "$$t/dangling/.git/hooks/pre-push" ] \
+		&& [ ! -L "$$t/dangling/.git/hooks/pre-push" ] && [ ! -e "$$t/nowhere" ] \
+		|| { echo "negative: 壊れた symlink を置き換えない、または symlink の先に書いた" >&2; exit 1; }; \
+	! o=$$(bin/install_pre_push_hook.sh "$$t/noexec" 2>&1) && printf '%s\n' "$$o" | grep -q '上書きしない' \
+		|| { echo "negative: 同じ中身で実行ビットの無い pre-push を拒否しない" >&2; exit 1; }; \
+	! o=$$(GIT_CONFIG_GLOBAL="$$t/gitconfig" bin/install_pre_push_hook.sh "$$t/globalpath" 2>&1) \
+		&& printf '%s\n' "$$o" | grep -q 'hook の置き場' \
+		|| { echo "negative: global の core.hooksPath を拒否しない" >&2; exit 1; }; \
+	o=$$(bin/install_pre_push_hook.sh "$$t/fresh" 2>&1) && [ -z "$$o" ] \
+		|| { echo "negative: 2 回目が出力なしの成功 (no-op) でない: $$o" >&2; exit 1; }; \
+	! o=$$(bin/install_pre_push_hook.sh "$$t/foreign" 2>&1) && printf '%s\n' "$$o" | grep -q '上書きしない' \
+		&& [ "$$(cat "$$t/foreign/.git/hooks/pre-push")" = '#!/bin/sh' ] \
+		|| { echo "negative: 別の pre-push を非 0 で拒否せず、または上書きした" >&2; exit 1; }; \
+	! o=$$(bin/install_pre_push_hook.sh "$$t/hookspath" 2>&1) && printf '%s\n' "$$o" | grep -q 'hook の置き場' \
+		&& [ ! -e "$$t/hookspath/.git/hooks/pre-push" ] \
+		|| { echo "negative: core.hooksPath を非 0 で拒否せず、または写した" >&2; exit 1; } ) \
+	&& bin/install_pre_push_hook.sh && echo "ok  pre-push-hook"
 
 # 実体は bin/check_contamination.sh (設計コメント・token 定義・negative probe 群もそちら)。
 # 検出器自体が複雑な bash なので、Makefile 埋込でなくスクリプトにして shellcheck の圏内に置く

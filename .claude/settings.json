@@ -1,0 +1,29 @@
+{
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "ikeyan-skills@ikeyan": true,
+    "codex-cc-bridge@ikeyan": true,
+    "ponytail@ponytail": true,
+    "wiki@plasma": true
+  },
+  "extraKnownMarketplaces": {
+    "ikeyan": {
+      "source": {
+        "source": "github",
+        "repo": "ikeyan/agent-files"
+      }
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    },
+    "plasma": {
+      "source": {
+        "source": "github",
+        "repo": "plasma-ai/plugins"
+      }
+    }
+  }
+}
