@@ -367,19 +367,29 @@ done
 
 # --- 13. NO_PROXY ⊆ firewall 許可 (直結するホストは iptables 側でも許可する) ----------------
 # 抽出器: compose の x-no-proxy アンカー値 (PROJECT_NO_PROXY 補間を除く) / init-firewall.sh の
-# ALLOWED_DOMAINS=( ... ) 配列の quote 文字列 / allow-domains.txt の非コメント行。どれも入力ファイルを
-# 引数に取り、下の negative probe で合成入力に対して同じ関数を走らせる。
+# ALLOWED_DOMAINS=( ... ) 配列の quote 文字列 / allow-domains.txt の非コメント行 (init-firewall.sh の
+# 読込ループと同じく、行コメント除去 + 前後空白 trim。末尾改行の無い最終行も読む)。project 分の
+# NO_PROXY は .env を自前で parse せず、compose が補間した dev の NO_PROXY (マージ config) から取る —
+# .env の quote / inline コメントの解釈を compose と食い違わせないため。抽出器は入力ファイルを引数に
+# 取り、下の negative probe で合成入力に対して同じ関数を走らせる。
 NP_EXEMPT=" localhost 127.0.0.1 ::1 host.docker.internal "  # loopback / host gateway (ドメイン解決の許可対象外)
 np_core()  { sed -n 's/^x-no-proxy: &no_proxy "\(.*\)"$/\1/p' "$1" | sed 's/\${PROJECT_NO_PROXY:-}//' | tr ',' '\n' | sed '/^$/d'; }
-np_proj()  { sed -n 's/^PROJECT_NO_PROXY=//p' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d'; }
+np_split() { tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d'; }
 fw_core()  { awk '/^ALLOWED_DOMAINS=\(/{f=1; next} f && /^\)/{f=0} f' "$1" | sed -n 's/^[[:space:]]*"\([^"]*\)".*/\1/p'; }
 fw_proj()  { sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' "$1"; }
 np_missing() { # $1=NO_PROXY 一覧 $2=許可一覧 (改行区切り) → 許可に無い NO_PROXY ホスト
-    local h
+    # 先頭ドット (.example.com = suffix 一致) は、apex かその配下の名前が 1 つでも許可されていれば通す
+    # (firewall は suffix を許可できないので、直結する個々の名前を allow-domains に書く運用)。
+    local h d
     while IFS= read -r h; do
         [ -n "$h" ] || continue
         case "$NP_EXEMPT" in *" $h "*) continue ;; esac
-        printf '%s\n' "$2" | grep -qxF -- "$h" || printf '%s\n' "$h"
+        d="${h#.}"
+        printf '%s\n' "$2" | grep -qxF -- "$d" && continue
+        if [ "$d" != "$h" ] && printf '%s\n' "$2" | awk -v s=".$d" '{ if (length($0) > length(s) && substr($0, length($0) - length(s) + 1) == s) f = 1 } END { exit !f }'; then
+            continue
+        fi
+        printf '%s\n' "$h"
     done <<<"$1"
 }
 np_c=$(np_core "$DC/compose.yaml"); fw_c=$(fw_core "$DC/init-firewall.sh")
@@ -387,19 +397,21 @@ np_c=$(np_core "$DC/compose.yaml"); fw_c=$(fw_core "$DC/init-firewall.sh")
 [ "$(printf '%s\n' "$fw_c" | grep -c .)" -ge 5 ] || fail "§13: init-firewall.sh の ALLOWED_DOMAINS を抽出できない (形式 drift?)"
 miss=$(np_missing "$np_c" "$fw_c")
 [ -z "$miss" ] || fail "§13: core の NO_PROXY にあるが init-firewall.sh の ALLOWED_DOMAINS に無い (直結が REJECT される): $(echo $miss)"
-np_p=$(np_proj "$P/.env"); fw_p=$(printf '%s\n%s\n' "$fw_c" "$([ -f "$P/allow-domains.txt" ] && fw_proj "$P/allow-domains.txt")")
-miss=$(np_missing "$np_p" "$fw_p")
-[ -z "$miss" ] || fail "§13: project/.env の PROJECT_NO_PROXY にあるが project/allow-domains.txt に無い (直結が REJECT される): $(echo $miss)"
+np_merged=$(env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES -u PROJECT_NO_PROXY "${COMPOSE[@]}" -f "$P/compose.yaml" -f "$DC/compose.yaml" config --format json \
+    | "$PY" -c 'import json, sys; print(json.load(sys.stdin)["services"]["dev"]["environment"]["NO_PROXY"])') \
+    || fail "§13: マージ済み compose config から dev の NO_PROXY を読めない"
+fw_p=$(printf '%s\n%s\n' "$fw_c" "$([ -f "$P/allow-domains.txt" ] && fw_proj "$P/allow-domains.txt")")
+miss=$(np_missing "$(printf '%s' "$np_merged" | np_split)" "$fw_p")
+[ -z "$miss" ] || fail "§13: dev の NO_PROXY (project/.env の PROJECT_NO_PROXY 込み) にあるが firewall 許可 (ALLOWED_DOMAINS / project/allow-domains.txt) に無い (直結が REJECT される): $(echo $miss)"
 # negative probe: 合成入力で片側欠落を検出し、揃っていれば通し、PROJECT_NO_PROXY 補間と exempt を除外する
 probe=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
 printf 'x-no-proxy: &no_proxy "localhost,a.example,b.example,${PROJECT_NO_PROXY:-}"\n' > "$probe/c.yaml"
 printf 'ALLOWED_DOMAINS=(\n    # c\n    "a.example"\n)\nOTHER=("b.example")\n' > "$probe/fw.sh"
-printf 'PROJECT_NO_PROXY=p.example, q.example\n' > "$probe/env"
-printf '# c\np.example # x\n' > "$probe/allow.txt"
+printf '# c\np.example # x\nr.example' > "$probe/allow.txt"   # 最終行は改行なし (firewall も読む)
 [ "$(np_missing "$(np_core "$probe/c.yaml")" "$(fw_core "$probe/fw.sh")")" = b.example ] \
     || { rm -rf "$probe"; fail "negative: §13 が core NO_PROXY の片側欠落 (配列外の b.example) を検出しない"; }
-[ "$(np_missing "$(np_proj "$probe/env")" "$(fw_proj "$probe/allow.txt")")" = q.example ] \
-    || { rm -rf "$probe"; fail "negative: §13 が PROJECT_NO_PROXY の片側欠落を検出しない"; }
+[ "$(np_missing "$(printf 'p.example, q.example,r.example,.r.example,.zz.example,' | np_split)" "$(fw_proj "$probe/allow.txt")")" = "$(printf 'q.example\n.zz.example')" ] \
+    || { rm -rf "$probe"; fail "negative: §13 が project NO_PROXY の片側欠落 / 先頭ドットの判定を誤る"; }
 rm -rf "$probe"
 
 echo "ok  redact-invariants (redact-flow 名検証 / dnsmasq 無転送 / __APP__ 展開 / settings 絶対パス / NO_PROXY suffix / secrets-proxy web / devcontainer.json 配線 / project allow-domains 配線 / compose 姿勢 §10 / literal 配線 §11 / ambient 隔離 §12 / NO_PROXY⊆firewall §13)"

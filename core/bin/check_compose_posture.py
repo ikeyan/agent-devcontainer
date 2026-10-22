@@ -55,11 +55,13 @@ EXPECTED_DEV_CAPS = {"NET_ADMIN", "NET_RAW", "SETUID", "SETGID"}
 SECRET_VOLUMES = {"proxy-confdir", "proxy-bw"}
 # F: engine socket の basename (任意の場所)。docker.sock / podman.sock / containerd.sock / crio.sock /
 # buildkitd.sock / cri-dockerd.sock と、podman machine の podman-machine-default-api.sock 等の派生名。
-ENGINE_SOCK_NAME = re.compile(r"^(?:docker|podman|containerd|crio|buildkitd|cri-dockerd)(?:[-.][^/]*)?\.sock$")
+# Docker Desktop の docker.sock.raw (Desktop の socket proxy を通らない生 socket) も含める。
+ENGINE_SOCK_NAME = re.compile(r"^(?:docker|podman|containerd|crio|buildkitd|cri-dockerd)(?:[-.][^/]*)?\.sock(?:\.raw)?$")
 # F: 各 engine の既定 socket パス (path component ごとに fnmatch)。bind source がこれらの祖先 (or 一致)
 # なら socket に届く。
 ENGINE_SOCK_PATHS = (
     "/var/run/docker.sock",
+    "/private/var/run/docker.sock",  # macOS の /var/run は /private/var/run への symlink
     "/run/docker.sock",
     "/run/user/*/docker.sock",
     "/run/podman/podman.sock",
@@ -188,11 +190,11 @@ def _is_relaxing(opt: str) -> bool:
         return True  # bare `disable` = label=disable (moby)
     if k in ("seccomp", "apparmor", "systempaths") and v == "unconfined":
         return True
-    if k == "label" and (v == "disable" or v.replace(":", "=") == "type=spc_t"):
+    if k == "label" and (v == "disable" or v.replace(":", "=") in ("type=spc_t", "type=unconfined_t")):
         return True
     if k == "unmask":
         return True  # podman: /proc の既定マスクを外す (systempaths=unconfined 相当)
-    if k == "writable-cgroups" and v in ("", "true", "1"):
+    if k == "writable-cgroups" and v in ("", "true", "t", "1"):  # moby は strconv.ParseBool
         return True
     return False
 
@@ -287,6 +289,8 @@ def _build_mutators(expected_name: str) -> dict[str, list]:
             _mut_bind("/run/user/1000/podman/podman.sock"),
             _mut_bind("/var/folders/xx/T/podman/podman-machine-default-api.sock"),
             _mut_bind("/run/containerd/containerd.sock"),
+            _mut_bind("/var/run/docker.sock.raw"),
+            _mut_bind("/private/var/run"),
             _mut_bind("/var/run"),
             _mut_bind("/run/user/1000"),
             _mut_bind("/"),
@@ -300,6 +304,8 @@ def _build_mutators(expected_name: str) -> dict[str, list]:
             _mut_security_opt("extra", "label=disable"),
             _mut_security_opt("extra", "disable"),
             _mut_security_opt("extra", "unmask=ALL"),
+            _mut_security_opt("extra", "label=type:unconfined_t"),
+            _mut_security_opt("extra", "writable-cgroups=t"),
         ],
     }
 

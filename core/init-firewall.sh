@@ -47,7 +47,7 @@ ALLOWED_DOMAINS=(
 # (内部空白/制御文字混じり) を無言で連結し、意図しない許可先を作りうる穴だった。
 PROJECT_DOMAINS_FILE=/etc/agent-devcontainer/allow-domains.txt
 if [ -f "$PROJECT_DOMAINS_FILE" ]; then
-    while read -r d; do
+    while read -r d || [ -n "$d" ]; do   # 末尾改行の無い最終行も読む (§13 の抽出と揃える)
         d="${d%%#*}"                       # 行コメント除去
         d="${d#"${d%%[![:space:]]*}"}"     # 先頭空白 trim
         d="${d%"${d##*[![:space:]]}"}"     # 末尾空白 trim
