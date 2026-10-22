@@ -107,7 +107,7 @@ def check_secret_volumes_isolated(cfg: dict) -> list[str]:
     proxy = (cfg.get("services") or {}).get("secrets-proxy") or {}
     mounted = {_vol_source(v) for v in proxy.get("volumes") or []}
     errs.extend(
-        f"E: SECRET_VOLUMES の '{v}' を secrets-proxy が mount していない (compose.yaml で改名した?)"
+        f"E: SECRET_VOLUMES の '{v}' を secrets-proxy が mount していない。compose.yaml の volume 名と揃える"
         for v in sorted(SECRET_VOLUMES - mounted)
     )
     for name, svc in (cfg.get("services") or {}).items():

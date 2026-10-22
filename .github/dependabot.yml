@@ -30,14 +30,14 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 3
-  # core/uv.lock (kit venv と secrets-proxy / redact の mitmproxy)。pyproject.toml の exclude-newer と同じ 3 日待つ。
+  # core/uv.lock の cooldown は core/pyproject.toml の exclude-newer と同じ日数にする (check-supply-chain が揃いを確かめる)。
   - package-ecosystem: "uv"
     directory: "/core"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 3
-  # package-lock.json (tsc / knip / devcontainer の CLI)。.npmrc の min-release-age と同じ 3 日待つ。
+  # package-lock.json の cooldown は .npmrc の min-release-age と同じ日数にする (check-supply-chain が揃いを確かめる)。
   - package-ecosystem: "npm"
     directory: "/"
     schedule:

@@ -17,7 +17,7 @@ jobs:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       # node は check-seccomp が .ts を直接実行するのに使う (型ストリッピング、node>=23.6。
-      # canon: facts/nodejs/ts-type-stripping-direct-execution)。tsc / knip は make setup の npm ci が入れる。
+      # canon: facts/nodejs/ts-type-stripping-direct-execution)。
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -27,8 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck dnsmasq-base proxychains4
           sudo ln -sf /usr/sbin/dnsmasq /usr/local/bin/dnsmasq
-          # hadolint: core/Dockerfile の hadolint stage (tag+digest。Dependabot が更新する) の image から
-          # binary を取り出す。版と digest の直書きは Dockerfile だけにする (check-hadolint-version が pin)。
+          # hadolint の版は core/Dockerfile の hadolint stage が正 (check-hadolint-version が pin)。
           # /bin/hadolint は static binary (canon: facts/dependabot/hadolint-static-binary-from-image)。
           img=$(make -s --no-print-directory -C core hadolint-image)
           cid=$(docker create "$img")
@@ -102,7 +101,7 @@ jobs:
           cp -p templates/devcontainer.json devcontainer.json
           sed -i 's/@@PROJECT_NAME@@/kitci/' project/compose.yaml devcontainer.json
           bash core/bin/gen-dockerfile.sh > Dockerfile
-      # devcontainer の CLI は package-lock.json の版を使う (smoke の probe が PATH から呼ぶ)。
+      # devcontainer の CLI は package-lock.json の版を使う。
       - uses: actions/setup-node@v7
         with:
           node-version: 24

@@ -126,7 +126,7 @@ class SecretsProxy:
         self.cap_store = {}  # key -> {"value", "ph", "bind":[regex]}
 
     # ===================== 設定読み込み =====================
-    def load(self, loader):  # noqa: V107 -- mitmproxy が load(loader) を呼ぶ (引数は使わない)
+    def load(self, loader):  # noqa: V107 -- mitmproxy が load(loader) を呼ぶので引数を消せない
         with open(RULES_PATH) as f:
             cfg = yaml.safe_load(f) or {}
 
@@ -557,7 +557,7 @@ class SecretsProxy:
         if _is_textual(req.headers.get("content-type", "")):
             try:
                 parts.append(req.get_text(strict=False) or "")
-            except Exception:  # noqa: BLE001, S110  -- 漏洩検知は tripwire。本文を読めなければ header と path だけを走査する
+            except Exception:  # noqa: BLE001, S110  -- 漏洩検知は tripwire (本文が読めなくても拒否しない)
                 pass
         return "\n".join(parts)
 

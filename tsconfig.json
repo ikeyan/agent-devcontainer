@@ -1,5 +1,5 @@
 {
-  // core/podman/*.ts は node が型を剥がして直接実行する (check-seccomp)。tsc は型検査だけを行う。
+  // core/podman/*.ts は node が型を剥がして直接実行する。tsc は型検査だけを行う。
   "compilerOptions": {
     "module": "nodenext",
     "target": "esnext",

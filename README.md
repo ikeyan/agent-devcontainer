@@ -4,9 +4,8 @@ agent CLI (Claude Code 等) を封じ込め付きで動かす devcontainer キ�
 dev コンテナ + egress firewall (iptables/ipset) + secrets-proxy (平文 credential を dev に置かない) +
 redact サンドボックス + 検証群 (`make check`) を、1 コマンドで workspace (`.devcontainer/` を置き、直下に 1 つ以上の
 リポジトリを並べるディレクトリ。単一リポジトリの root でもよい) へ導入・更新する。
-アーキテクチャ詳細は [core/README.md](core/README.md)。セキュリティモデルは、dev コンテナの強化と secrets-proxy の
-脅威モデルが [core/README.md](core/README.md) の「公式 devcontainer からのセキュリティ強化」と「secrets-proxy」、redact の
-脅威モデルが [core/redact/SECURITY-MODEL.md](core/redact/SECURITY-MODEL.md)。外部ツールの確定仕様は
+アーキテクチャ詳細と、dev コンテナの強化・secrets-proxy の脅威モデルは [core/README.md](core/README.md) (「公式 devcontainer
+からのセキュリティ強化」「secrets-proxy」の節)、redact の脅威モデルは [core/redact/SECURITY-MODEL.md](core/redact/SECURITY-MODEL.md)。外部ツールの確定仕様は
 canon (`ikeyan/canon` の `facts/`)。
 
 ## インストール / 更新

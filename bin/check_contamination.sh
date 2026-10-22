@@ -63,7 +63,7 @@ done
 # symlink 拒否: core/templates に正当な symlink は無い。grep -r は target を追わず、installer の
 # cp -Rp は link を保存するので、中立な名前で target に consumer 値を持つ link が混入検査を迂回する
 # (実測)。target を追うと走査 root 外へ逃げうるので、link 自体を拒否する (fail-closed)。
-# exit: 0 = symlink 無し / 1 = あり (stderr に一覧) / 2 = 走査エラー。本走査と negative probe が共有する。
+# exit: 0 = symlink 無し / 1 = あり (stderr に一覧) / 2 = 走査エラー。
 reject_symlinks() {
     local syms
     syms=$(find "$@" -type l) || { echo "symlink 走査が find エラーで不完全" >&2; return 2; }
@@ -92,7 +92,7 @@ probe=$(mktemp -d)
     echo "prefix3 myikeyan/agent-devcontainer/x"
     echo "case IkEyAn variant"
 } > "$probe/f"
-printf 'bin\000\nikeyan-binary\n' > "$probe/bin.dat"   # NUL を含む binary も本文走査する (-a)。NUL は一致行の外に置く
+printf 'bin\000\nikeyan-binary\n' > "$probe/bin.dat"   # NUL は一致行の外に置く
 hits=$(scan_in "$probe")
 st=$?
 [ $st -eq 0 ] || { echo "negative: 検出 probe が走査エラー/空振り (st=$st)" >&2; exit 1; }
@@ -121,14 +121,14 @@ st=$?
 { echo "$nhits" | grep -q 'ikeyan-dir' && echo "$nhits" | grep -q 'tools_probe'; } \
     || { echo "negative: ファイル名検出器が fixture を素通し" >&2; exit 1; }
 
-# --- negative probe: symlink の拒否 (本走査と同じ reject_symlinks) ---
+# --- negative probe: symlink の拒否 ---
 sprobe=$(mktemp -d)
 echo "ikeyan.github.io" > "$sprobe/target"; ln -s target "$sprobe/link"
 reject_symlinks "$sprobe" 2>/dev/null
 st=$?
 [ $st -eq 1 ] || { echo "negative: symlink の拒否が link を弾かない (st=$st)" >&2; exit 1; }
 
-# --- negative probe: 走査できない対象を「クリーン」でなく走査エラー (2) にする ---
+# --- negative probe: 走査できない対象は走査エラー (2) にする ---
 scan_in "$sprobe/no-such-dir" >/dev/null 2>&1
 st=$?
 [ $st -eq 2 ] || { echo "negative: 進入できない走査 root を走査エラーにしない (st=$st)" >&2; exit 1; }

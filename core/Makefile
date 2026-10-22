@@ -199,7 +199,7 @@ check-shell: ## shell script を bash -n で構文チェック
 check-shellcheck: ## shell script を shellcheck (CI/devcontainer 必須)
 	@shellcheck -S warning $(SHELL_SRCS) && echo "ok  shellcheck"
 
-# Python の構文検査 (compile() は .pyc を残さない)。check-addon と check-redact-py と、check-redact-py の negative probe が共有する。
+# Python の構文検査 (compile() は .pyc を残さない)。
 PY_COMPILE = python3 -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")'
 check-addon: ## addon.py / 踏み台スクリプトの構文を compile() で検査 (.pyc を残さない)
 	@for f in secrets-proxy/addon.py secrets-proxy/tcp-bridge.py proxy-web-tunnel.py; do \
@@ -250,10 +250,9 @@ check-dockerfile-gen: ## ../Dockerfile が生成結果と一致するか (drift 
 	rm -f "$$bad"; echo "ok  dockerfile-gen"
 
 # hadolint の版と digest は Dockerfile の hadolint stage (Dependabot の docker が tag と digest を更新する) が正。
-# kit と consumer の CI はこの target が出す image から binary を取り出す。HADOLINT_DOCKERFILE は抽出器の
-# negative probe (root の check-hadolint-version) が合成の Dockerfile を渡すためのもの。
+# HADOLINT_DOCKERFILE は版を読む Dockerfile (既定は Dockerfile。抽出器の negative probe が合成のものを渡す)。
 HADOLINT_DOCKERFILE ?= Dockerfile
-hadolint-image: ## Dockerfile の hadolint stage の image (tag+digest) を出す (CI が binary を取り出す)
+hadolint-image: ## Dockerfile の hadolint stage の image (tag+digest) を出す
 	@ref=$$(sed -nE 's|^FROM (hadolint/hadolint:v[0-9][0-9.]*-alpine@sha256:[0-9a-f]{64}) AS hadolint$$|\1|p' "$(HADOLINT_DOCKERFILE)") || exit 1; \
 	[ "$$(printf '%s' "$$ref" | grep -c .)" -eq 1 ] \
 		|| { echo "$(HADOLINT_DOCKERFILE) の hadolint stage (FROM hadolint/hadolint:v<版>-alpine@sha256:<digest> AS hadolint) がちょうど 1 行でない: '$$ref'" >&2; exit 1; }; \
@@ -310,10 +309,7 @@ check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出�
 check-redact-selfcheck: ## extract/*/redact_flow.py のエンジン契約を検査 (mitmproxy 必須)
 	@PYTHONDONTWRITEBYTECODE=1 $(PY) bin/redact_selfcheck.py
 
-# redact エンジン・テンプレート・selfcheck 自体の Python 構文を compile() で検査する。
-# selfcheck は実行時にエンジンを import するが、テンプレートはどの check も見ていなかった。
 # core の Python を ruff (lint + format。規則と除外は pyproject.toml の [tool.ruff]) と vulture で検査する。
-# ruff は使われない import・変数を、vulture は使われない関数・クラス・属性を列挙する。
 RUFF := $(dir $(PY))ruff
 VULTURE := $(dir $(PY))vulture
 # negative probe は合成入力で、各道具が検出したときの終了コード (ruff check / ruff format --check は 1、
@@ -331,6 +327,8 @@ check-python-lint: ## Python を ruff (lint/format) と vulture (使われない
 		&& $(VULTURE) --exclude .venv . \
 		&& echo "ok  python-lint (ruff check/format + vulture)"
 
+# redact エンジン・テンプレート・selfcheck 自体の Python 構文を compile() で検査する。
+# selfcheck は実行時にエンジンを import するが、テンプレートはどの check も見ていなかった。
 check-redact-py: ## redact 系 Python (エンジン/テンプレート/selfcheck) の構文検査
 	@for f in redact/flows_to_ndjson.py redact/redact_flow.template.py bin/redact_selfcheck.py; do \
 		$(PY_COMPILE) "$$f" || { echo "$$f invalid" >&2; exit 1; }; \

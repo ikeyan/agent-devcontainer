@@ -26,7 +26,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck dnsmasq-base proxychains4
           sudo ln -sf /usr/sbin/dnsmasq /usr/local/bin/dnsmasq
-          # hadolint は core/Dockerfile の hadolint stage (tag+digest) の image から取り出す (版を直書きしない)
+          # hadolint の版は core/Dockerfile の hadolint stage が正
           img=$(make -s --no-print-directory -C .devcontainer/core hadolint-image)
           cid=$(docker create "$img")
           trap 'docker rm "$cid" >/dev/null' EXIT

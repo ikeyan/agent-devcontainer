@@ -194,8 +194,7 @@ def test_capture_without_into_is_rejected():
 
 
 def test_capture_from_string_form_is_rejected():
-    # 旧形式 (from が string + 兄弟 name) はもう無効。2 つの違反を別々の fixture にし、片方の規則が
-    # 消えても他方の違反で緑にならないようにする (各 fixture は通る base から 1 か所だけ変える)。
+    # 各 fixture は通る base から 1 か所だけ変えた 1 違反にする (2 違反を 1 つに入れると、片方の規則が消えても緑になる)。
     base = {"from": {"type": "set-cookie", "name": "sid"}, "store": "sid", "into": {"type": "cookie", "name": "sid"}}
     _ok("capture from base", {"capture": [base]})
     _bad("capture from string", {"capture": [{**base, "from": "set-cookie"}]})

@@ -19,18 +19,17 @@ dependencies = [
 [dependency-groups]
 redact = ["mitmproxy==12.2.3"]
 
-# 供給網の門 (setup-repo の 2 節)。exclude-newer は公開から 3 日経っていない配布物を解決に使わない
+# 供給網の門。exclude-newer は公開から 3 日経っていない配布物を解決に使わない
 # (uv.lock には期間 exclude-newer-span として残る。canon: facts/uv/exclude-newer-relative-span-lock)。
-# no-build は sdist のビルド (任意コードの実行) を許さず、wheel だけを使う。
+# no-build: wheel だけを使う (sdist のビルドは任意コードを実行する)。
 [tool.uv]
 exclude-newer = "3 days"
 no-build = true
 
 [tool.ruff]
-target-version = "py312"
 line-length = 120
 
-# 規則は ruff の既定 (uv.lock が固定する ruff の版で決まる。版上げは Dependabot の PR の CI で差が見える)。
+# 規則は ruff の既定 (uv.lock が固定する ruff の版で決まる)。
 [tool.ruff.lint]
 ignore = [
     "UP031",  # % 書式: 書き方の好みで、挙動の誤りを指さない

@@ -2,8 +2,7 @@
 SHELL := /bin/bash
 
 # リポジトリルートの検証ハブ。`check` = `check-offline` (ルート成果物 + core)。
-# 流儀は core/Makefile 冒頭コメントが規範 (相互独立・並列可・skip ガード無し・副作用なし)。例外は
-# check-pre-push-hook の 1 つで、setup-repo 標準 (3 節) に従い hooks/pre-push を git が呼ぶ場所へ写す (無いときだけ)。
+# 流儀は core/Makefile 冒頭コメントが規範 (相互独立・並列可・skip ガード無し・副作用なし)。副作用の例外は AGENTS.md。
 # 検査は consumer 相当の project 層と kit venv を前提にする — fresh clone では先に `make setup`。
 # CI (.github/workflows/check.yml) が check の外で走らせる検査: workflow lint (check-actionlint。image を
 # pull するのでネットが要る)・install.sh の冪等性・イメージ実ビルド・DNS egress (core の check-redact-dns-egress)。
@@ -11,8 +10,8 @@ MAKEFLAGS += --output-sync=target
 
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
-# kit の node の道具 (`make setup` の npm ci が package-lock.json から入れる)。npx を通さない — 無いときに
-# registry から取ってきて、lockfile と別の版で黙って走らせないため。
+# kit の node の道具 (`make setup` の npm ci が package-lock.json から入れる) はここから起動する (npx は無いときに
+# registry から取ってきて、lockfile と別の版で黙って走らせる)。
 NODE_BIN := $(CURDIR)/node_modules/.bin
 
 OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version check-pre-push-hook check-ts check-knip check-supply-chain
@@ -54,8 +53,7 @@ check-placeholder: ## scaffold 産物に置換漏れ $(PLACEHOLDER) が無いか
 HADOLINT_REF_VERSION = sed -nE 's|^hadolint/hadolint:v([0-9][0-9.]*)-alpine@sha256:[0-9a-f]{64}$$|\1|p'
 HADOLINT_BIN_VERSION = sed -nE 's/^Haskell Dockerfile Linter ([0-9][0-9.]*)$$/\1/p'
 HADOLINT_IMAGE = $(MAKE) -s --no-print-directory -C core hadolint-image
-# CI の workflow (kit と consumer の template) は hadolint を hadolint-image の image から取り出し、release の
-# URL を直書きしない。
+# CI の workflow (kit と consumer の template) は hadolint を hadolint-image の image から取り出す。
 HADOLINT_CI_SITES := .github/workflows/check.yml templates/github/workflows/devcontainer-check.yml
 check-hadolint-version: ## PATH の hadolint の版が core/Dockerfile の hadolint stage と一致し、CI がその image を使うか
 	@t=$$(mktemp -d "$${TMPDIR:-/tmp}/hadolint-version.XXXXXX") || exit 1; trap 'rm -rf "$$t"' EXIT; \
@@ -90,9 +88,9 @@ check-hadolint-version: ## PATH の hadolint の版が core/Dockerfile の hadol
 # lockfile だけの更新を見逃す)。
 NODE_DEPS_CURRENT = cmp -s package-lock.json node_modules/.kit-package-lock.json || { echo "node_modules が package-lock.json と食い違う: make setup (npm-ci) を回す" >&2; exit 1; }
 
-# core の TypeScript (node が型を剥がして直接実行する。tsconfig.json) の型検査。noUnusedLocals /
+# core の TypeScript の型検査 (tsconfig.json)。noUnusedLocals /
 # noUnusedParameters で使われない変数・import も落とす。negative probe は合成ファイルを同じ設定 (extends) で検査し、
-# 使われない変数の診断 (TS6133) で落ちることを確かめる (型定義の解決の失敗などで落ちても検出とみなさない)。
+# 使われない変数の診断 (TS6133) で落ちることを確かめる。
 check-ts: ## core の TypeScript を tsc で型検査 (使われない変数・import を含む。要 make setup)
 	@$(NODE_DEPS_CURRENT); \
 	t=$$(mktemp -d "$${TMPDIR:-/tmp}/check-ts.XXXXXX") || exit 1; trap 'rm -rf "$$t"' EXIT; \
@@ -107,8 +105,7 @@ check-ts: ## core の TypeScript を tsc で型検査 (使われない変数・i
 # 使われない export・ファイル・依存を knip で列挙する (knip.jsonc)。error があれば exit 1 (canon: facts/knip/scoped-config)。
 # negative probe は合成のプロジェクトに使われない export を置き、knip がそれを名指しして落ちることを確かめる
 # (合成のプロジェクトでは cd して起動する。--directory では entry の import を辿らない。canon: facts/knip/scoped-config)。
-# knip.jsonc の ignoreDependencies (@devcontainers/cli) の根拠は、smoke の probe が devcontainer の CLI を呼ぶこと。
-# その呼び出しが残っていることも確かめる (消えたら除外も消す)。
+# knip.jsonc の ignoreDependencies の根拠 (check_devcontainer_up.sh の devcontainer up) が残っていることも確かめる (消えたら除外も消す)。
 check-knip: ## core の TypeScript と package.json の使われない export・ファイル・依存を knip で検査 (要 make setup)
 	@$(NODE_DEPS_CURRENT); \
 	t=$$(mktemp -d "$${TMPDIR:-/tmp}/check-knip.XXXXXX") || exit 1; trap 'rm -rf "$$t"' EXIT; \
@@ -150,7 +147,7 @@ check-supply-chain: ## 供給網の門 (待機日数・install script・sdist bu
 	echo "ok  supply-chain ($$n 日)"
 
 # actionlint の版と digest は .github/actionlint/Dockerfile の FROM (Dependabot の docker が更新する) が正。
-# その image を docker で走らせる (image を pull するのでネットが要り、check-offline に入れない)。
+# image を pull するのでネットが要り、check-offline の外に置く。
 check-actionlint: ## kit と templates の workflow を actionlint で検査 (docker 必須・初回は image を pull)
 	@img=$$(sed -nE 's|^FROM (rhysd/actionlint:[^ ]+@sha256:[0-9a-f]{64})$$|\1|p' .github/actionlint/Dockerfile); \
 	[ "$$(printf '%s' "$$img" | grep -c .)" -eq 1 ] \
@@ -158,7 +155,7 @@ check-actionlint: ## kit と templates の workflow を actionlint で検査 (do
 	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo "$$img" .github/workflows/*.yml templates/github/workflows/*.yml \
 		&& echo "ok  actionlint"
 
-# 検査でなく状態を揃える段: hooks/pre-push を git が呼ぶ場所へ写す (無いときだけ。扱いは
+# 状態を揃える段: hooks/pre-push を git が呼ぶ場所へ写す (無いときだけ。扱いは
 # bin/install_pre_push_hook.sh 冒頭)。副作用は意図したもので、この 1 ファイルに限る。
 # negative probe は使い捨てのリポで、上書きの拒否・core.hooksPath の拒否・2 回目の no-op を確かめる。
 # probe は subshell の中で利用者の global/system の git 設定から切り離す (global の core.hooksPath があると、
@@ -239,12 +236,12 @@ setup: ## fresh clone を検査可能にする: consumer 相当の project 層 +
 	@UV_PROJECT=$(CURDIR)/core UV_PROJECT_ENVIRONMENT=$(CURDIR)/.venv core/uv-sync.sh --frozen
 	@$(MAKE) --no-print-directory npm-ci
 
-# package-lock.json を node_modules に再現する (setup と CI が呼ぶ)。lockfile の再現なので、解決時の門 (.npmrc の
-# min-release-age) を外す。外さないと Dependabot の security update (cooldown が効かない) が 3 日未満の版を
+# package-lock.json を node_modules に再現する。lockfile の再現なので、解決時の門 (.npmrc の
+# min-release-age) を外す。外さないと Dependabot の security update が 3 日未満の版を
 # lockfile に入れたとき CI が落ちる (canon: facts/npm/min-release-age-gates-npm-ci,
 # facts/dependabot/cooldown-exempts-security-updates)。npm 11 未満は .npmrc の min-release-age と
 # strict-allow-scripts を知らずに黙って通すので止める。
 npm-ci: ## package-lock.json を node_modules に再現する (npm 11 以上)
 	@v=$$(npm --version) || exit 1; \
-	[ "$${v%%.*}" -ge 11 ] 2>/dev/null || { echo "npm 11 以上が要る (.npmrc の min-release-age / strict-allow-scripts は npm 11 の設定): npm $$v" >&2; exit 1; }; \
+	[ "$${v%%.*}" -ge 11 ] 2>/dev/null || { echo "npm 11 以上が要る (今は npm $$v)。npm を 11 以上にしてから make setup を回す" >&2; exit 1; }; \
 	npm ci --min-release-age=0 --no-audit --no-fund && cp package-lock.json node_modules/.kit-package-lock.json
