@@ -49,7 +49,7 @@ check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無い�
 # コメント等に誤 match して素通りし得るため、存在自体を拒否)、実際に PATH から解決される hadolint の
 # 版。負のプローブは temp ファイルでなく抽出器 (sed) と重複行の拒否を合成入力で自己テストする —
 # 抽出器が退化すると全 pin が空文字で素通しになる。
-check-hadolint-version: ## hadolint の版が .tool-versions / check.yml(導出) / core/Dockerfile / 実行バイナリで一致するか
+check-hadolint-version: ## hadolint の版が .tool-versions / check.yml(導出) / consumer CI の template / core/Dockerfile / 実行バイナリで一致するか
 	@extract() { sed -nE 's/^hadolint ([0-9][0-9.]*)$$/\1/p'; }; \
 	binver() { sed -nE 's/^Haskell Dockerfile Linter ([0-9][0-9.]*)$$/\1/p'; }; \
 	[ "$$(printf 'hadolint 9.9.9\n' | extract)" = 9.9.9 ] && [ "$$(printf 'Haskell Dockerfile Linter 9.9.9\n' | binver)" = 9.9.9 ] \
@@ -63,6 +63,8 @@ check-hadolint-version: ## hadolint の版が .tool-versions / check.yml(導出)
 		|| { echo "check.yml が hadolint 版を .tool-versions から導出していない" >&2; exit 1; }; \
 	grep -E 'hadolint/releases/download/v[0-9]' .github/workflows/check.yml; st=$$?; \
 	[ "$$st" -eq 1 ] || { echo "check.yml に hadolint 版の直書き URL がある (導出に一本化する。grep exit=$$st)" >&2; exit 1; }; \
+	grep -qF "hadolint/releases/download/v$$want/" templates/github/workflows/devcontainer-check.yml \
+		|| { echo "templates/github/workflows/devcontainer-check.yml (consumer の CI) の hadolint が .tool-versions ($$want) と不一致" >&2; exit 1; }; \
 	grep -qF "FROM hadolint/hadolint:v$$want-" core/Dockerfile \
 		|| { echo "core/Dockerfile の hadolint stage が .tool-versions ($$want) と不一致 (版を上げたら .tool-versions を追従)" >&2; exit 1; }; \
 	command -v hadolint >/dev/null \
