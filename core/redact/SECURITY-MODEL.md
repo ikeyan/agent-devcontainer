@@ -15,7 +15,12 @@ redact サンドボックスは、生の秘密を含む mitmproxy フロー (`/i
 ## 不変条件 (変更ごとに上から照合する)
 
 1. **node が読める平文の秘密をディスクに置かない。** 認証情報を子 home にもファイルにも置かず、
-   env 経由かつ短命 access token のみにする。生 cred ファイルが存在しなければ tool が `cat` できない。
+   env 経由で渡す。生 cred ファイルが存在しなければ tool が `cat` できない。事前認証 volume からは
+   access token だけを取り出し refresh token は持ち込まない。env の cred は不変条件 2 により子から
+   読めるので、その寿命と権限がそのまま露出面になる: `claude auth login` 由来は数時間、
+   `ANTHROPIC_API_KEY` は失効させるまで、`claude setup-token` の token (`CLAUDE_CODE_OAUTH_TOKEN`) は
+   1 年だが model リクエスト専用 (canon: facts/claude-code/credentials-and-long-lived-tokens)。
+   どれもユーザー自身のアカウントの cred で、不変条件 4 の「攻撃者のアカウントへ」の経路は開かない。
 2. **同一 uid のプロセス env も読める。** `/proc/<pid>/environ` は同一 uid から読めるので、env scrub
    (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) はツール子プロセスにしか効かない。main claude プロセスの
    認証情報はこれだけでは隠れない → 真の分離は別 uid / proxy (進行中の secrets-proxy 設計)。

@@ -329,6 +329,22 @@ vol_compose=$(sed -n 's/^  *name: \([A-Za-z0-9_-]*\).*/\1/p' "$DC/redact/compose
 [ -n "$vol_flow" ] || fail "§11: redact-flow に AUTH_VOL (auth volume 名) の定義が無い"
 [ "$vol_flow" = "$vol_compose" ] \
     || fail "§11: auth volume 名が不一致 (redact-flow '$vol_flow' vs redact/compose.yaml '$vol_compose')"
+# (c) 子 claude の認証 env は redact-flow (compose への受け渡し配列) と redact/compose.yaml (environment) の
+#     両方に現れて初めて子に届く。片側だけだと export しても黙って未認証で起動する。
+for v in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; do
+    grep -qF "    $v=\"\${$v:-}\"" "$DC/bin/redact-flow" \
+        || fail "§11: redact-flow が $v を compose へ渡していない"
+    grep -qE "^ +$v: \\\$\{$v:-\}" "$DC/redact/compose.yaml" \
+        || fail "§11: redact/compose.yaml の environment に $v が無い"
+done
+# (d) 認証の案内に存在しないサブコマンドを書かない: `claude login` は subcommand でなく「login という
+#     prompt でセッションを開始」になる (正は `claude auth login`。長期は `claude setup-token` —
+#     canon: facts/claude-code/credentials-and-long-lived-tokens)。この検査自身は除外する。
+bad_login='claude'' login'
+hits=$(grep -rnF --exclude=redact_invariants_check.sh --exclude=uv.lock -- "$bad_login" "$DC" || true)
+[ -z "$hits" ] || fail "§11: 存在しないサブコマンド ($bad_login) を案内している (claude auth login / claude setup-token に直す): $hits"
+[ "$(printf 'x claude login y\n' | grep -cF -- "$bad_login")" -eq 1 ] \
+    || fail "negative: §11 (d) の検出パターンが空回りしている"
 
 # --- 12. ambient compose 変数の隔離が全 compose 入口で揃っているか ---------------------
 # COMPOSE_PROJECT_NAME / COMPOSE_ENV_FILES は file 宣言を黙って上書き/差替えする

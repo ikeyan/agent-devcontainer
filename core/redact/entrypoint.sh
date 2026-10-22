@@ -128,7 +128,12 @@ runuser -u node -- env CLAUDE_HOME="$CLAUDE_HOME" NODE_HOME=/home/node \
 #   - refresh token は持ち込まない。access token は時限的なので、万一 /proc/<pid>/environ を
 #     同一 uid で読まれても被害は短命、かつ egress 固定でネット流出も不可。
 # token は export して runuser に環境ごと引き継がせる (argv に出さない = /proc/cmdline 非露出)。
-if [ -r "$AUTH_RO/.credentials.json" ]; then
+# launcher が CLAUDE_CODE_OAUTH_TOKEN を渡したら (明示指定) それを使い volume は読まない。compose は未設定を
+# 空文字で渡すので、空なら unset して「設定なし」に戻す。
+[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || unset CLAUDE_CODE_OAUTH_TOKEN
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    echo "auth: launcher から渡された CLAUDE_CODE_OAUTH_TOKEN を使う (事前認証 volume は読まない)"
+elif [ -r "$AUTH_RO/.credentials.json" ]; then
     tok="$(python3 - "$AUTH_RO/.credentials.json" <<'PY' || true
 import json, sys
 try:

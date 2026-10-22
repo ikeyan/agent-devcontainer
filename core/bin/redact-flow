@@ -54,12 +54,14 @@ export REDACT_PROJECT  # compose.yaml の name: ${REDACT_PROJECT:?} 補間用 (b
 AUTH_VOL=agent-devcontainer-redact-auth
 
 # 子 claude の認証。egress は Anthropic に固めてあるので、平文 API キー (api.anthropic.com を透過)
-# が一番素直。未設定だと子は agent-devcontainer-redact-auth volume の認証情報を使い、それも無ければ
-# platform.claude.com 経由のログインを促す (= 未認証だと「お住まいの国では…」風の不親切な失敗)。
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "[redact-flow] 注意: ANTHROPIC_API_KEY 未設定。" >&2
+# が一番素直。キーが無ければ CLAUDE_CODE_OAUTH_TOKEN (claude setup-token の長期 token)、それも無ければ
+# agent-devcontainer-redact-auth volume の認証情報を使い、それも無ければ platform.claude.com 経由の
+# ログインを促す (= 未認証だと「お住まいの国では…」風の不親切な失敗)。手順は redact/compose.yaml 冒頭。
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    echo "[redact-flow] 注意: ANTHROPIC_API_KEY も CLAUDE_CODE_OAUTH_TOKEN も未設定 ($AUTH_VOL volume の事前認証に頼る)。" >&2
     echo "[redact-flow]   推奨: export ANTHROPIC_API_KEY=sk-... して再実行 (api.anthropic.com を透過)。" >&2
-    echo "[redact-flow]   代替: $AUTH_VOL volume を事前に認証しておく (claude login)。" >&2
+    echo "[redact-flow]   代替: ホストで claude setup-token を実行し (Claude サブスク要)、出た token を" >&2
+    echo "[redact-flow]         export CLAUDE_CODE_OAUTH_TOKEN=... するか $AUTH_VOL volume に置く (手順: core/redact/compose.yaml 冒頭)。" >&2
 fi
 
 OUT="$REPO/extract/$APP"
@@ -98,6 +100,7 @@ redact_compose=(env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES
     REDACT_REPO="$REPO"
     REDACT_RAW="$(realpath "$RAW")"
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+    CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
     docker compose -p "$REDACT_PROJECT" -f "$HERE/compose.yaml")
 
 # redact 派生イメージをビルドする (compose の target は redact ステージ。共通祖先 base は BuildKit が自動)。

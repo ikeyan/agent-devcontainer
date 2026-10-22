@@ -10,6 +10,21 @@ name: ${REDACT_PROJECT:?set REDACT_PROJECT (通常は bin/redact-flow が導出)
 # volume を先に用意すること:
 #   docker volume create agent-devcontainer-redact-auth
 # (redact-flow 経由なら自動で用意される。無いと compose が external volume not found で止まる)。
+#
+# 子 claude の認証 (どれか 1 つ。優先順位は ANTHROPIC_API_KEY > CLAUDE_CODE_OAUTH_TOKEN > volume):
+#   1. ANTHROPIC_API_KEY を export して起動する。
+#   2. Claude サブスクの長期 OAuth token (`claude setup-token` がホストで発行。1 年・model リクエスト専用・
+#      保存されず stdout に出るだけ) を CLAUDE_CODE_OAUTH_TOKEN に export して起動する。
+#   3. 2 の token を事前認証 volume のルートに置く (毎回 export しない場合)。entrypoint は accessToken だけを
+#      取り出すので最小 JSON で足りる。token は stdin で渡す (argv / シェル履歴に出さない):
+#        read -rs TOKEN    # setup-token が印字した token を貼る
+#        printf '{"claudeAiOauth":{"accessToken":"%s"}}' "$TOKEN" \
+#          | docker run --rm -i -v agent-devcontainer-redact-auth:/auth alpine sh -c 'umask 077; cat > /auth/.credentials.json'
+#        unset TOKEN
+#      起動ログに「auth: 事前認証 volume の OAuth access token を env で渡す」が出れば効いている。
+#   `claude auth login` (サブスクの対話ログイン) 由来の cred を置いても使えるのはその日限り: access token は
+#   数時間で失効し、子は refresh token を持たない (持ち込まない設計)。claude.ai は egress 外なので
+#   コンテナ内での対話ログインもできない (canon: facts/claude-code/credentials-and-long-lived-tokens)。
 # dev の compose とは別物 (secrets-proxy も HTTP_PROXY も持たない。
 # egress は entrypoint+init-firewall.sh が Anthropic (api.anthropic.com + platform.claude.com):443
 # + dnsmasq DNS に固める。後者は claude の Console 認証で必須)。
@@ -34,11 +49,10 @@ services:
                          # 子 (node) は非 root ゆえ付与されず、/root へは到達不可のまま。
     environment:
       REDACT_APP: ${REDACT_APP:?set REDACT_APP}
-      # 認証は平文 API キーが素直 (api.anthropic.com を透過)。Console の OAuth ログイン/更新は
-      # platform.claude.com を許可済みなので可能だが、claude.ai サブスク認証 (claude.ai ドメイン)
-      # は egress 外なので不可。キーが無い場合は agent-devcontainer-redact-auth volume を事前認証しておく
-      # (下記 ro マウント。entrypoint が root として OAuth access token を取り出し env で渡す)。
+      # 認証の選び方と事前認証の手順はファイル冒頭。Console の OAuth ログイン/更新は platform.claude.com を
+      # 許可済みなので可能だが、claude.ai サブスク認証 (claude.ai ドメイン) は egress 外なので不可。
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       # 子 claude が interview 中に redact_flow / flows_to_ndjson を対話的に import すると、書ける唯一の場所
       # (rw の extract/<app>) に __pycache__ ができ bind 経由でホストに残る。runuser → claude → Bash の
       # 子まで環境ごと引き継がれるので、ここ 1 箇所で全経路に効く。
@@ -65,7 +79,7 @@ networks:
 
 volumes:
   # name を kit 名義で固定した共有 volume。既定だと compose は project 名を冠した
-  # ${REDACT_PROJECT}_redact-claude を作るため、ユーザーが `claude login` で認証する literal な
+  # ${REDACT_PROJECT}_redact-claude を作るため、ユーザーが事前認証する literal な
   # agent-devcontainer-redact-auth volume と食い違い、/root/.claude-auth が空マウントになって
   # 未認証で起動してしまう。固定名は意図した共有 — どの consumer repo (どの project 名) からでも
   # 1 回の事前認証を ro マウントで使い回す。external にする: compose 管理名義のままだと volume の
