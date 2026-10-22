@@ -1,4 +1,4 @@
-FROM python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+FROM python:3.13-slim@sha256:27b7c9d4f13ca20bb1170148f02095d50a5dfce1f7f2dabf5ca273727e43b7ea
 
 # sha256 検証の `… | sha256sum -c -` を fail-closed にするため pipefail を効かせる (hadolint DL4006)。
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

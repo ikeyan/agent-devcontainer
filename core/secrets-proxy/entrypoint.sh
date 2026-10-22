@@ -27,7 +27,7 @@ SESSION_FILE="${BW_SESSION_FILE:-$BITWARDENCLI_APPDATA_DIR/session.key}"
 mkdir -p "$CONFDIR" "$BITWARDENCLI_APPDATA_DIR" /ca
 
 # bw の vault 状態 (unauthenticated|locked|unlocked) を取り出すヘルパ。
-# python:3.12-slim には jq が無いので python で JSON を読む。
+# python:*-slim には jq が無いので python で JSON を読む。
 bw_status() {
   bw status 2>/dev/null \
     | python -c 'import sys,json;print(json.load(sys.stdin).get("status","?"))' 2>/dev/null \

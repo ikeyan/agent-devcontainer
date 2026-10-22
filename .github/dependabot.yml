@@ -17,9 +17,10 @@ updates:
         # ユーザーポリシー = 最新 LTS のみ。26 は Current (LTS 化 2026-10-28)。LTS 化したら範囲を
         # ">= 27" に上げ、26 へ手動 bump する。LTS/範囲の意味論は canon: facts/dependabot/ignore-versions-blocks-tag-suffix-bumps。
       - dependency-name: "python"
-        versions: [">= 3.13"]
-        # ユーザーポリシー = bugfix 期間を終えた最新 (現在 3.12 / security phase)。3.13 の bugfix
-        # 終了 (2026-10-07) 後に範囲を ">= 3.14" へ上げ、3.13 へ手動 bump する。
+        versions: [">= 3.14"]
+        # ユーザーポリシー = bugfix 期間を終えた最新 (現在 3.13 / security phase)。3.14 の bugfix が
+        # 終わったら (version-policy-watch.yml が release-cycle.json を読んで起票する) 範囲を ">= 3.15" へ
+        # 上げ、3.14 へ bump する。先に mitmproxy (core/secrets-proxy/Dockerfile の固定版) の対応を確認する。
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
