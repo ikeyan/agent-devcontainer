@@ -239,9 +239,10 @@ setup: ## fresh clone を検査可能にする: consumer 相当の project 層 +
 # package-lock.json を node_modules に再現する。lockfile の再現なので、解決時の門 (.npmrc の
 # min-release-age) を外す。外さないと Dependabot の security update が 3 日未満の版を
 # lockfile に入れたとき CI が落ちる (canon: facts/npm/min-release-age-gates-npm-ci,
-# facts/dependabot/cooldown-exempts-security-updates)。npm 11 未満は .npmrc の min-release-age と
-# strict-allow-scripts を知らずに黙って通すので止める。
-npm-ci: ## package-lock.json を node_modules に再現する (npm 11 以上)
-	@v=$$(npm --version) || exit 1; \
-	[ "$${v%%.*}" -ge 11 ] 2>/dev/null || { echo "npm 11 以上が要る (今は npm $$v)。npm を 11 以上にしてから make setup を回す" >&2; exit 1; }; \
+# facts/dependabot/cooldown-exempts-security-updates)。.npmrc の strict-allow-scripts は npm 11.16.0、min-release-age は
+# 11.10.0 から (それより前の npm は知らない設定として黙って通す。canon: facts/npm/allow-scripts-project-policy) ので止める。
+npm-ci: ## package-lock.json を node_modules に再現する (npm 11.16.0 以上)
+	@v=$$(npm --version) || exit 1; maj=$${v%%.*}; rest=$${v#*.}; min=$${rest%%.*}; \
+	{ [ "$$maj" -gt 11 ] || { [ "$$maj" -eq 11 ] && [ "$$min" -ge 16 ]; }; } 2>/dev/null \
+		|| { echo "npm 11.16.0 以上が要る (今は npm $$v)。npm を上げてから make setup を回す" >&2; exit 1; }; \
 	npm ci --min-release-age=0 --no-audit --no-fund && cp package-lock.json node_modules/.kit-package-lock.json
