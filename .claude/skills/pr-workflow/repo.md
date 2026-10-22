@@ -19,3 +19,5 @@
 ## 方針の差分
 
 - **Codex Review**: 使っている (chatgpt-codex-connector が PR にレビューを付ける)。
+- **PR の作成**: 頼まれなくても、作業の区切りで push したら作る。
+- **PR コメントの watch**: PR を作った・push したら常に回す。cc-web では `subscribe_pr_activity`、それ以外は手段ファイルの「PR の watch」を使う。
