@@ -39,6 +39,10 @@ services:
       # は egress 外なので不可。キーが無い場合は agent-devcontainer-redact-auth volume を事前認証しておく
       # (下記 ro マウント。entrypoint が root として OAuth access token を取り出し env で渡す)。
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # 子 claude が interview 中に redact_flow / flows_to_ndjson を対話的に import すると、書ける唯一の場所
+      # (rw の extract/<app>) に __pycache__ ができ bind 経由でホストに残る。runuser → claude → Bash の
+      # 子まで環境ごと引き継がれるので、ここ 1 箇所で全経路に効く。
+      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       # extract/<app> 以外は全て read-only。書き込み可能な層 (image layer = /) は --rm で破棄される。
       - ${REDACT_REPO:?set REDACT_REPO}:/workspace:ro

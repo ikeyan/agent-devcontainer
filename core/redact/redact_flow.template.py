@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run
+#!/usr/bin/env -S PYTHONDONTWRITEBYTECODE=1 uv run
 """__APP__ 用の redact_flow。生 flow を stdin で受け、秘密を伏せた NDJSON を stdout に出す。
 
 このアプリの flow を観察して、秘密 (トークン/Cookie/個人情報など) を伏せる redact を実装する。

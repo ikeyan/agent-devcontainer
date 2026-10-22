@@ -59,6 +59,9 @@ services:
       NODE_OPTIONS: "--max-old-space-size=4096 --use-env-proxy"
       POWERLEVEL9K_DISABLE_GITSTATUS: "true"
       CHECKPOINT_DISABLE: "1"
+      # import されたモジュールの隣に __pycache__ を作らせない (workspace bind 経由でホストに残る)。
+      # image に焼かず compose に置くのは consumer が project 層で上書きできるようにするため。
+      PYTHONDONTWRITEBYTECODE: "1"
       # gh seed 整合検査用 (init-firewall.sh が焼込値と照合)。environment はコンテナ起動時に
       # 常に現在値になる (build arg と違い recreate に追従する) ので、「.env を変えたのに
       # rebuild していない」drift の検出源として使える。秘密ではない (GitHub user 名)。
