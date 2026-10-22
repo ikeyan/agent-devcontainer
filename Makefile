@@ -4,15 +4,18 @@ SHELL := /bin/bash
 # リポジトリルートの検証ハブ。`check` = `check-offline` (ルート成果物 + core)。
 # 流儀は core/Makefile 冒頭コメントが規範 (相互独立・並列可・skip ガード無し・副作用なし)。
 # 検査は consumer 相当の project 層と kit venv を前提にする — fresh clone では先に `make setup`。
-# CI (.github/workflows/check.yml) 限定でここに入らない検査: workflow lint (actionlint は CI でだけ
-# 取得)・install.sh の冪等性・イメージ実ビルド・DNS egress (core の check-redact-dns-egress)。
+# CI (.github/workflows/check.yml) が check の外で走らせる検査: workflow lint (check-actionlint。image を
+# pull するのでネットが要る)・install.sh の冪等性・イメージ実ビルド・DNS egress (core の check-redact-dns-egress)。
 MAKEFLAGS += --output-sync=target
 
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
+# kit の node の道具 (`make setup` の npm ci が package-lock.json から入れる)。npx を通さない — 無いときに
+# registry から取ってきて、lockfile と別の版で黙って走らせないため。
+NODE_BIN := $(CURDIR)/node_modules/.bin
 
-OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version check-pre-push-hook
-.PHONY: help check check-offline setup $(OFFLINE_CHECKS)
+OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version check-pre-push-hook check-ts check-knip
+.PHONY: help check check-offline setup hadolint-image check-actionlint $(OFFLINE_CHECKS)
 
 help: ## 一覧
 	@sed -nE 's/^([a-zA-Z_-]+):.*## (.*)$$/  \1\t\2/p' $(MAKEFILE_LIST) | expand -t 20
@@ -40,39 +43,61 @@ check-placeholder: ## scaffold 産物に置換漏れ @@PROJECT_NAME@@ が無い�
 	@grep -rq '@@PROJECT_NAME@@' templates || { echo "negative probe: templates に @@PROJECT_NAME@@ が無い — 検査対象の token が drift" >&2; exit 1; }
 	@grep -rn '@@PROJECT_NAME@@' project devcontainer.json Dockerfile; [ $$? -eq 1 ] && echo "ok  placeholder (@@PROJECT_NAME@@ 置換済み)"
 
-# hadolint の版は .tool-versions (host の asdf) を正とする。check.yml (CI の curl) はそこから
-# 導出するので直書き site は core/Dockerfile (devcontainer の image stage — FROM tag はファイル参照
-# できない) だけ。ずれると同じ Dockerfile の lint 結果が環境で食い違うのに、どの検査も赤にならず
-# 静かに drift する (版差の実例は canon: facts/hadolint/v2.15-findings-on-v2.14-clean-dockerfile)。
-# 版の bump は kit 発なので、consumer 側 (tools の check-hadolint-version) だけでなく発生源のここでも
-# pin する: Dockerfile の FROM tag、check.yml が導出を使い続けていること (直書き URL の復活は grep が
-# コメント等に誤 match して素通りし得るため、存在自体を拒否)、実際に PATH から解決される hadolint の
-# 版。負のプローブは temp ファイルでなく抽出器 (sed) と重複行の拒否を合成入力で自己テストする —
-# 抽出器が退化すると全 pin が空文字で素通しになる。
-check-hadolint-version: ## hadolint の版が .tool-versions / check.yml(導出) / consumer CI の template / core/Dockerfile / 実行バイナリで一致するか
-	@extract() { sed -nE 's/^hadolint ([0-9][0-9.]*)$$/\1/p'; }; \
-	binver() { sed -nE 's/^Haskell Dockerfile Linter ([0-9][0-9.]*)$$/\1/p'; }; \
-	[ "$$(printf 'hadolint 9.9.9\n' | extract)" = 9.9.9 ] && [ "$$(printf 'Haskell Dockerfile Linter 9.9.9\n' | binver)" = 9.9.9 ] \
+# hadolint の版は core/Dockerfile の hadolint stage (tag+digest。Dependabot の docker が更新する) を正とする。
+# CI (check.yml) は hadolint-image が出す image から binary を取り出すので、版と digest を直書きする site は
+# Dockerfile だけ。host の hadolint はその image (linux の binary) を使えないので、PATH の hadolint の版が
+# Dockerfile の tag と一致することを確かめる (ずれると同じ Dockerfile の lint 結果が環境で食い違う。版差の
+# 実例は canon: facts/hadolint/v2.15-findings-on-v2.14-clean-dockerfile)。check.yml が hadolint-image を
+# 使い続けていることと、release の直書き URL が無いことも pin する。負のプローブは抽出器 (sed) を合成入力で
+# 自己テストする — 抽出器が退化すると全 pin が空文字で素通しになる。
+HADOLINT_FROM_RE := ^FROM (hadolint/hadolint:v([0-9][0-9.]*)-alpine@sha256:[0-9a-f]{64}) AS hadolint$$
+hadolint-image: ## core/Dockerfile の hadolint stage の image (tag+digest) を出す (CI が binary を取り出す)
+	@ref=$$(sed -nE 's|$(HADOLINT_FROM_RE)|\1|p' core/Dockerfile); \
+	[ "$$(printf '%s' "$$ref" | grep -c .)" -eq 1 ] \
+		|| { echo "core/Dockerfile の hadolint stage (FROM hadolint/hadolint:v<版>-alpine@sha256:<digest> AS hadolint) がちょうど 1 行でない: '$$ref'" >&2; exit 1; }; \
+	printf '%s\n' "$$ref"
+
+check-hadolint-version: ## PATH の hadolint の版が core/Dockerfile の hadolint stage と一致し、check.yml がそれを使うか
+	@probe='FROM hadolint/hadolint:v9.9.9-alpine@sha256:'"$$(printf '%064d' 0)"' AS hadolint'; \
+	[ "$$(printf '%s\n' "$$probe" | sed -nE 's|$(HADOLINT_FROM_RE)|\2|p')" = 9.9.9 ] \
+		&& [ "$$(printf 'Haskell Dockerfile Linter 9.9.9\n' | sed -nE 's/^Haskell Dockerfile Linter ([0-9][0-9.]*)$$/\1/p')" = 9.9.9 ] \
 		|| { echo "negative: check-hadolint-version の抽出器が合成入力から版を取れない" >&2; exit 1; }; \
-	[ "$$(printf 'hadolint 1.0.0\nhadolint 2.0.0\n' | extract | wc -l)" -eq 2 ] \
-		|| { echo "negative: check-hadolint-version の抽出器が重複行を 1 行に潰している" >&2; exit 1; }; \
-	want=$$(extract < .tool-versions); \
-	[ "$$(printf '%s' "$$want" | grep -c .)" -eq 1 ] \
-		|| { echo ".tool-versions の 'hadolint <version>' 行がちょうど 1 行でない (無い / 重複 / fallback 併記): '$$want'" >&2; exit 1; }; \
-	grep -qF 'awk '\''$$1=="hadolint"{print $$2}'\'' .tool-versions' .github/workflows/check.yml \
-		|| { echo "check.yml が hadolint 版を .tool-versions から導出していない" >&2; exit 1; }; \
-	grep -E 'hadolint/releases/download/v[0-9]' .github/workflows/check.yml; st=$$?; \
-	[ "$$st" -eq 1 ] || { echo "check.yml に hadolint 版の直書き URL がある (導出に一本化する。grep exit=$$st)" >&2; exit 1; }; \
-	grep -qF "hadolint/releases/download/v$$want/" templates/github/workflows/devcontainer-check.yml \
-		|| { echo "templates/github/workflows/devcontainer-check.yml (consumer の CI) の hadolint が .tool-versions ($$want) と不一致" >&2; exit 1; }; \
-	grep -qF "FROM hadolint/hadolint:v$$want-" core/Dockerfile \
-		|| { echo "core/Dockerfile の hadolint stage が .tool-versions ($$want) と不一致 (版を上げたら .tool-versions を追従)" >&2; exit 1; }; \
+	ref=$$($(MAKE) -s hadolint-image) || exit 1; \
+	want=$$(printf '%s\n' "$$ref" | sed -nE 's|^hadolint/hadolint:v([0-9][0-9.]*)-.*|\1|p'); \
+	grep -qF 'make -s hadolint-image' .github/workflows/check.yml \
+		|| { echo "check.yml が hadolint を make -s hadolint-image の image から取り出していない" >&2; exit 1; }; \
+	grep -E 'hadolint/releases/download' .github/workflows/check.yml; st=$$?; \
+	[ "$$st" -eq 1 ] || { echo "check.yml に hadolint の release の直書き URL がある (grep exit=$$st)" >&2; exit 1; }; \
 	command -v hadolint >/dev/null \
-		|| { echo "hadolint が PATH に無い (asdf plugin add hadolint https://github.com/ikeyan/asdf-hadolint.git && asdf install hadolint)" >&2; exit 1; }; \
-	raw=$$(hadolint --version) || exit 1; have=$$(printf '%s\n' "$$raw" | binver); \
+		|| { echo "hadolint が PATH に無い (asdf plugin add hadolint https://github.com/ikeyan/asdf-hadolint.git && asdf install hadolint $$want && asdf set -u hadolint $$want)" >&2; exit 1; }; \
+	raw=$$(hadolint --version 2>/dev/null) \
+		|| { echo "hadolint を起動できない (asdf の shim なら版が未設定: asdf install hadolint $$want && asdf set -u hadolint $$want)" >&2; exit 1; }; \
+	have=$$(printf '%s\n' "$$raw" | sed -nE 's/^Haskell Dockerfile Linter ([0-9][0-9.]*)$$/\1/p'); \
 	[ -n "$$have" ] || { echo "hadolint --version の出力を解釈できない: '$$raw'" >&2; exit 1; }; \
-	[ "$$have" = "$$want" ] || { echo "PATH の hadolint ($$have) が .tool-versions ($$want) と不一致 (asdf install hadolint / brew 版が shim を覆っていないか)" >&2; exit 1; }; \
+	[ "$$have" = "$$want" ] || { echo "PATH の hadolint ($$have) が core/Dockerfile の hadolint stage ($$want) と不一致 (asdf install hadolint $$want && asdf set -u hadolint $$want)" >&2; exit 1; }; \
 	echo "ok  hadolint-version ($$want)"
+
+# core の TypeScript (node が型を剥がして直接実行する。tsconfig.json) の型検査。noUnusedLocals /
+# noUnusedParameters で使われない変数・import も落とす。negative probe は合成ファイルを同じ設定で検査する。
+check-ts: ## core の TypeScript を tsc で型検査 (使われない変数・import を含む。要 make setup)
+	@t=$$(mktemp -d "$${TMPDIR:-/tmp}/check-ts.XXXXXX") || exit 1; trap 'rm -rf "$$t"' EXIT; \
+	printf 'const unusedProbe: number = 1;\nexport {};\n' > "$$t/probe.ts"; \
+	printf '{"extends": "%s/tsconfig.json", "include": ["%s/probe.ts"]}\n' "$(CURDIR)" "$$t" > "$$t/tsconfig.json"; \
+	$(NODE_BIN)/tsc -p "$$t" >/dev/null 2>&1 && { echo "negative: tsc が使われない変数を素通し" >&2; exit 1; }; \
+	$(NODE_BIN)/tsc -p . && echo "ok  ts (tsc)"
+
+# 使われない export・ファイル・依存を knip で列挙する (knip.jsonc)。error があれば exit 1 (canon: facts/knip/scoped-config)。
+check-knip: ## core の TypeScript と package.json の使われない export・ファイル・依存を knip で検査 (要 make setup)
+	@$(NODE_BIN)/knip --no-progress && echo "ok  knip"
+
+# actionlint の版と digest は .github/actionlint/Dockerfile の FROM (Dependabot の docker が更新する) が正。
+# その image を docker で走らせる (image を pull するのでネットが要り、check-offline に入れない)。
+check-actionlint: ## kit と templates の workflow を actionlint で検査 (docker 必須・初回は image を pull)
+	@img=$$(sed -nE 's|^FROM (rhysd/actionlint:[^ ]+@sha256:[0-9a-f]{64})$$|\1|p' .github/actionlint/Dockerfile); \
+	[ "$$(printf '%s' "$$img" | grep -c .)" -eq 1 ] \
+		|| { echo ".github/actionlint/Dockerfile の FROM rhysd/actionlint:<tag>@sha256:<digest> がちょうど 1 行でない: '$$img'" >&2; exit 1; }; \
+	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo "$$img" .github/workflows/*.yml templates/github/workflows/*.yml \
+		&& echo "ok  actionlint"
 
 # 検査でなく状態を揃える段: hooks/pre-push を git が呼ぶ場所へ写す (無いときだけ。扱いは
 # bin/install_pre_push_hook.sh 冒頭)。副作用は意図したもので、この 1 ファイルに限る。
@@ -136,7 +161,7 @@ check-contamination: ## core/ と templates/ に consumer 固有値 (ikeyan / to
 PROJECT_NAME ?= kitci
 GH_USER ?= kitci
 export PROJECT_NAME GH_USER
-setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv (既存 project は PROJECT_GH_USER / repos.txt の欠落だけ補完)
+setup: ## fresh clone を検査可能にする: consumer 相当の project 層 + kit venv + node の道具 (既存 project は PROJECT_GH_USER / repos.txt の欠落だけ補完)
 	@[[ "$$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$$ ]] || { echo "PROJECT_NAME が不正 ([a-z0-9][a-z0-9_-]*): '$$PROJECT_NAME'" >&2; exit 1; }
 	@[[ "$$GH_USER" =~ ^[A-Za-z0-9-]+$$ ]] || { echo "GH_USER が不正 (GitHub user 名 [A-Za-z0-9-]+): '$$GH_USER'" >&2; exit 1; }
 	@[ -e project ] || { rm -rf project.tmp && cp -Rp templates/project project.tmp \
@@ -153,3 +178,5 @@ setup: ## fresh clone を検査可能にする: consumer 相当の project 層 +
 	@[ -e devcontainer.json ] || { cp -p templates/devcontainer.json devcontainer.json && sed -i "s/@@PROJECT_NAME@@/$$PROJECT_NAME/" devcontainer.json; }
 	@[ -e Dockerfile ] || bash core/bin/gen-dockerfile.sh > Dockerfile
 	@UV_PROJECT=$(CURDIR)/core UV_PROJECT_ENVIRONMENT=$(CURDIR)/.venv core/uv-sync.sh --frozen
+	@# lockfile の再現なので、解決時の門 (.npmrc の min-release-age) を外す (canon: facts/npm/min-release-age-gates-npm-ci)。
+	@npm ci --min-release-age=0 --no-audit --no-fund
