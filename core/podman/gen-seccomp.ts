@@ -3,7 +3,7 @@
 // profile を stdout に出す。書込/差分検査は Makefile (gen-seccomp / check-seccomp) が担う。
 // 出典 default.json は http-cache/ に pin (HTTP_CACHE_REFRESH=1 で再取得)。開く/開かない syscall の
 // 根拠と運用は .devcontainer/core/PODMAN.md「seccomp profile (tightening)」。
-import { deepEqual } from "./lib/deepEqual.ts";
+import { isDeepStrictEqual } from "node:util";
 import { cachedFetch } from "./lib/httpCache.ts";
 
 const DEFAULT_PROFILE_URL = "https://raw.githubusercontent.com/moby/profiles/main/seccomp/default.json";
@@ -42,11 +42,11 @@ function tailor(profile: SeccompProfile): SeccompProfile {
   const clone = only(
     sc.filter(
       (g) =>
-        deepEqual(g.names, ["clone"]) &&
+        isDeepStrictEqual(g.names, ["clone"]) &&
         g.action === "SCMP_ACT_ALLOW" &&
         g.includes === undefined &&
         g.args?.some((a) => a.index === 0) &&
-        deepEqual(g.excludes?.caps, ["CAP_SYS_ADMIN"]),
+        isDeepStrictEqual(g.excludes?.caps, ["CAP_SYS_ADMIN"]),
     ),
     "clone arg-restricted group (non-CAP_SYS_ADMIN)",
   );
@@ -55,7 +55,7 @@ function tailor(profile: SeccompProfile): SeccompProfile {
 
   // 既定は非 CAP_SYS_ADMIN だと clone3 を ENOSYS にする → 許可。
   const clone3 = only(
-    sc.filter((g) => deepEqual(g.names, ["clone3"]) && g.action === "SCMP_ACT_ERRNO"),
+    sc.filter((g) => isDeepStrictEqual(g.names, ["clone3"]) && g.action === "SCMP_ACT_ERRNO"),
     "clone3 ERRNO group (non-CAP_SYS_ADMIN)",
   );
   clone3.action = "SCMP_ACT_ALLOW";
@@ -67,9 +67,9 @@ function tailor(profile: SeccompProfile): SeccompProfile {
   const chroot = only(
     sc.filter(
       (g) =>
-        deepEqual(g.names, ["chroot"]) &&
+        isDeepStrictEqual(g.names, ["chroot"]) &&
         g.action === "SCMP_ACT_ALLOW" &&
-        deepEqual(g.includes?.caps, ["CAP_SYS_CHROOT"]),
+        isDeepStrictEqual(g.includes?.caps, ["CAP_SYS_CHROOT"]),
     ),
     "chroot CAP_SYS_CHROOT-gated group",
   );

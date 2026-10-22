@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": ["core/podman/gen-seccomp.ts"],
   "project": ["core/**/*.ts"],
-  // devcontainer の CLI は core/bin/check_devcontainer_up.sh (CI の build-images job) が PATH から呼ぶ。knip は shell を読まない。
+  // devcontainer の CLI は core/bin/check_devcontainer_up.sh (CI の build-images job) が shell から呼び、TS の import と
+  // package.json の scripts には現れない。その呼び出しが残っていることは make check-knip が確かめる (消えたらこの行も消す)。
   "ignoreDependencies": ["@devcontainers/cli"]
 }

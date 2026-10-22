@@ -90,16 +90,17 @@ def run_curl(port, use_proxychains):
 
 def probe(use_proxychains, accept_timeout):
     rec = Recorder()
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", 0))
-    srv.listen(1)
-    port = srv.getsockname()[1]
-    t = threading.Thread(target=serve_once, args=(srv, rec, accept_timeout))
-    t.start()
-    run_curl(port, use_proxychains)
-    t.join(accept_timeout + 5)
-    srv.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        t = threading.Thread(target=serve_once, args=(srv, rec, accept_timeout))
+        t.start()
+        try:
+            run_curl(port, use_proxychains)
+        finally:
+            t.join(accept_timeout + 5)
     return rec.line
 
 

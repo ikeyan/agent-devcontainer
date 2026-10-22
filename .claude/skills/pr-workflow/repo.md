@@ -4,10 +4,10 @@
 
 ## 値
 
-- push 先: `origin` (2026-10-22 に `gh api repos/ikeyan/agent-devcontainer` の `permissions.push` が true であることを確認)
+- push 先: `origin` (2026-10-22 に `gh api repos/ikeyan/agent-devcontainer --jq .permissions.push` が true。push が権限で拒否されたら同じコマンドで確かめ直す)
 - 寄稿規約: 文書は無い。このリポで通っている規約:
-  - コミットメッセージと PR タイトルは `<type>(<scope>): <日本語の要約>` (type は feat / fix / refactor / build など。scope は省略可)。本文で理由を述べる。
-  - PR は squash merge し、タイトル末尾に `(#<PR 番号>)` が付く。
+  - コミットメッセージと PR タイトルは「type(scope): 日本語の要約」の形 (type は feat / fix / refactor / build など。scope は省略可)。本文で理由を述べる。
+  - PR は squash merge し、タイトル末尾に「(#PR番号)」が付く。
   - ブランチ名は内容を表す kebab-case (例: `selfcheck-domains`)。既定ブランチは `main`。
 - CI: `check` (`.github/workflows/check.yml`。job `check` が `make setup` → `make check` を回し、`install-idempotency` と `build-images` が installer とイメージ実ビルドを検査する。pull_request と main への push で走る)
 

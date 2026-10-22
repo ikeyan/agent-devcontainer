@@ -3,7 +3,7 @@
 # $GIT_COMMON_DIR/hooks/pre-push へ写す。linked worktree も同じ場所を共有し、checkout で消えない
 # (core.hooksPath で作業ツリーの hooks/ を指すと、hooks/ の無い commit を checkout した worktree から hook 無しで push が通る)。
 # 使い方: bin/install_pre_push_hook.sh [<作業ツリー>] (既定は cwd)。写す元はこのスクリプトのリポの hooks/pre-push。
-# 前提: core.hooksPath (どの scope でも) が hook を $GIT_COMMON_DIR/hooks 以外へ向けていれば落とす。設定は書かない。
+# 前提: 作業ツリーが git の管理下 (でなければ git のエラーで止まる)。core.hooksPath (どの scope でも) が hook を $GIT_COMMON_DIR/hooks 以外へ向けていれば落とす。設定は書かない。
 # 写す先の pre-push の状態ごとの扱い:
 #   - 無い (壊れた symlink を含む): 写す
 #   - hooks/pre-push と同じ中身で実行可能: 何もしない
@@ -29,11 +29,14 @@ if [ -x "$hook" ] && cmp -s "$src" "$hook"; then
 	exit 0
 fi
 if [ -e "$hook" ]; then
-	echo "$hook: hooks/pre-push と同じ実行可能なファイルでない (上書きしない)。中身を確かめ、置き換えてよければ Execute: install -m 755 '$src' '$hook'" >&2
+	echo "$hook: hooks/pre-push と同じ実行可能なファイルでない (前に写した旧版か、利用者の別の hook。上書きしない)。中身を確かめ、置き換えてよければ Execute: install -m 755 '$src' '$hook'" >&2
 	exit 1
 fi
-# 壊れた symlink は -e が偽なのでここに来る。辿った先に書かないよう先に消す。
-rm -f "$hook"
+# 壊れた symlink は -e が偽なのでここに来る。同じディレクトリの一時ファイルに書いてから rename で置くので、
+# symlink を辿らず、書きかけの hook を git や並行の起動に見せない。
 mkdir -p "$common/hooks"
-install -m 755 "$src" "$hook"
+tmp=$(mktemp "$common/hooks/.pre-push.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+install -m 755 "$src" "$tmp"
+mv -f "$tmp" "$hook"
 echo "$hook: hooks/pre-push を写した"

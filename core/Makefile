@@ -4,6 +4,9 @@ SHELL := /bin/bash
 # .devcontainer の構成ファイルを push 前に検証する check 集約。
 # check-* は相互に独立 (一時領域は mktemp で分離) — make -j で並列実行可。
 # 各 check は可能なら negative probe を持ち、検査器が不正を実際に弾くことを pin する。
+# negative probe は本番と同じ式・関数・target・script を通す (抽出器や判定は make 変数か shell 関数に 1 回だけ書き、
+# 本番と probe の両方から呼ぶ。probe 用に書き写した式は、本番の式が壊れても緑のまま)。検出は、検出したときの
+# 終了コードか診断の文言で確かめる (非 0 なら何でも検出とみなすと、道具の起動や設定の失敗でも緑になる)。
 # 方針: 検査に要る道具 (shellcheck/hadolint/PyYAML/jsonschema/mitmproxy/hypothesis/tree-sitter/
 # dnsmasq/docker or podman (+compose)/gh/proxychains4) は CI/devcontainer の両方に実在する前提で組み、
 # 明示の skip ガードは置かない (無い環境ではその場で自然にエラーになる。green が「全 check が実際に
@@ -73,7 +76,7 @@ CHECKS := \
 	check-seccomp
 
 # check-redact-image / check-redact-dns-egress は重い/ネット要のため check 集約には入れず明示実行する (下記)。
-.PHONY: help check gh-seed proxy-web proxy-web-off clone-repos check-redact-image check-redact-dns-egress check-devcontainer-up gen-seccomp gen-dockerfile $(CHECKS)
+.PHONY: help check gh-seed proxy-web proxy-web-off clone-repos check-redact-image check-redact-dns-egress check-devcontainer-up gen-seccomp gen-dockerfile hadolint-image $(CHECKS)
 
 help: ## 一覧
 	@sed -nE 's/^([a-zA-Z_-]+):.*## (.*)$$/  \1\t\2/p' $(MAKEFILE_LIST) | expand -t 20
@@ -110,8 +113,10 @@ check-compose: ## compose.yaml を compose config で検証 (docker/podman compo
 	@$(COMPOSE) $(COMPOSE_FILES) config >/dev/null 2>&1 \
 		|| { echo "compose.yaml invalid:" >&2; $(COMPOSE) $(COMPOSE_FILES) config 2>&1 >/dev/null | tail -20 >&2; exit 1; }; \
 	bad=$$(mktemp); printf 'services: [unclosed\n' > "$$bad"; \
-	$(COMPOSE) -f "$$bad" config >/dev/null 2>&1 \
+	err=$$($(COMPOSE) -f "$$bad" config 2>&1 >/dev/null) \
 		&& { echo "negative: compose config が不正 YAML を素通し" >&2; rm -f "$$bad"; exit 1; }; \
+	printf '%s\n' "$$err" | grep -qi 'yaml' \
+		|| { echo "negative: compose config が YAML 以外の理由で落ちた: $$err" >&2; rm -f "$$bad"; exit 1; }; \
 	rm -f "$$bad"; \
 	noghu=$$(mktemp); grep -v '^PROJECT_GH_USER=' ../project/.env > "$$noghu"; \
 	$(COMPOSE) --env-file "$$noghu" $(COMPOSE_FILES) config secrets-proxy >/dev/null 2>&1 \
@@ -124,16 +129,17 @@ check-compose: ## compose.yaml を compose config で検証 (docker/podman compo
 # core/ を意図した ./X が project/ 基準で不在パスに解決される誤アンカーは compose config 自体は素通す
 # ため、ここで fail-closed に捕まえる。config は daemon 不要。yq 非依存 (python3+PyYAML = $(PY))。
 # negative probe: 不在 bind source を注入した override を重ね、検出器が弾くことを確認する。
+CHECK_COMPOSE_PATHS = $(PY) bin/check_compose_paths.py --project-dir ../project
 check-compose-paths: ## マージ compose のホスト側 bind source/context/seccomp の実在を検証 (compose+PyYAML 必須)
-	@$(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null \
-		| $(PY) bin/check_compose_paths.py --project-dir ../project >/dev/null 2>&1 \
-		|| { echo "compose のホスト側パスが実在しない (相対アンカー誤り?):" >&2; \
-		     $(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null | $(PY) bin/check_compose_paths.py --project-dir ../project 2>&1 >/dev/null | grep '^NG' >&2; exit 1; }; \
+	@set -o pipefail; \
+	err=$$($(COMPOSE) $(COMPOSE_FILES) config | $(CHECK_COMPOSE_PATHS) 2>&1 >/dev/null) \
+		|| { echo "compose のホスト側パスが実在しない (相対アンカー誤り?):" >&2; printf '%s\n' "$$err" >&2; exit 1; }; \
 	bad=$$(mktemp); printf 'services:\n  dev:\n    volumes:\n      - ../core/DOES-NOT-EXIST-xyz:/probe:ro\n' > "$$bad"; \
-	$(COMPOSE) $(COMPOSE_FILES) -f "$$bad" config 2>/dev/null \
-		| $(PY) bin/check_compose_paths.py --project-dir ../project >/dev/null 2>&1 \
+	err=$$($(COMPOSE) $(COMPOSE_FILES) -f "$$bad" config | $(CHECK_COMPOSE_PATHS) 2>&1 >/dev/null) \
 		&& { echo "negative: check-compose-paths が不在 bind source を素通し" >&2; rm -f "$$bad"; exit 1; }; \
-	rm -f "$$bad"; echo "ok  compose-paths ($(COMPOSE_ENGINE))"
+	rm -f "$$bad"; printf '%s\n' "$$err" | grep -q '^NG.*DOES-NOT-EXIST-xyz' \
+		|| { echo "negative: check-compose-paths が不在 bind source 以外の理由で落ちた: $$err" >&2; exit 1; }; \
+	echo "ok  compose-paths ($(COMPOSE_ENGINE))"
 
 # override(compose.mitmweb.yaml) を基底に合成した compose が妥当か、かつ既定 compose に
 # Web UI が漏れていないかを検証する。config は daemon 不要。compose は CI/devcontainer 必須。
@@ -141,8 +147,11 @@ check-proxy-web-config: ## compose.mitmweb.yaml 合成の妥当性 & 既定へ�
 	@$(COMPOSE) $(COMPOSE_FILES) -f compose.mitmweb.yaml config >/dev/null 2>&1 \
 		|| { echo "compose.mitmweb.yaml 合成が不正:" >&2; \
 		     $(COMPOSE) $(COMPOSE_FILES) -f compose.mitmweb.yaml config 2>&1 >/dev/null | tail -20 >&2; exit 1; }; \
-	$(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null | grep -Eq '8081|mitmweb' \
-		&& { echo "negative: 既定 compose に Web UI が漏れている" >&2; exit 1; }; \
+	web() { grep -Eq '8081|mitmweb'; }; \
+	$(COMPOSE) $(COMPOSE_FILES) -f compose.mitmweb.yaml config 2>/dev/null | web \
+		|| { echo "negative: Web UI の検出 (8081|mitmweb) が compose.mitmweb.yaml の合成に当たらない" >&2; exit 1; }; \
+	base=$$($(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null) || { echo "既定 compose の config が失敗" >&2; exit 1; }; \
+	printf '%s\n' "$$base" | web && { echo "既定 compose に Web UI が漏れている" >&2; exit 1; }; \
 	echo "ok  proxy-web-config ($(COMPOSE_ENGINE))"
 
 # secrets-proxy を mitmweb (ライブ傍受 Web UI) に切替える入口 (デバッグ用)。
@@ -182,16 +191,19 @@ check-shell: ## shell script を bash -n で構文チェック
 	@rc=0; for f in $(SHELL_SRCS); do \
 		bash -n "$$f" || { echo "syntax error: $$f" >&2; rc=1; }; \
 	done; \
-	printf 'if true; then\n' | bash -n /dev/stdin 2>/dev/null \
-		&& { echo "negative: bash -n が未完了構文を素通し" >&2; rc=1; }; \
+	err=$$(printf 'if true; then\n' | bash -n /dev/stdin 2>&1); st=$$?; \
+	[ "$$st" -eq 2 ] && printf '%s\n' "$$err" | grep -q 'syntax error' \
+		|| { echo "negative: bash -n が未完了構文を構文エラー (exit 2) で弾かない (exit $$st): $$err" >&2; rc=1; }; \
 	if [ $$rc -ne 0 ]; then exit 1; fi; echo "ok  shell (bash -n)"
 
 check-shellcheck: ## shell script を shellcheck (CI/devcontainer 必須)
 	@shellcheck -S warning $(SHELL_SRCS) && echo "ok  shellcheck"
 
+# Python の構文検査 (compile() は .pyc を残さない)。check-addon と check-redact-py と、check-redact-py の negative probe が共有する。
+PY_COMPILE = python3 -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")'
 check-addon: ## addon.py / 踏み台スクリプトの構文を compile() で検査 (.pyc を残さない)
 	@for f in secrets-proxy/addon.py secrets-proxy/tcp-bridge.py proxy-web-tunnel.py; do \
-		python3 -c "compile(open('$$f').read(),'$$f','exec')" \
+		$(PY_COMPILE) "$$f" \
 			|| { echo "$$f invalid" >&2; exit 1; }; \
 	done; \
 	echo "ok  addon.py / tcp-bridge.py / proxy-web-tunnel.py"
@@ -226,10 +238,26 @@ gen-dockerfile: ## ../Dockerfile を core template + project fragment から再�
 check-dockerfile-gen: ## ../Dockerfile が生成結果と一致するか (drift 検査 + marker 検出の negative probe)
 	@set -o pipefail; \
 	$(GEN_DOCKERFILE) | diff -u ../Dockerfile - || exit 1; \
-	bad=$$(mktemp); printf 'FROM scratch\n' > "$$bad"; \
-	$(GEN_DOCKERFILE) "$$bad" >/dev/null 2>&1 \
-		&& { echo "negative: gen-dockerfile が marker 欠落 template を素通し" >&2; rm -f "$$bad"; exit 1; }; \
+	bad=$$(mktemp); \
+	for c in 'FROM scratch|@@PROJECT:top@@ が 0 回' '# @@PROJECT:top@@|@@PROJECT:dev@@ が 0 回' \
+	         '# @@PROJECT:top@@;# @@PROJECT:dev@@;# @@PROJECT:dev@@|@@PROJECT:dev@@ が 2 回'; do \
+		printf '%s\n' "$${c%%|*}" | tr ';' '\n' > "$$bad"; \
+		err=$$($(GEN_DOCKERFILE) "$$bad" 2>&1 >/dev/null) \
+			&& { echo "negative: gen-dockerfile が marker の誤った template を素通し: $${c%%|*}" >&2; rm -f "$$bad"; exit 1; }; \
+		printf '%s\n' "$$err" | grep -qF "$${c#*|}" \
+			|| { echo "negative: gen-dockerfile が「$${c#*|}」以外の理由で落ちた: $$err" >&2; rm -f "$$bad"; exit 1; }; \
+	done; \
 	rm -f "$$bad"; echo "ok  dockerfile-gen"
+
+# hadolint の版と digest は Dockerfile の hadolint stage (Dependabot の docker が tag と digest を更新する) が正。
+# kit と consumer の CI はこの target が出す image から binary を取り出す。HADOLINT_DOCKERFILE は抽出器の
+# negative probe (root の check-hadolint-version) が合成の Dockerfile を渡すためのもの。
+HADOLINT_DOCKERFILE ?= Dockerfile
+hadolint-image: ## Dockerfile の hadolint stage の image (tag+digest) を出す (CI が binary を取り出す)
+	@ref=$$(sed -nE 's|^FROM (hadolint/hadolint:v[0-9][0-9.]*-alpine@sha256:[0-9a-f]{64}) AS hadolint$$|\1|p' "$(HADOLINT_DOCKERFILE)") || exit 1; \
+	[ "$$(printf '%s' "$$ref" | grep -c .)" -eq 1 ] \
+		|| { echo "$(HADOLINT_DOCKERFILE) の hadolint stage (FROM hadolint/hadolint:v<版>-alpine@sha256:<digest> AS hadolint) がちょうど 1 行でない: '$$ref'" >&2; exit 1; }; \
+	printf '%s\n' "$$ref"
 
 check-dockerfile: ## Dockerfile (template + 生成物) を hadolint (CI/devcontainer 必須)
 	@rc=0; for f in Dockerfile ../Dockerfile secrets-proxy/Dockerfile; do \
@@ -259,12 +287,16 @@ check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出�
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>"$$cfgerr" \
 		|| { echo "redact/compose.yaml が不正 (原因は直下の stderr):" >&2; cat "$$cfgerr" >&2; rm -f "$$cfgerr"; exit 1; }; \
 	rm -f "$$cfgerr"; \
-	env -u REDACT_APP REDACT_PROJECT=demo-redact REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
-		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
-		&& { echo "negative: redact compose が REDACT_APP 欠落を素通し" >&2; exit 1; } || true; \
-	env -u REDACT_PROJECT REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
-		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
-		&& { echo "negative: redact compose が REDACT_PROJECT 欠落を素通し" >&2; exit 1; } || true; \
+	err=$$(env -u REDACT_APP REDACT_PROJECT=demo-redact REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+		$(COMPOSE) -f redact/compose.yaml config 2>&1 >/dev/null) \
+		&& { echo "negative: redact compose が REDACT_APP 欠落を素通し" >&2; exit 1; }; \
+	printf '%s\n' "$$err" | grep -q 'REDACT_APP' \
+		|| { echo "negative: redact compose が REDACT_APP 欠落以外の理由で落ちた: $$err" >&2; exit 1; }; \
+	err=$$(env -u REDACT_PROJECT REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
+		$(COMPOSE) -f redact/compose.yaml config 2>&1 >/dev/null) \
+		&& { echo "negative: redact compose が REDACT_PROJECT 欠落を素通し" >&2; exit 1; }; \
+	printf '%s\n' "$$err" | grep -q 'REDACT_PROJECT' \
+		|| { echo "negative: redact compose が REDACT_PROJECT 欠落以外の理由で落ちた: $$err" >&2; exit 1; }; \
 	bash bin/check_projectname.sh $(PY) ../project/compose.yaml || exit 1; \
 	t=$$(mktemp); sed 's/__UPSTREAM_DNS__/127.0.0.11/g' redact/dnsmasq.conf > "$$t"; \
 	dnsmasq --test --conf-file="$$t" >/dev/null 2>&1 \
@@ -280,33 +312,35 @@ check-redact-selfcheck: ## extract/*/redact_flow.py のエンジン契約を検�
 
 # redact エンジン・テンプレート・selfcheck 自体の Python 構文を compile() で検査する。
 # selfcheck は実行時にエンジンを import するが、テンプレートはどの check も見ていなかった。
-# ruff (lint + format) と vulture (使われない関数・変数・属性) で core の Python を検査する。設定は
-# pyproject.toml の [tool.ruff]。ruff は使われない import・変数を、vulture は使われない関数・クラス・属性を
-# 列挙する。vulture の --ignore-names は mitmproxy の addon の API が名前で呼ぶもの (load の引数 loader、
-# module の addons)。--no-cache で .ruff_cache を残さない。negative probe は合成入力を stdin で渡す
-# (検出器が使われない import と未整形のコードを実際に弾くこと)。
+# core の Python を ruff (lint + format。規則と除外は pyproject.toml の [tool.ruff]) と vulture で検査する。
+# ruff は使われない import・変数を、vulture は使われない関数・クラス・属性を列挙する。
 RUFF := $(dir $(PY))ruff
 VULTURE := $(dir $(PY))vulture
+# negative probe は合成入力で、各道具が検出したときの終了コード (ruff check / ruff format --check は 1、
+# vulture は 3。道具の起動や設定の失敗は 2 などの別の値) を確かめる。--no-cache は .ruff_cache を残さない。
 check-python-lint: ## Python を ruff (lint/format) と vulture (使われないコード) で検査
-	@printf 'import os\n' | $(RUFF) check --no-cache --quiet --stdin-filename probe.py - >/dev/null 2>&1 \
-		&& { echo "negative: ruff check が使われない import を素通し" >&2; exit 1; }; \
-	printf 'x=1\n' | $(RUFF) format --no-cache --check --quiet --stdin-filename probe.py - >/dev/null 2>&1 \
-		&& { echo "negative: ruff format --check が未整形のコードを素通し" >&2; exit 1; }; \
+	@printf 'import os\n' | $(RUFF) check --no-cache --quiet --stdin-filename probe.py - >/dev/null 2>&1; st=$$?; \
+	[ "$$st" -eq 1 ] || { echo "negative: ruff check が使われない import を検出しない (exit $$st、検出なら 1)" >&2; exit 1; }; \
+	printf 'x=1\n' | $(RUFF) format --no-cache --check --quiet --stdin-filename probe.py - >/dev/null 2>&1; st=$$?; \
+	[ "$$st" -eq 1 ] || { echo "negative: ruff format --check が未整形のコードを検出しない (exit $$st、検出なら 1)" >&2; exit 1; }; \
 	t=$$(mktemp -d "$${TMPDIR:-/tmp}/vulture.XXXXXX") || exit 1; trap 'rm -rf "$$t"' EXIT; \
 	printf 'def unused_probe():\n    pass\n' > "$$t/probe.py"; \
-	$(VULTURE) "$$t/probe.py" >/dev/null 2>&1 && { echo "negative: vulture が使われない関数を素通し" >&2; exit 1; }; \
+	$(VULTURE) "$$t/probe.py" >/dev/null 2>&1; st=$$?; \
+	[ "$$st" -eq 3 ] || { echo "negative: vulture が使われない関数を検出しない (exit $$st、検出なら 3)" >&2; exit 1; }; \
 	$(RUFF) check --no-cache --quiet . && $(RUFF) format --no-cache --check --quiet . \
-		&& $(VULTURE) --ignore-names loader,addons --exclude .venv . \
+		&& $(VULTURE) --exclude .venv . \
 		&& echo "ok  python-lint (ruff check/format + vulture)"
 
 check-redact-py: ## redact 系 Python (エンジン/テンプレート/selfcheck) の構文検査
 	@for f in redact/flows_to_ndjson.py redact/redact_flow.template.py bin/redact_selfcheck.py; do \
-		python3 -c "compile(open('$$f').read(),'$$f','exec')" || { echo "$$f invalid" >&2; exit 1; }; \
+		$(PY_COMPILE) "$$f" || { echo "$$f invalid" >&2; exit 1; }; \
 	done; \
 	bad=$$(mktemp); printf 'def (:\n' > "$$bad"; \
-	python3 -c "compile(open('$$bad').read(),'$$bad','exec')" 2>/dev/null \
+	err=$$($(PY_COMPILE) "$$bad" 2>&1) \
 		&& { echo "negative: compile 検出器が不正 Python を素通し" >&2; rm -f "$$bad"; exit 1; }; \
-	rm -f "$$bad"; echo "ok  redact-py (compile)"
+	rm -f "$$bad"; printf '%s\n' "$$err" | grep -q '^SyntaxError' \
+		|| { echo "negative: compile 検出器が構文エラー以外の理由で落ちた: $$err" >&2; exit 1; }; \
+	echo "ok  redact-py (compile)"
 
 # Codex review が捕まえた redact の「意味的」不具合 (構文 valid だが解釈が違う) を回帰 pin する。
 # 中身と各 pin の根拠は bin/redact_invariants_check.sh の冒頭コメント参照。#1〜#9 は git と grep だけ、

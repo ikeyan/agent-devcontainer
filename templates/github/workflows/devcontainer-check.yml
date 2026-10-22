@@ -26,9 +26,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck dnsmasq-base proxychains4
           sudo ln -sf /usr/sbin/dnsmasq /usr/local/bin/dnsmasq
-          sudo curl -fsSL -o /usr/local/bin/hadolint \
-            https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-Linux-x86_64
-          sudo chmod +x /usr/local/bin/hadolint
+          # hadolint は core/Dockerfile の hadolint stage (tag+digest) の image から取り出す (版を直書きしない)
+          img=$(make -s --no-print-directory -C .devcontainer/core hadolint-image)
+          cid=$(docker create "$img")
+          trap 'docker rm "$cid" >/dev/null' EXIT
+          docker cp "$cid:/bin/hadolint" "$RUNNER_TEMP/hadolint"
+          sudo install -m 755 "$RUNNER_TEMP/hadolint" /usr/local/bin/hadolint
       - name: uv sync (kit venv)
         env:
           UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.devcontainer/.venv

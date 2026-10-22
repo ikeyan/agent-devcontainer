@@ -30,10 +30,10 @@ jobs:
           # hadolint: core/Dockerfile の hadolint stage (tag+digest。Dependabot が更新する) の image から
           # binary を取り出す。版と digest の直書きは Dockerfile だけにする (check-hadolint-version が pin)。
           # /bin/hadolint は static binary (canon: facts/dependabot/hadolint-static-binary-from-image)。
-          img=$(make -s hadolint-image)
+          img=$(make -s --no-print-directory -C core hadolint-image)
           cid=$(docker create "$img")
+          trap 'docker rm "$cid" >/dev/null' EXIT
           docker cp "$cid:/bin/hadolint" "$RUNNER_TEMP/hadolint"
-          docker rm "$cid" >/dev/null
           sudo install -m 755 "$RUNNER_TEMP/hadolint" /usr/local/bin/hadolint
       - name: lint (workflow — image を pull するので make check の外)
         run: make check-actionlint
@@ -102,15 +102,14 @@ jobs:
           cp -p templates/devcontainer.json devcontainer.json
           sed -i 's/@@PROJECT_NAME@@/kitci/' project/compose.yaml devcontainer.json
           bash core/bin/gen-dockerfile.sh > Dockerfile
-      # devcontainer の CLI は package-lock.json の版を使う (smoke の probe が PATH から呼ぶ)。lockfile の再現なので
-      # 解決時の門 (.npmrc の min-release-age) を外す (canon: facts/npm/min-release-age-gates-npm-ci)。
+      # devcontainer の CLI は package-lock.json の版を使う (smoke の probe が PATH から呼ぶ)。
       - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: node の道具 (package-lock.json)
         run: |
           set -euo pipefail
-          npm ci --min-release-age=0 --no-audit --no-fund
+          make npm-ci
           echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Build dev / redact / secrets-proxy
         run: |

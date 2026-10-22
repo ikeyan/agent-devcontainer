@@ -30,8 +30,12 @@ no-build = true
 target-version = "py312"
 line-length = 120
 
+# 規則は ruff の既定 (uv.lock が固定する ruff の版で決まる。版上げは Dependabot の PR の CI で差が見える)。
 [tool.ruff.lint]
-# UP031 (% 書式) と SIM103 (早期 return を 1 式にまとめる) は書き方の好みで、挙動の誤りを指さない。
-# TRY004 は型の検査で TypeError を求めるが、ここの型の検査は外部入力の検証で、呼び出し側は
-# ValueError / RuntimeError で捕まえる (型を変えると別の except に流れる)。
-ignore = ["UP031", "SIM103", "TRY004"]
+ignore = [
+    "UP031",  # % 書式: 書き方の好みで、挙動の誤りを指さない
+    "SIM103",  # 早期 return を 1 式にまとめる: 書き方の好み
+    "TRY004",  # 型の検査に TypeError を求める: ここの型の検査は外部入力の検証で、呼び出し側は ValueError / RuntimeError で捕まえる
+]
+# vulture の noqa (V1xx) を ruff が未知の規則として扱わないようにする
+external = ["V"]
