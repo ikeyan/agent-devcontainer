@@ -63,8 +63,13 @@ done
 # symlink 拒否: core/templates に正当な symlink は無い。grep -r は target を追わず、installer の
 # cp -Rp は link を保存するので、中立な名前で target に consumer 値を持つ link が混入検査を迂回する
 # (実測)。target を追うと走査 root 外へ逃げうるので、link 自体を拒否する (fail-closed)。
-syms=$(find "$@" -type l) || { echo "symlink 走査が find エラーで不完全" >&2; exit 1; }
-[ -z "$syms" ] || { echo "core/templates に symlink があります (混入検査を迂回しうる — 実ファイルにしてください):" >&2; printf '%s\n' "$syms" >&2; exit 1; }
+# exit: 0 = symlink 無し / 1 = あり (stderr に一覧) / 2 = 走査エラー。本走査と negative probe が共有する。
+reject_symlinks() {
+    local syms
+    syms=$(find "$@" -type l) || { echo "symlink 走査が find エラーで不完全" >&2; return 2; }
+    [ -z "$syms" ] || { echo "core/templates に symlink があります (混入検査を迂回しうる — 実ファイルにしてください):" >&2; printf '%s\n' "$syms" >&2; return 1; }
+}
+reject_symlinks "$@" || exit 1
 
 IFS='|' read -ra TOKS <<< "$FORBIDDEN_RE"
 
@@ -80,24 +85,27 @@ name_scan_in() { ( cd "$1" || exit 2; name_scan . ); }
 probe=$(mktemp -d)
 {
     for tok in "${TOKS[@]}"; do echo "plain $tok"; done
+    echo "prefix4 myikeyan/agent-files/x"
     echo "coexist github.com/ikeyan/agent-devcontainer/blob と ikeyan.github.io の同居"
     echo "prefix1 ikeyan/agent-devcontainer-x"
     echo "prefix2 ikeyan/agent-files-x"
     echo "prefix3 myikeyan/agent-devcontainer/x"
     echo "case IkEyAn variant"
 } > "$probe/f"
+printf 'bin\000\nikeyan-binary\n' > "$probe/bin.dat"   # NUL を含む binary も本文走査する (-a)。NUL は一致行の外に置く
 hits=$(scan_in "$probe")
 st=$?
 [ $st -eq 0 ] || { echo "negative: 検出 probe が走査エラー/空振り (st=$st)" >&2; exit 1; }
-for tok in "${TOKS[@]}" ikeyan.github.io agent-devcontainer-x agent-files-x myikeyan IkEyAn; do
+for tok in "${TOKS[@]/#/plain }" ikeyan.github.io agent-devcontainer-x agent-files-x myikeyan/agent-devcontainer myikeyan/agent-files IkEyAn ikeyan-binary; do
     echo "$hits" | grep -qF "$tok" \
         || { echo "negative: 混入検出器が fixture の $tok を素通し" >&2; exit 1; }
 done
 
 # --- negative probe: 純 allowlist/別語 fixture を誤検出しないか ------------------------
 clean=$(mktemp -d)
-printf '%s\n%s\n' \
+printf '%s\n%s\n%s\n' \
     'https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/install.sh' \
+    'https://github.com/ikeyan/agent-files/blob/main/x' \
     'setuptools_scm-8.whl と mytools-redact-probe' > "$clean/f"
 scan_in "$clean" >/dev/null
 st=$?
@@ -113,11 +121,20 @@ st=$?
 { echo "$nhits" | grep -q 'ikeyan-dir' && echo "$nhits" | grep -q 'tools_probe'; } \
     || { echo "negative: ファイル名検出器が fixture を素通し" >&2; exit 1; }
 
-# --- probe: symlink 検出 (find -type l) が link を拾えるか (拒否の前提) ---
+# --- negative probe: symlink の拒否 (本走査と同じ reject_symlinks) ---
 sprobe=$(mktemp -d)
 echo "ikeyan.github.io" > "$sprobe/target"; ln -s target "$sprobe/link"
-[ -n "$(find "$sprobe" -type l)" ] \
-    || { echo "negative: symlink 検出 (find -type l) が link を拾えない" >&2; exit 1; }
+reject_symlinks "$sprobe" 2>/dev/null
+st=$?
+[ $st -eq 1 ] || { echo "negative: symlink の拒否が link を弾かない (st=$st)" >&2; exit 1; }
+
+# --- negative probe: 走査できない対象を「クリーン」でなく走査エラー (2) にする ---
+scan_in "$sprobe/no-such-dir" >/dev/null 2>&1
+st=$?
+[ $st -eq 2 ] || { echo "negative: 進入できない走査 root を走査エラーにしない (st=$st)" >&2; exit 1; }
+( cd "$clean" && scan no-such-file ) >/dev/null 2>&1
+st=$?
+[ $st -eq 2 ] || { echo "negative: 読めない走査対象を走査エラーにしない (st=$st)" >&2; exit 1; }
 
 # --- 本走査 (対象ごとに cd して相対走査 — checkout 自体の絶対パスに token を含む環境でも偽赤にしない) ---
 for d in "$@"; do

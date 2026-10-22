@@ -101,7 +101,8 @@ diff -u - "$WS/.git/info/exclude" <<'EXPECT' || { echo "改行なし末尾の ex
 /a/
 /b/
 EXPECT
-untracked=$(git -C "$WS" status --porcelain | grep -E '^\?\? (a|b)/' || true)
+porcelain=$(git -C "$WS" status --porcelain)
+untracked=$(printf '%s\n' "$porcelain" | grep -E '^\?\? (a|b)/' || true)
 [ -z "$untracked" ] || { echo "clone した repo が workspace の git status に出る: $untracked" >&2; exit 1; }
 # workspace root が repo の subdir でも exclude は toplevel 相対 (--show-prefix) になる
 sub="$T/mono/sub"; scaffold "$sub/.devcontainer"; git init -q "$T/mono"
@@ -135,7 +136,7 @@ mkdir "$T/outside"; ln -s "$T/outside" "$WS/s"
 printf 'file://%s/bare/a.git s\n' "$T" > "$R"; expect_fail check "symlink dir" "実ディレクトリでない"
 ln -s "$T/nowhere" "$WS/dangling"   # GNU realpath は dangling を解決し (→ 実体不一致)、BSD は失敗する — どちらの拒否文言も symlink を指す
 printf 'file://%s/bare/a.git dangling\n' "$T" > "$R"; expect_fail check "壊れた symlink" "symlink?"
-printf 'file://%s/bare/missing.git m\n' "$T" > "$R"; expect_fail sync "到達不能 URL" "fatal"
+printf 'file://%s/bare/missing.git m\n' "$T" > "$R"; expect_fail sync "到達不能 URL" "does not appear to be a git repository"
 [ ! -e "$WS/m" ] || { echo "失敗した clone が partial dir を残した: $WS/m" >&2; exit 1; }
 rm "$R"; expect_fail check "repos.txt 不在" "無い:"
 echo "ok  workspace-repos (構文 6 受理 / 13 拒否 / sync・冪等・exclude / origin 同一視 / 封じ込め fixtures)"

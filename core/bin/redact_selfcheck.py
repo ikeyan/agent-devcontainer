@@ -66,7 +66,7 @@ REPO = Path(
 )
 ENGINE = Path(__file__).resolve().parents[1] / "redact"
 sys.path.insert(0, str(ENGINE))
-from flows_to_ndjson import host_in_domains
+from flows_to_ndjson import host_in_domains  # probe 導出とアプリ実装で同じ matcher を使う
 
 SECRET_SHAPE = 1  # 秘密らしき値 (auth ヘッダ・body・set-cookie) を積んだ形
 SHAPE_METHOD = {0: "GET", SECRET_SHAPE: "POST", 2: "DELETE"}  # 形 → method (出力の照合キー)
@@ -227,7 +227,7 @@ def check_contract(redact_path: Path, plan: Plan, accept: list[tuple[str, str]] 
     errs: list[str] = []
     p = run_redact(redact_path, synth_flows(plan))
     if p.returncode != 0:
-        errs.append(f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[:400]}")
+        errs.append(f"exit={p.returncode}: {p.stderr.decode(errors='replace').strip()[-400:]}")
         return errs
     lines = p.stdout.decode(errors="replace").splitlines()  # 非 UTF-8 は置換され JSON 検査で赤になる
     if accept is None and len(lines) != len(plan):
@@ -374,11 +374,24 @@ def main() -> int:
         probe("good_filter", None, DECL + "def redact(s):\n    return s\n", run=KEEP_RUN)
         # dot 境界を破る substring filter (自作 __main__)
         probe("substr_filter", "落とすべき host", filter_app_body('"probe-kept.example" in h'), run="filter_main()")
+        # 末尾一致だけの filter は not<root> を、前方一致を足した filter は <root>.probe.invalid を通す
+        probe(
+            "suffix_filter",
+            "落とすべき host が出力に残っている: notprobe-kept.example",
+            filter_app_body('h.endswith("probe-kept.example")'),
+            run="filter_main()",
+        )
+        probe(
+            "prefix_filter",
+            "落とすべき host が出力に残っている: probe-kept.example.probe.invalid",
+            filter_app_body('h.startswith("probe-kept.example") or h.endswith(".probe-kept.example")'),
+            run="filter_main()",
+        )
         # dot 境界は正しいが pretty_host (Host ヘッダ優先 = 偽装可能) で filter する自作 __main__
         # → 偽装 flow を通してしまい受理 host の POST が 1 本多くなるはず
         probe(
             "pretty_host_filter",
-            "flow 行数",
+            "host probe.probe-kept.example の POST flow 行数 2 != 1",
             filter_app_body('h == "probe-kept.example" or h.endswith(".probe-kept.example")'),
             run="filter_main()",
         )
@@ -387,7 +400,7 @@ def main() -> int:
         # 秘密形 (auth ヘッダ) の flow だけで壊れる redact — 受理 host に秘密形が載らない検査だと素通しになる
         probe(
             "secret_shape_crash",
-            "exit=",
+            "RuntimeError: boom",
             DECL + 'def redact(s):\n    if "authorization" in s:\n        raise RuntimeError("boom")\n    return s\n',
             run=KEEP_RUN,
         )
@@ -421,35 +434,43 @@ def main() -> int:
             run="bad_main()",
         )
         # 不正な SELFCHECK_DOMAINS 宣言 (str) → 紛らわしい "行数" でなく宣言エラーになるはず
-        probe("bad_decl", "宣言が不正", 'SELFCHECK_DOMAINS = "probe-kept.example"\ndef redact(s):\n    return s\n')
+        probe(
+            "bad_decl",
+            "空でない tuple でない",
+            'SELFCHECK_DOMAINS = "probe-kept.example"\ndef redact(s):\n    return s\n',
+        )
         # root の入れ子宣言 → 棄却 probe が親の受理域に入る構成なので宣言段階で拒否するはず
         probe(
             "nested_decl",
-            "宣言が不正",
+            "重複または入れ子",
             'SELFCHECK_DOMAINS = ("probe-kept.example", "sub.probe-kept.example")\ndef redact(s):\n    return s\n',
         )
         # 宣言の再束縛 (実行時は 2 つ目が勝つのに検査は 1 つしか読めない) → 拒否するはず
         probe(
             "rebind_decl",
-            "宣言が不正",
+            "複数回束縛",
             DECL + 'SELFCHECK_DOMAINS = ("probe-kept.example", "evil.example")\ndef redact(s):\n    return s\n',
         )
         # 棄却 probe (notevil.example) が別の宣言 root と衝突する組 → 偽赤でなく宣言エラーになるはず
         probe(
             "probe_collision_decl",
-            "宣言が不正",
+            "受理域に入る",
             'SELFCHECK_DOMAINS = ("evil.example", "notevil.example")\ndef redact(s):\n    return s\n',
         )
         # list での宣言 → .append 等の実行時変異で宣言とずれ得るので tuple 限定を pin
-        probe("list_decl", "宣言が不正", 'SELFCHECK_DOMAINS = ["probe-kept.example"]\ndef redact(s):\n    return s\n')
+        probe(
+            "list_decl",
+            "空でない tuple でない",
+            'SELFCHECK_DOMAINS = ["probe-kept.example"]\ndef redact(s):\n    return s\n',
+        )
         # 展開代入での束縛 → 宣言が無い扱い (紛らわしい行数の赤) でなく宣言エラーになるはず
         probe(
             "unpack_decl",
-            "宣言が不正",
-            'SELFCHECK_DOMAINS, _OTHER = ("probe-kept.example",), 1\ndef redact(s):\n    return s\n',
+            "展開代入",
+            'SELFCHECK_DOMAINS, _OTHER = "probe-kept.example", "other.example"\ndef redact(s):\n    return s\n',
         )
         # syntax error のアプリ → checker ごと落ちず、このアプリの NG に封じ込めるはず
-        probe("broken_syntax", "解析できない", "def redact(s:\n")
+        probe("broken_syntax", "解析できない: SyntaxError", "def redact(s:\n")
 
     if failed:
         print("redact selfcheck FAILED", file=sys.stderr)

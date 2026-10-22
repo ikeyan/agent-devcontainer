@@ -103,6 +103,13 @@ def check_dev_networks(cfg: dict) -> list[str]:
 
 def check_secret_volumes_isolated(cfg: dict) -> list[str]:
     errs: list[str] = []
+    # 名前の写し (SECRET_VOLUMES) が compose.yaml の改名に取り残されると、この検査は黙って空振りする。
+    proxy = (cfg.get("services") or {}).get("secrets-proxy") or {}
+    mounted = {_vol_source(v) for v in proxy.get("volumes") or []}
+    errs.extend(
+        f"E: SECRET_VOLUMES の '{v}' を secrets-proxy が mount していない (compose.yaml で改名した?)"
+        for v in sorted(SECRET_VOLUMES - mounted)
+    )
     for name, svc in (cfg.get("services") or {}).items():
         if name == "secrets-proxy" or not isinstance(svc, dict):
             continue
@@ -163,9 +170,10 @@ def _mut_networks(cfg: dict) -> None:
 
 
 def _mut_secret_volume(cfg: dict) -> None:
-    cfg["services"]["dev"].setdefault("volumes", []).append(
-        {"type": "volume", "source": "proxy-bw", "target": "/steal"}
-    )
+    for i, vol in enumerate(sorted(SECRET_VOLUMES)):
+        cfg["services"]["dev"].setdefault("volumes", []).append(
+            {"type": "volume", "source": vol, "target": f"/steal{i}"}
+        )
 
 
 def _mut_docker_sock(cfg: dict) -> None:
@@ -196,6 +204,10 @@ def selftest(cfg: dict, checks: list, mutators: dict) -> list[str]:
     """各条件について違反を注入したコピーを検出器が弾くことを確認 (negative probe)。"""
     problems: list[str] = []
     check_by_name = dict(checks)
+    if set(check_by_name) != set(mutators):
+        problems.append(
+            f"negative: 違反を注入する probe の無い検出器がある: {sorted(set(check_by_name) ^ set(mutators))}"
+        )
     for name, mutate in mutators.items():
         mutated = copy.deepcopy(cfg)
         mutate(mutated)
