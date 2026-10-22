@@ -150,7 +150,7 @@ RUN chmod +x /usr/local/share/sfw-shims/.sfw-exec && \
 USER node
 
 
-FROM hadolint/hadolint:v2.14.0-alpine@sha256:7aba693c1442eb31c0b015c129697cb3b6cb7da589d85c7562f9deb435a6657c AS hadolint
+FROM hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552 AS hadolint
 
 FROM docker/compose-bin:v5.3.1@sha256:38fd4a3c7458b931d339b1eb657df0bef790a39bcaeb93ff9f70f59849b905c5 AS compose
 
@@ -213,6 +213,8 @@ COPY core/gh/config.yml /home/node/.config/gh/config.yml
 # oauth_token: 値として残存 (コメント内の出現では満たされない位置指定。secrets-proxy の placeholder
 # は build で消してはならない)。set -e + 各段に専用の || ハンドラ — && と || を混ぜて連結すると
 # 前段の失敗が後段の無関係な診断へ流れ込む (左結合)。
+# この stage は SHELL で bash を宣言している。hadolint 2.15.1 は POSIX sh として SC3015 (=~) を出すので抑制する。
+# hadolint ignore=SC3015
 RUN set -e; \
   [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
     || { echo "PROJECT_GH_USER が不正 (project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定): '$PROJECT_GH_USER'" >&2; exit 1; }; \

@@ -113,6 +113,12 @@ jobs:
           docker build --target redact -f Dockerfile .
           docker build core/secrets-proxy
       - name: smoke — devcontainer up (postStart を end-to-end 実行)
+        # Buildx 0.37.2 の bake は、devcontainers CLI が bake context の外に作る Dockerfile-with-features に
+        # fs.read の entitlement を求めて落ちる (devcontainers/cli#1320)。fs の entitlement の検査だけを外す
+        # (buildx の bake/entitlements.go が読む変数)。解除条件: docker/compose#14325 か devcontainers/cli の
+        # 修正が runner に届き、この変数なしで smoke が通ったら消す。
+        env:
+          BUILDX_BAKE_ENTITLEMENTS_FS: "0"
         run: |
           set -euo pipefail
           # build だけでは postStartCommand を実行しない。devcontainers CLI で実際に up し、

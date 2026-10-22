@@ -3,3 +3,4 @@
 ignored:
   - DL3008  # apt パッケージのバージョン固定はしない: dev イメージのツール群で保守コスト過大
   - DL3016  # npm のバージョン固定はしない: claude-code (ARG CLAUDE_CODE_VERSION で latest 追従) と sfw
+  - DL3066  # USER は名前で指定する: node / root は base image にある user で、名前が uid より意図を表す
