@@ -100,6 +100,9 @@ tailored profile (`podman/seccomp.json`) を使う。再生成・upstream 追従
   offline で検証する (ずれていれば exit 1)。
 - compose は `security_opt: [seccomp=./podman/seccomp.json]`。path は project ディレクトリ基準で compose
   が本文を inline 展開する (canon: facts/docker/compose-seccomp-path-resolution)。
+- **project 層からの無効化を防ぐ**: `security_opt` は sequence なので複数 `-f` で追記マージされ、project 層の
+  `seccomp=unconfined` 1 行でこの profile が黙って無効化される。`check-redact-invariants` §10
+  (`bin/check_compose_posture.py` G) がマージ結果の `security_opt` を core 宣言との完全一致で pin する。
 
 ## vfs に戻す / 切替時の注意
 

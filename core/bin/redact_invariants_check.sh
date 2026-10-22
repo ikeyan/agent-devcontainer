@@ -31,7 +31,8 @@
 #   9. project/allow-domains.txt は「core/Dockerfile が COPY し init-firewall.sh が読む」の 2 点が揃って
 #      初めて効く (project 層の直結許可ドメイン抽出。片方が外れると fail-silent で許可されなくなる)。
 #  10. マージ済み compose config のセキュリティ姿勢を直接 pin する: dev の cap 集合 / privileged 不在 /
-#      network 所属 / secrets-proxy 専用 volume の非漏洩 / docker.sock bind 不在 / project の name: 宣言。
+#      network 所属 / secrets-proxy 専用 volume の非漏洩 / container engine socket の bind 不在 /
+#      security_opt の core 宣言一致と緩和値不在 / project の name: 宣言。
 #      根拠: 複数 -f の「後勝ちで core 優先」が効くのは core が明示宣言したスカラー限定で、list merge
 #      (cap_add/networks/volumes) や core 未宣言キーは project 値が通る
 #      (canon: facts/docker/compose-project-directory-and-env-resolution)。ゆえに後勝ちの一般則に頼らず「マージ結果そのもの」を検査する。
