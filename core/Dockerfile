@@ -213,6 +213,8 @@ COPY core/gh/config.yml /home/node/.config/gh/config.yml
 # oauth_token: 値として残存 (コメント内の出現では満たされない位置指定。secrets-proxy の placeholder
 # は build で消してはならない)。set -e + 各段に専用の || ハンドラ — && と || を混ぜて連結すると
 # 前段の失敗が後段の無関係な診断へ流れ込む (左結合)。
+# この stage は SHELL で bash を宣言している。hadolint 2.15.1 は POSIX sh として SC3015 (=~) を出すので抑制する。
+# hadolint ignore=SC3015
 RUN set -e; \
   [[ "$PROJECT_GH_USER" =~ ^[A-Za-z0-9-]+$ ]] \
     || { echo "PROJECT_GH_USER が不正 (project/.env に GitHub user 名 [A-Za-z0-9-]+ を設定): '$PROJECT_GH_USER'" >&2; exit 1; }; \
