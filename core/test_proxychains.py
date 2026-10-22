@@ -13,6 +13,7 @@ proxychains4 でラップした curl を走らせ、proxy が `CONNECT <hostname
 - negative probe: proxychains 無しなら (test.invalid が解決できず) テスト proxy に接続は来ない
   = 観測された CONNECT が proxychains 由来であることの帰属を担保する。
 """
+
 import os
 import socket
 import subprocess
@@ -33,7 +34,7 @@ def serve_once(sock, rec, timeout):
     sock.settimeout(timeout)
     try:
         conn, _ = sock.accept()
-    except socket.timeout:
+    except TimeoutError:
         return
     with conn:
         conn.settimeout(timeout)
@@ -44,7 +45,7 @@ def serve_once(sock, rec, timeout):
                 if not chunk:
                     break
                 buf += chunk
-        except socket.timeout:
+        except TimeoutError:
             pass
         rec.line = buf.split(b"\r\n", 1)[0].decode("latin1", "replace")
         try:
@@ -56,28 +57,35 @@ def serve_once(sock, rec, timeout):
 def curl_env():
     """curl 自身が proxy env を使わないよう proxy 系変数を除いた環境を返す。"""
     env = dict(os.environ)
-    for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-              "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+    for k in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
         env.pop(k, None)
     return env
 
 
 def run_curl(port, use_proxychains):
-    conf = tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False)
-    conf.write(
-        "strict_chain\nproxy_dns\nremote_dns_subnet 224\n"
-        "tcp_connect_time_out 8000\ntcp_read_time_out 15000\nquiet_mode\n"
-        f"[ProxyList]\nhttp 127.0.0.1 {port}\n"
-    )
-    conf.close()
     curl = ["curl", "-s", "-o", "/dev/null", "--max-time", "5", f"https://{TARGET_HOST}/"]
-    cmd = (["proxychains4", "-f", conf.name] + curl) if use_proxychains else curl
-    try:
-        subprocess.run(cmd, capture_output=True, timeout=20, env=curl_env())
-    except subprocess.TimeoutExpired:
-        pass
-    finally:
-        os.unlink(conf.name)
+    with tempfile.TemporaryDirectory() as d:
+        conf = os.path.join(d, "proxychains.conf")
+        with open(conf, "w") as f:
+            f.write(
+                "strict_chain\nproxy_dns\nremote_dns_subnet 224\n"
+                "tcp_connect_time_out 8000\ntcp_read_time_out 15000\nquiet_mode\n"
+                f"[ProxyList]\nhttp 127.0.0.1 {port}\n"
+            )
+        cmd = (["proxychains4", "-f", conf] + curl) if use_proxychains else curl
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=20, env=curl_env(), check=False)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def probe(use_proxychains, accept_timeout):
@@ -100,15 +108,19 @@ def main():
     line = probe(use_proxychains=True, accept_timeout=10)
     want = f"CONNECT {TARGET_HOST}:443"
     if not line or want not in line:
-        print(f"FAIL proxychains: proxy が期待の CONNECT を受けていない "
-              f"(got={line!r}, want に含む={want!r})", file=sys.stderr)
+        print(
+            f"FAIL proxychains: proxy が期待の CONNECT を受けていない (got={line!r}, want に含む={want!r})",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # negative probe: proxychains 無しなら test.invalid は解決できず proxy に接続が来ないはず。
     line2 = probe(use_proxychains=False, accept_timeout=3)
     if line2 is not None:
-        print(f"FAIL negative: proxychains 無しでテスト proxy に接続が来た (got={line2!r}) "
-              f"→ 観測の帰属が壊れている", file=sys.stderr)
+        print(
+            f"FAIL negative: proxychains 無しでテスト proxy に接続が来た (got={line2!r}) → 観測の帰属が壊れている",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print("ok  proxychains (hostname preserved: CONNECT test.invalid:443 / negative clean)")

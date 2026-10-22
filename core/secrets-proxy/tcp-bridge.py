@@ -9,6 +9,7 @@ mitmweb は container の loopback にしか bind していない (dev から到
 publish ではなくこの docker exec 経由でだけ Web UI に届く。dev は docker socket を持たず
 exec もできないので、この経路も使えない。
 """
+
 import socket
 import sys
 import threading

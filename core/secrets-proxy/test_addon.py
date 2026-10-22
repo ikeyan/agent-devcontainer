@@ -7,6 +7,7 @@
 
   実行: python3 test_addon.py            (proxy イメージ内 = mitmproxy あり)
 """
+
 import base64
 import contextlib
 import json
@@ -15,30 +16,34 @@ import os
 import tempfile
 import urllib.parse as _url
 
-from hypothesis import HealthCheck, given, settings, strategies as st
+import addon
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 from mitmproxy.test import tflow
 
-import addon
-
 _TMP = tempfile.mkdtemp(prefix="sp-test-")
-_SETTINGS = settings(max_examples=25, deadline=None,
-                     suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much])
+_SETTINGS = settings(
+    max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much]
+)
 
 # 印字可能 ASCII から区切り/クォート/バックスラッシュ/@ を除いた安全域。JSON・ヘッダ・
 # url-encode に素で乗り、redaction の byte 単位 replace が一致し、placeholder(@@…@@)と衝突しない。
 _SAFE = st.text(
     alphabet=st.characters(min_codepoint=33, max_codepoint=126),
-    min_size=8, max_size=48,
+    min_size=8,
+    max_size=48,
 ).filter(lambda s: not (set('"\\@') & set(s)))
 _JUNK = st.text(
     alphabet=st.characters(min_codepoint=33, max_codepoint=126),
-    min_size=0, max_size=24,
+    min_size=0,
+    max_size=24,
 ).filter(lambda s: not (set('"\\@') & set(s)))
 # Set-Cookie の値は ; , (属性/複数 cookie の区切り) を含めない (RFC 6265)。捕獲元に
 # set-cookie を含む test はこちらを使う。
 _COOKIE_SAFE = st.text(
     alphabet=st.characters(min_codepoint=33, max_codepoint=126),
-    min_size=8, max_size=48,
+    min_size=8,
+    max_size=48,
 ).filter(lambda s: not (set('"\\@;,') & set(s)))
 
 
@@ -118,50 +123,68 @@ def _guard(sp, f):
 # into 種別ごとの (name, place(host, s)=その場所に s を置いた request, get(flow)=その場所の値)。
 # place は「宣言場所へ placeholder を置く」用途と、空文字を置いて inject に上書きさせる用途を兼ねる。
 _INTO = [
-    ("header", "x-tok",
-     lambda h, s: _reqflow(h, headers={"x-tok": s}),
-     lambda f: f.request.headers.get("x-tok")),
-    ("query", "tok",
-     lambda h, s: _reqflow(h, path="/p?tok=" + _url.quote(s, safe="")),
-     lambda f: f.request.query.get("tok")),
-    ("form", "field",
-     lambda h, s: _reqflow(h, ct="application/x-www-form-urlencoded", body=_url.urlencode({"field": s})),
-     lambda f: f.request.urlencoded_form.get("field")),
-    ("json", "field",
-     lambda h, s: _reqflow(h, ct="application/json", body=json.dumps({"field": s})),
-     lambda f: json.loads(f.request.get_text() or "{}").get("field")),
+    ("header", "x-tok", lambda h, s: _reqflow(h, headers={"x-tok": s}), lambda f: f.request.headers.get("x-tok")),
+    (
+        "query",
+        "tok",
+        lambda h, s: _reqflow(h, path="/p?tok=" + _url.quote(s, safe="")),
+        lambda f: f.request.query.get("tok"),
+    ),
+    (
+        "form",
+        "field",
+        lambda h, s: _reqflow(h, ct="application/x-www-form-urlencoded", body=_url.urlencode({"field": s})),
+        lambda f: f.request.urlencoded_form.get("field"),
+    ),
+    (
+        "json",
+        "field",
+        lambda h, s: _reqflow(h, ct="application/json", body=json.dumps({"field": s})),
+        lambda f: json.loads(f.request.get_text() or "{}").get("field"),
+    ),
 ]
 
 
 # ===================== load 時 fail-closed / 正規化 =====================
 
+
 def test_load_rejects_invalid_rules():
     """不正な rules は load で raise する (fail-closed)。理由文字列も検証する。"""
     H = 'hosts:\n  "x.example.com":\n'
     cases = [
-        ("capture into 欠落",
-         H + "    capture:\n      - { from: { type: set-cookie, name: s }, store: s }\n", "into"),
-        ("capture.from string 形",
-         H + "    capture:\n      - from: set-cookie\n        store: s\n"
-             "        into: { type: cookie, name: s }\n", "from"),
-        ("capture.into encode",
-         H + "    capture:\n      - from: { type: json, name: t }\n        store: s\n"
-             "        into: { type: header, name: x, encode: base64 }\n", "encode"),
-        ("capture store 重複",
-         H + "    capture:\n      - from: { type: set-cookie, name: a }\n        store: dup\n"
-             "        into: { type: cookie, name: a }\n"
-             "      - from: { type: set-cookie, name: b }\n        store: dup\n"
-             "        into: { type: cookie, name: b }\n", "衝突"),
-        ("substitute placeholder 重複",
-         H + "    substitute:\n      - placeholder: \"P\"\n        secret: { env: A }\n"
-             "        into: { type: header, name: h1 }\n"
-             "      - placeholder: \"P\"\n        secret: { env: B }\n"
-             "        into: { type: header, name: h2 }\n", "衝突"),
+        ("capture into 欠落", H + "    capture:\n      - { from: { type: set-cookie, name: s }, store: s }\n", "into"),
+        (
+            "capture.from string 形",
+            H + "    capture:\n      - from: set-cookie\n        store: s\n        into: { type: cookie, name: s }\n",
+            "from",
+        ),
+        (
+            "capture.into encode",
+            H + "    capture:\n      - from: { type: json, name: t }\n        store: s\n"
+            "        into: { type: header, name: x, encode: base64 }\n",
+            "encode",
+        ),
+        (
+            "capture store 重複",
+            H + "    capture:\n      - from: { type: set-cookie, name: a }\n        store: dup\n"
+            "        into: { type: cookie, name: a }\n"
+            "      - from: { type: set-cookie, name: b }\n        store: dup\n"
+            "        into: { type: cookie, name: b }\n",
+            "衝突",
+        ),
+        (
+            "substitute placeholder 重複",
+            H + '    substitute:\n      - placeholder: "P"\n        secret: { env: A }\n'
+            "        into: { type: header, name: h1 }\n"
+            '      - placeholder: "P"\n        secret: { env: B }\n'
+            "        into: { type: header, name: h2 }\n",
+            "衝突",
+        ),
     ]
     for label, rules, expect in cases:
         try:
             _proxy(rules)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             assert expect in str(e), (label, str(e))
         else:
             raise AssertionError(label + ": load が raise しなかった")
@@ -170,25 +193,25 @@ def test_load_rejects_invalid_rules():
 def test_load_normalizes_sources_and_forms():
     """inject/substitute の source (bw/env/file) と name/placeholder 形の正規化を構造で検証。"""
     sp = _proxy(
-        'block_unlisted: true\n'
-        'hosts:\n'
+        "block_unlisted: true\n"
+        "hosts:\n"
         '  "api.example.com":\n'
-        '    inject:\n'
+        "    inject:\n"
         '      - secret: { item: "Example API", field: password }\n'
         '        into: { type: header, name: Authorization, value: "Bearer ${secret}" }\n'
-        '      - secret: { env: TOK }\n'
-        '        into: { type: header, name: x-e }\n'
-        '      - secret: { file: /nonexistent }\n'
-        '        into: { type: header, name: x-f }\n'
-        '    substitute:\n'
-        '      - name: acct1\n'
-        '        secret: { item: ACCT1 }\n'
-        '        fields:\n'
-        '          - { field: username, into: { type: form, name: email } }\n'
-        '          - { field: password, into: { type: form, name: pw } }\n'
+        "      - secret: { env: TOK }\n"
+        "        into: { type: header, name: x-e }\n"
+        "      - secret: { file: /nonexistent }\n"
+        "        into: { type: header, name: x-f }\n"
+        "    substitute:\n"
+        "      - name: acct1\n"
+        "        secret: { item: ACCT1 }\n"
+        "        fields:\n"
+        "          - { field: username, into: { type: form, name: email } }\n"
+        "          - { field: password, into: { type: form, name: pw } }\n"
         '      - placeholder: "LIT"\n'
-        '        secret: { env: T2 }\n'
-        '        into: { type: json, name: buser, encode: base64 }\n'
+        "        secret: { env: T2 }\n"
+        "        into: { type: json, name: buser, encode: base64 }\n"
     )
     injs = sp.inject["api.example.com"]
     assert injs[0]["source"] == ("bw", "Example API", "password")
@@ -205,28 +228,29 @@ def test_load_normalizes_sources_and_forms():
 
 # ===================== block / block_unlisted =====================
 
+
 def test_block_rules_and_unlisted():
     """block ルール (host/methods/path の各省略可) と block_unlisted の直積を検証。"""
     sp = _proxy(
-        'block_unlisted: true\n'
-        'block:\n'
+        "block_unlisted: true\n"
+        "block:\n"
         '  - host: "*.example.com"\n'
-        '    methods: [POST, DELETE]\n'
+        "    methods: [POST, DELETE]\n"
         '    path: "^/danger"\n'
         '    reason: "r1"\n'
-        '  - path: "^/admin"\n'          # host/method 省略 = 全ホスト/全メソッド
+        '  - path: "^/admin"\n'  # host/method 省略 = 全ホスト/全メソッド
         '    reason: "r2"\n'
         'allow_hosts: ["a.example.com", "b.example.com"]\n'
     )
     # (method, host, path, blocked であるべきか)
     cases = [
-        ("POST", "a.example.com", "/danger", True),    # r1
+        ("POST", "a.example.com", "/danger", True),  # r1
         ("DELETE", "a.example.com", "/danger", True),  # r1
-        ("GET", "a.example.com", "/danger", False),    # r1 method 不一致 → 素通し
-        ("POST", "b.example.com", "/danger", True),    # r1 host 一致
-        ("GET", "a.example.com", "/admin", True),      # r2 (host 省略)
-        ("GET", "a.example.com", "/safe", False),      # どの rule も不一致 → allow
-        ("GET", "evil.other.net", "/safe", True),      # block_unlisted (未許可)
+        ("GET", "a.example.com", "/danger", False),  # r1 method 不一致 → 素通し
+        ("POST", "b.example.com", "/danger", True),  # r1 host 一致
+        ("GET", "a.example.com", "/admin", True),  # r2 (host 省略)
+        ("GET", "a.example.com", "/safe", False),  # どの rule も不一致 → allow
+        ("GET", "evil.other.net", "/safe", True),  # block_unlisted (未許可)
     ]
     for method, host, path, want in cases:
         f = _reqflow(host, method=method, path=path)
@@ -236,6 +260,7 @@ def test_block_rules_and_unlisted():
 
 
 # ===================== 観測ログ (allowlist 割り出し) =====================
+
 
 def _capture_logs(fn):
     """addon.log の INFO 以上を捕まえてメッセージのリストを返す。"""
@@ -269,9 +294,9 @@ def test_log_requests_observation():
     assert sp.log_requests is True
 
     def drive():
-        sp.request(_reqflow("api.anthropic.com", method="POST",
-                            path="/v1/messages?beta=tok-SECRET"))
+        sp.request(_reqflow("api.anthropic.com", method="POST", path="/v1/messages?beta=tok-SECRET"))
         sp.request(_reqflow("evil.example.com", method="GET", path="/steal"))
+
     msgs = _capture_logs(drive)
     assert any("REQ POST api.anthropic.com" in m for m in msgs), msgs
     assert any("REQ GET evil.example.com" in m for m in msgs), msgs
@@ -282,6 +307,7 @@ def test_log_requests_observation():
 
 
 # ===================== inject =====================
+
 
 @given(value=_SAFE)
 @_SETTINGS
@@ -296,27 +322,24 @@ def test_inject_places_value(value):
                 sec, ctx = _source(kind, value)
                 enc = (", encode: %s" % encode) if encode else ""
                 rules = (
-                    'block_unlisted: true\n'
-                    'hosts:\n'
-                    '  "%s":\n' % host +
-                    '    inject:\n'
-                    '      - secret: %s\n' % sec +
-                    '        into: { type: %s, name: %s%s }\n' % (into_type, name, enc)
+                    "block_unlisted: true\n"
+                    "hosts:\n"
+                    '  "%s":\n' % host + "    inject:\n"
+                    "      - secret: %s\n" % sec + "        into: { type: %s, name: %s%s }\n" % (into_type, name, enc)
                 )
                 with ctx:
                     sp = _proxy(rules)
-                    f = place(host, "")      # 空を置いて inject に上書きさせる
+                    f = place(host, "")  # 空を置いて inject に上書きさせる
                     sp.request(f)
                 assert f.response is None, (kind, encode, into_type, f.response and f.response.status_code)
                 assert get(f) == expected, (kind, encode, into_type, get(f), expected)
     # value テンプレート (${secret} ラッパ) の展開 (header で 1 度)
     with _env(SP_SECRET=value):
         sp = _proxy(
-            'block_unlisted: true\n'
-            'hosts:\n'
-            '  "%s":\n' % host +
-            '    inject:\n'
-            '      - secret: { env: SP_SECRET }\n'
+            "block_unlisted: true\n"
+            "hosts:\n"
+            '  "%s":\n' % host + "    inject:\n"
+            "      - secret: { env: SP_SECRET }\n"
             '        into: { type: header, name: x-tok, value: "Bearer ${secret}" }\n'
         )
         f = _reqflow(host)
@@ -325,6 +348,7 @@ def test_inject_places_value(value):
 
 
 # ===================== substitute (placeholder -> 本物) =====================
+
 
 @given(value=_SAFE, junk=_JUNK)
 @_SETTINGS
@@ -337,15 +361,12 @@ def test_substitute_restores_only_bound_and_declared_location(value, junk):
             enc = (", encode: %s" % encode) if encode else ""
             expected = base64.b64encode(value.encode()).decode() if encode else value
             rules = (
-                'block_unlisted: true\n'
-                'detect_leaks: false\n'            # 置換スコープのみ隔離 (leak は別 test)
-                'allow_hosts: ["%s"]\n' % other +
-                'hosts:\n'
-                '  "%s":\n' % host +
-                '    substitute:\n'
-                '      - placeholder: "%s"\n' % PH +
-                '        secret: { env: SP_SECRET }\n'
-                '        into: { type: %s, name: %s%s }\n' % (into_type, name, enc)
+                "block_unlisted: true\n"
+                "detect_leaks: false\n"  # 置換スコープのみ隔離 (leak は別 test)
+                'allow_hosts: ["%s"]\n' % other + "hosts:\n"
+                '  "%s":\n' % host + "    substitute:\n"
+                '      - placeholder: "%s"\n' % PH + "        secret: { env: SP_SECRET }\n"
+                "        into: { type: %s, name: %s%s }\n" % (into_type, name, enc)
             )
             with _env(SP_SECRET=value):
                 sp = _proxy(rules)
@@ -372,25 +393,26 @@ def test_unresolved_substitute_fails_closed():
     os.environ.pop("SP_MISSING", None)
     for into_type, name, place, get in _INTO:
         sp = _proxy(
-            'block_unlisted: true\n'
-            'hosts:\n'
-            '  "%s":\n' % host +
-            '    substitute:\n'
-            '      - placeholder: "%s"\n' % PH +
-            '        secret: { env: SP_MISSING }\n'
-            '        into: { type: %s, name: %s }\n' % (into_type, name)
+            "block_unlisted: true\n"
+            "hosts:\n"
+            '  "%s":\n' % host + "    substitute:\n"
+            '      - placeholder: "%s"\n' % PH + "        secret: { env: SP_MISSING }\n"
+            "        into: { type: %s, name: %s }\n" % (into_type, name)
         )
-        sp.running()      # warm 失敗 → unresolved sentinel
+        sp.running()  # warm 失敗 → unresolved sentinel
         f = place(host, PH)
         sp.request(f)
-        assert f.response is not None and f.response.status_code == 502, \
-            (into_type, f.response and f.response.status_code)
+        assert f.response is not None and f.response.status_code == 502, (
+            into_type,
+            f.response and f.response.status_code,
+        )
         clear = _reqflow(host)
         sp.request(clear)
         assert clear.response is None, into_type
 
 
 # ===================== leak 検知 =====================
+
 
 @given(value=_SAFE)
 @_SETTINGS
@@ -400,29 +422,28 @@ def test_leak_detection_blocks_real_value(value):
     host = "x.example.com"
     with _env(SP_SECRET=value):
         sp = _proxy(
-            'block_unlisted: true\n'
-            'detect_leaks: true\n'
-            'hosts:\n'
-            '  "%s":\n' % host +
-            '    substitute:\n'
+            "block_unlisted: true\n"
+            "detect_leaks: true\n"
+            "hosts:\n"
+            '  "%s":\n' % host + "    substitute:\n"
             '      - placeholder: "PHLEAK"\n'
-            '        secret: { env: SP_SECRET }\n'
-            '        into: { type: header, name: x-api-key }\n'
+            "        secret: { env: SP_SECRET }\n"
+            "        into: { type: header, name: x-api-key }\n"
         )
         sp.running()
         makers = [
-            lambda: _reqflow(host, headers={"x-any": value}),                        # ヘッダ単独
-            lambda: _reqflow(host, headers={"x-two": "pre-" + value + "-post"}),      # ヘッダ内の部分文字列
+            lambda: _reqflow(host, headers={"x-any": value}),  # ヘッダ単独
+            lambda: _reqflow(host, headers={"x-two": "pre-" + value + "-post"}),  # ヘッダ内の部分文字列
             lambda: _reqflow(host, ct="application/json", body=json.dumps({"a": {"b": value}})),  # 入れ子 JSON 本文
         ]
         for i, mk in enumerate(makers):
             f = mk()
             sp.request(f)
-            assert f.response is not None and f.response.status_code == 403, \
-                (i, f.response and f.response.status_code)
+            assert f.response is not None and f.response.status_code == 403, (i, f.response and f.response.status_code)
 
 
 # ===================== capture (応答 -> placeholder) + 復元 =====================
+
 
 @given(value=_COOKIE_SAFE)
 @_SETTINGS
@@ -438,15 +459,11 @@ def test_capture_roundtrip_and_bind(value):
     ]
     for frm, name, setup in sources:
         sp = _proxy(
-            'block_unlisted: true\n'
-            'allow_hosts: ["%s"]\n' % other +
-            'hosts:\n'
-            '  "%s":\n' % host +
-            '    capture:\n'
-            '      - from: { type: %s, name: %r }\n' % (frm, name) +
-            '        store: s\n'
-            '        bind: ["%s"]\n' % host +
-            '        into: { type: header, name: x-auth }\n'
+            "block_unlisted: true\n"
+            'allow_hosts: ["%s"]\n' % other + "hosts:\n"
+            '  "%s":\n' % host + "    capture:\n"
+            "      - from: { type: %s, name: %r }\n" % (frm, name) + "        store: s\n"
+            '        bind: ["%s"]\n' % host + "        into: { type: header, name: x-auth }\n"
         )
         f = _respflow(host, ct="application/json")
         setup(f)
@@ -468,14 +485,14 @@ def test_capture_reissue_keeps_real_value_before_redaction():
     """再発行応答でも redaction 前に抽出するので cap_store に本物が入り、正規 placeholder は
     leak 誤検知されず本物へ復元される (順序の回帰 pin)。"""
     sp = _proxy(
-        'block_unlisted: true\n'
-        'hosts:\n'
+        "block_unlisted: true\n"
+        "hosts:\n"
         '  "x.example.com":\n'
-        '    capture:\n'
-        '      - from: { type: json, name: token }\n'
-        '        store: tok\n'
+        "    capture:\n"
+        "      - from: { type: json, name: token }\n"
+        "        store: tok\n"
         '        bind: ["x.example.com"]\n'
-        '        into: { type: header, name: x-auth }\n'
+        "        into: { type: header, name: x-auth }\n"
     )
 
     def do_response(tokval):
@@ -484,7 +501,7 @@ def test_capture_reissue_keeps_real_value_before_redaction():
 
     do_response("REALTOKEN999")
     assert sp.cap_store["tok"]["value"] == "REALTOKEN999"
-    f2 = do_response("REALTOKEN999")   # 同 token 再発行 (cap_store に既存) でも本物のまま
+    f2 = do_response("REALTOKEN999")  # 同 token 再発行 (cap_store に既存) でも本物のまま
     assert sp.cap_store["tok"]["value"] == "REALTOKEN999", sp.cap_store["tok"]
     ph = sp.cap_store["tok"]["ph"]
     body = f2.response.get_text()
@@ -496,6 +513,7 @@ def test_capture_reissue_keeps_real_value_before_redaction():
 
 # ===================== 応答 redaction の網羅性 (crown-jewel の不変条件) =====================
 
+
 @given(value=_SAFE)
 @_SETTINGS
 def test_response_redaction_is_complete(value):
@@ -505,34 +523,31 @@ def test_response_redaction_is_complete(value):
     b64 = base64.b64encode(value.encode()).decode()
 
     def subst(h, into_type, name, bind=None):
-        bl = ('        bind: [%s]\n' % ", ".join('"%s"' % x for x in bind)) if bind else ""
+        bl = ("        bind: [%s]\n" % ", ".join('"%s"' % x for x in bind)) if bind else ""
         return (
-            'block_unlisted: true\n'
+            "block_unlisted: true\n"
             + (('allow_hosts: ["%s"]\n' % host) if bind else "")
-            + 'hosts:\n  "%s":\n' % h +
-            '    substitute:\n'
+            + 'hosts:\n  "%s":\n' % h
+            + "    substitute:\n"
             '      - placeholder: "PHRED"\n'
-            '        secret: { env: SP_SECRET }\n'
-            '        into: { type: %s, name: %s }\n' % (into_type, name) + bl
+            "        secret: { env: SP_SECRET }\n"
+            "        into: { type: %s, name: %s }\n" % (into_type, name) + bl
         )
 
     def inject(into_type, name, encode=None):
         enc = (", encode: %s" % encode) if encode else ""
         return (
-            'block_unlisted: true\n'
-            'hosts:\n  "%s":\n' % host +
-            '    inject:\n'
-            '      - secret: { env: SP_SECRET }\n'
-            '        into: { type: %s, name: %s%s }\n' % (into_type, name, enc)
+            "block_unlisted: true\n"
+            'hosts:\n  "%s":\n' % host + "    inject:\n"
+            "      - secret: { env: SP_SECRET }\n"
+            "        into: { type: %s, name: %s%s }\n" % (into_type, name, enc)
         )
 
     capture = (
-        'block_unlisted: true\n'
-        'hosts:\n  "%s":\n' % host +
-        '    capture:\n'
-        '      - from: { type: json, name: tok }\n'
-        '        store: s\n        bind: ["%s"]\n' % host +
-        '        into: { type: header, name: x-auth }\n'
+        "block_unlisted: true\n"
+        'hosts:\n  "%s":\n' % host + "    capture:\n"
+        "      - from: { type: json, name: tok }\n"
+        '        store: s\n        bind: ["%s"]\n' % host + "        into: { type: header, name: x-auth }\n"
     )
 
     # (label, rules, warm 要否, on_wire=応答に現れる秘密, body(dict))
@@ -541,8 +556,7 @@ def test_response_redaction_is_complete(value):
         ("inject_raw", inject("header", "x-api-key"), True, value, {"echo": value}),
         ("inject_b64", inject("json", "buser", "base64"), True, b64, {"echo": b64}),
         ("capture", capture, False, value, {"tok": value}),
-        ("subst_bind_target", subst("a.example.com", "header", "x-api-key", bind=[host]),
-         True, value, {"echo": value}),
+        ("subst_bind_target", subst("a.example.com", "header", "x-api-key", bind=[host]), True, value, {"echo": value}),
     ]
     for label, rules, warm, on_wire, body in scenarios:
         for ct in ("application/json", "application/octet-stream"):
@@ -563,14 +577,20 @@ def test_logs_are_host_only_and_never_leak_path_or_query():
     # する (fail-closed — segment の秘密性を長さ・文字種で推定しない。/hook/password 等の短い秘密も守る)。
     # 観測 site (REQ) と BLOCK-ENDPOINT site の両方を実 call site として pin する (helper 単体でなく)。
     with _env(SECRETS_PROXY_LOG_REQUESTS="1"):
-        sp = _proxy('block_unlisted: false\n'
-                    'block:\n  - path: "^/services"\n    reason: "danger"\n')
+        sp = _proxy('block_unlisted: false\nblock:\n  - path: "^/services"\n    reason: "danger"\n')
+
     def drive():
-        sp.request(_reqflow("hooks.example.com", method="POST",
-                            path="/services/T00000000/BSEKRETsekret1234567890/password?sig=QUERYSEKRET"))
+        sp.request(
+            _reqflow(
+                "hooks.example.com",
+                method="POST",
+                path="/services/T00000000/BSEKRETsekret1234567890/password?sig=QUERYSEKRET",
+            )
+        )
         sp.request(_reqflow("api.anthropic.com", method="GET", path="/hook/password?tok=QUERYSEKRET"))
+
     msgs = _capture_logs(drive)
-    assert any("REQ GET api.anthropic.com" in m for m in msgs), msgs          # host は記録
+    assert any("REQ GET api.anthropic.com" in m for m in msgs), msgs  # host は記録
     blk = [m for m in msgs if "BLOCK-ENDPOINT" in m]
     assert blk and any(("hooks.example.com" in m) and ("danger" in m) for m in blk), msgs  # host+reason
     # path/query の中身は一切ログに載らない (短い lowercase 秘密 password や長い token も含め)。

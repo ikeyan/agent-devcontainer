@@ -66,7 +66,7 @@ REPO = Path(
 )
 ENGINE = Path(__file__).resolve().parents[1] / "redact"
 sys.path.insert(0, str(ENGINE))
-from flows_to_ndjson import host_in_domains  # noqa: E402  (probe 導出とアプリ実装で同じ matcher を使う)
+from flows_to_ndjson import host_in_domains
 
 SECRET_SHAPE = 1  # 秘密らしき値 (auth ヘッダ・body・set-cookie) を積んだ形
 SHAPE_METHOD = {0: "GET", SECRET_SHAPE: "POST", 2: "DELETE"}  # 形 → method (出力の照合キー)
@@ -95,8 +95,7 @@ def synth_flow(host: str, shape: int, host_header: str | None = None):
                 host=host,
                 method=b"POST",
                 path=b"/api/login",
-                headers=hdr
-                + [(b"authorization", b"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SIG_secret")],
+                headers=hdr + [(b"authorization", b"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SIG_secret")],
                 content=b'{"deviceToken":"id123:APA91bSECRET_fcm"}',
             ),
             resp=tutils.tresp(
@@ -140,11 +139,7 @@ def declared_domains(redact_path: Path) -> tuple[str, ...] | None:
         plain = any(isinstance(t, ast.Name) and t.id == "SELFCHECK_DOMAINS" for t in targets)
         # 展開代入 (SELFCHECK_DOMAINS, x = ...) 等、target の内側に埋まった束縛も拾って拒否する
         # (見逃すと宣言が無い扱い → filter するアプリが紛らわしい「行数」の赤になる)。
-        anywhere = any(
-            isinstance(n, ast.Name) and n.id == "SELFCHECK_DOMAINS"
-            for t in targets
-            for n in ast.walk(t)
-        )
+        anywhere = any(isinstance(n, ast.Name) and n.id == "SELFCHECK_DOMAINS" for t in targets for n in ast.walk(t))
         if anywhere:
             bindings.append((node, plain))
     if not bindings:
@@ -167,9 +162,7 @@ def declared_domains(redact_path: Path) -> tuple[str, ...] | None:
         raise ValueError(f"リテラルとして評価できない: {e}") from e
     # tuple 限定 (list 不可): list は宣言後に .append 等で実行時だけ広げられ、検査した宣言と
     # 実効 filter がずれる (fail-open)。tuple なら変異は AttributeError で必ず露呈する。
-    if not isinstance(val, tuple) or not val or not all(
-        isinstance(d, str) and DOMAIN_RE.fullmatch(d) for d in val
-    ):
+    if not isinstance(val, tuple) or not val or not all(isinstance(d, str) and DOMAIN_RE.fullmatch(d) for d in val):
         raise ValueError(f"小文字 dot 区切りドメインの空でない tuple でない (list も不可 — 変異可能): {val!r}")
     domains = val
     # root 同士の重複・入れ子を拒否する。入れ子 (example.com と sub.example.com) だと棄却
@@ -223,6 +216,7 @@ def run_redact(redact_path: Path, flows: bytes) -> subprocess.CompletedProcess:
         input=flows,
         capture_output=True,
         env=env,
+        check=False,
     )
 
 
@@ -254,7 +248,9 @@ def check_contract(redact_path: Path, plan: Plan, accept: list[tuple[str, str]] 
                 except ValueError:  # 例: host を "[REDACTED]" に書き換えた url は urlsplit が raise する
                     host = None
             if not host:
-                errs.append(f"行 {i} の url から host を読めない (宣言アプリは 1 flow を 1 つの JSON object にし url の host を残す契約)")
+                errs.append(
+                    f"行 {i} の url から host を読めない (宣言アプリは 1 flow を 1 つの JSON object にし url の host を残す契約)"
+                )
             else:
                 method = d.get("method")
                 out_pairs.append((host, method if isinstance(method, str) else "?"))
@@ -283,7 +279,7 @@ def check_app(redact_path: Path) -> list[str]:
         plan_accept = boundary_plan(domains) if domains is not None else None
     except ValueError as e:
         return [f"SELFCHECK_DOMAINS 宣言が不正: {e}"]
-    except Exception as e:  # SyntaxError (ast.parse) や読取り失敗もこのアプリの NG に封じ込める
+    except Exception as e:  # SyntaxError (ast.parse) や読取り失敗もこのアプリの NG に封じ込める  # noqa: BLE001
         # (checker ごと落とすと残りのアプリと negative probe が未検査のまま終わる)
         return [f"redact_flow を解析できない: {type(e).__name__}: {e}"]
     if plan_accept is None:
@@ -317,8 +313,7 @@ def filter_app_body(keep_expr: str) -> str:
     negative probe 用。正しいアプリは engine の iter_flow_dicts / keep_domains= を使う)。
     keep_expr は pretty_host 文字列 h に対する式。"""
     return (
-        DECL
-        + "import json\n"
+        DECL + "import json\n"
         "from mitmproxy import http, io\n"
         "from flows_to_ndjson import to_dict\n"
         "def filter_main():\n"
@@ -343,7 +338,7 @@ def main() -> int:
     for rp in apps:
         try:
             errs = check_app(rp)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             errs = [f"checker 内部例外: {type(e).__name__}: {e}"]
         rel = rp.relative_to(REPO)
         if errs:
@@ -407,7 +402,8 @@ def main() -> int:
         probe(
             "bracket_host",
             "host を読めない",
-            DECL + 'import json\ndef redact(s):\n    d = json.loads(s)\n    d["url"] = "http://[REDACTED]/x"\n    return json.dumps(d)\n',
+            DECL
+            + 'import json\ndef redact(s):\n    d = json.loads(s)\n    d["url"] = "http://[REDACTED]/x"\n    return json.dumps(d)\n',
             run=KEEP_RUN,
         )
         # url を文字列以外に書き換える宣言アプリ (str 前提で urlsplit すると checker が落ちる形)

@@ -18,6 +18,7 @@ CLI: `python rules_bw.py <rules.yaml>`
   → 呼び出し側は「rc==1 のときだけ省略、それ以外は要求」とすること (本ファイルの実行自体が
      失敗した rc>=2 も要求側に倒れる)。
 """
+
 import sys
 
 import yaml
@@ -88,7 +89,7 @@ def main(argv):
     try:
         with open(argv[1]) as f:
             cfg = yaml.safe_load(f) or {}
-    except Exception as e:  # parse / IO 不能 = 判定不能 → fail-closed
+    except Exception as e:  # parse / IO 不能 = 判定不能 → fail-closed  # noqa: BLE001
         sys.stderr.write("rules_bw: rules を解析できません (%s) → bw 必要扱い\n" % e)
         return 0
     return 0 if needs_bw(cfg) else 1

@@ -29,6 +29,7 @@ pin する条件 (§10):
 
 CLI: `check_compose_posture.py <expected-project-name> [--selftest]` (stdin = compose config)。
 """
+
 from __future__ import annotations
 
 import copy
@@ -56,7 +57,7 @@ def _vol_is_bind(v: object) -> bool:
         return v.get("type") == "bind"
     if isinstance(v, str):
         src = v.split(":", 1)[0]
-        return src.startswith("/") or src.startswith(".")
+        return src.startswith(("/", "."))
     return False
 
 
@@ -71,7 +72,9 @@ def _net_keys(nets: object) -> set[str]:
 def check_name(cfg: dict, expected_name: str) -> list[str]:
     name = cfg.get("name")
     if name != expected_name:
-        return [f"A: project 名が {expected_name!r} でない (実際: {name!r})。project/compose.yaml の name: が消えた/変わった可能性"]
+        return [
+            f"A: project 名が {expected_name!r} でない (実際: {name!r})。project/compose.yaml の name: が消えた/変わった可能性"
+        ]
     return []
 
 
@@ -124,7 +127,7 @@ def check_no_docker_sock(cfg: dict) -> list[str]:
     return errs
 
 
-def _build_checks(expected_name: str) -> list[tuple[str, "object"]]:
+def _build_checks(expected_name: str) -> list[tuple[str, object]]:
     # "name" だけ expected_name を要るので functools.partial で束縛し、他の check_* と同じ
     # `fn(cfg) -> list[str]` 形に揃える (validate/selftest からは一様に呼べる)。
     return [
@@ -171,7 +174,7 @@ def _mut_docker_sock(cfg: dict) -> None:
     )
 
 
-def _build_mutators(expected_name: str) -> dict[str, "object"]:
+def _build_mutators(expected_name: str) -> dict[str, object]:
     return {
         "name": functools.partial(_mut_name, expected_name=expected_name),
         "dev_caps": _mut_caps,

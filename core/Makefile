@@ -66,6 +66,7 @@ CHECKS := \
 	check-redact-config \
 	check-redact-selfcheck \
 	check-redact-py \
+	check-python-lint \
 	check-redact-invariants \
 	check-gh-seed \
 	check-proxychains \
@@ -279,6 +280,25 @@ check-redact-selfcheck: ## extract/*/redact_flow.py のエンジン契約を検�
 
 # redact エンジン・テンプレート・selfcheck 自体の Python 構文を compile() で検査する。
 # selfcheck は実行時にエンジンを import するが、テンプレートはどの check も見ていなかった。
+# ruff (lint + format) と vulture (使われない関数・変数・属性) で core の Python を検査する。設定は
+# pyproject.toml の [tool.ruff]。ruff は使われない import・変数を、vulture は使われない関数・クラス・属性を
+# 列挙する。vulture の --ignore-names は mitmproxy の addon の API が名前で呼ぶもの (load の引数 loader、
+# module の addons)。--no-cache で .ruff_cache を残さない。negative probe は合成入力を stdin で渡す
+# (検出器が使われない import と未整形のコードを実際に弾くこと)。
+RUFF := $(dir $(PY))ruff
+VULTURE := $(dir $(PY))vulture
+check-python-lint: ## Python を ruff (lint/format) と vulture (使われないコード) で検査
+	@printf 'import os\n' | $(RUFF) check --no-cache --quiet --stdin-filename probe.py - >/dev/null 2>&1 \
+		&& { echo "negative: ruff check が使われない import を素通し" >&2; exit 1; }; \
+	printf 'x=1\n' | $(RUFF) format --no-cache --check --quiet --stdin-filename probe.py - >/dev/null 2>&1 \
+		&& { echo "negative: ruff format --check が未整形のコードを素通し" >&2; exit 1; }; \
+	t=$$(mktemp -d "$${TMPDIR:-/tmp}/vulture.XXXXXX") || exit 1; trap 'rm -rf "$$t"' EXIT; \
+	printf 'def unused_probe():\n    pass\n' > "$$t/probe.py"; \
+	$(VULTURE) "$$t/probe.py" >/dev/null 2>&1 && { echo "negative: vulture が使われない関数を素通し" >&2; exit 1; }; \
+	$(RUFF) check --no-cache --quiet . && $(RUFF) format --no-cache --check --quiet . \
+		&& $(VULTURE) --ignore-names loader,addons --exclude .venv . \
+		&& echo "ok  python-lint (ruff check/format + vulture)"
+
 check-redact-py: ## redact 系 Python (エンジン/テンプレート/selfcheck) の構文検査
 	@for f in redact/flows_to_ndjson.py redact/redact_flow.template.py bin/redact_selfcheck.py; do \
 		python3 -c "compile(open('$$f').read(),'$$f','exec')" || { echo "$$f invalid" >&2; exit 1; }; \

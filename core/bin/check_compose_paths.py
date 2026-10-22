@@ -19,6 +19,7 @@ config 出力では build.context / bind source は絶対パスに解決済み�
 まま残る (config は inline しない) ので --project-dir 基準で解決する。相対で来た他のパスも保険で
 --project-dir 基準に解決する。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,7 +30,7 @@ import yaml
 
 
 def _is_pathish(v: str) -> bool:
-    return v.startswith("/") or v.startswith(".")
+    return v.startswith(("/", "."))
 
 
 def collect_host_paths(doc: dict, project_dir: str) -> list[tuple[str, str, str]]:

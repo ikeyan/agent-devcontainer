@@ -29,7 +29,7 @@ from pathlib import Path
 # 汎用エンジンは .devcontainer/core/redact/flows_to_ndjson.py。リポジトリルート相対で import する
 # (このファイルは extract/<app>/redact_flow.py = ルートから 2 階層下)。
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".devcontainer" / "core" / "redact"))
-from flows_to_ndjson import flows_to_ndjson  # noqa: E402
+from flows_to_ndjson import flows_to_ndjson
 
 
 def redact(s: str) -> str:
