@@ -21,7 +21,7 @@ expected=$("$PY" -c 'import sys, yaml; print(yaml.load(open(sys.argv[1]), Loader
 [ "$derived" = "$expected" ] \
     || { echo "compose-project-name の導出 '$derived' が PyYAML parse '$expected' と不一致 (literal parse の形式 drift)" >&2; exit 1; }
 
-fx=$(mktemp)
+fx=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1
 trap 'rm -f "$fx"' EXIT
 expect_ok() { # $1=期待名 $2=説明 (fixture は stdin)
     cat > "$fx"

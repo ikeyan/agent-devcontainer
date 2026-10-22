@@ -19,6 +19,12 @@ SHELL_SRCS := $(wildcard *.sh bin/*.sh secrets-proxy/*.sh redact/*.sh) bin/redac
 # ので、CI/devcontainer で分岐せずこの 1 本で参照できる)。
 PY := $(CURDIR)/../.venv/bin/python
 
+# 一時ファイルは必ず $(MKTEMP) で作り `t=$$($(MKTEMP)) || exit 1` の形で受ける。bare mktemp は macOS で
+# TMPDIR を見ないので Claude Code サンドボックス下で失敗し空文字を返す — `|| exit 1` が無いと空パスの
+# negative probe が何も検査せず通る (fail-open)。形は check-mktemp が pin
+# (canon: facts/shell/mktemp-tmpdir-handling-bsd-vs-gnu)。
+MKTEMP := mktemp -p "$${TMPDIR:-/tmp}"
+
 # compose 検証エンジン: CI は docker、devcontainer は podman (provider = docker compose plugin)。
 # docker が無ければ podman を採用する。どちらも無い環境は次の呼び出しが自然にエラーになる。
 # env -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES を変数自体に焼き込む: ambient な
@@ -55,6 +61,7 @@ CHECKS := \
 	check-proxy-web-config \
 	check-shell \
 	check-shellcheck \
+	check-mktemp \
 	check-addon \
 	check-addon-tests \
 	check-rules \
@@ -108,11 +115,11 @@ clone-repos: ## project/repos.txt の repo を workspace 直下へ clone (冪等
 check-compose: ## compose.yaml を compose config で検証 (docker/podman compose 必須)
 	@$(COMPOSE) $(COMPOSE_FILES) config >/dev/null 2>&1 \
 		|| { echo "compose.yaml invalid:" >&2; $(COMPOSE) $(COMPOSE_FILES) config 2>&1 >/dev/null | tail -20 >&2; exit 1; }; \
-	bad=$$(mktemp); printf 'services: [unclosed\n' > "$$bad"; \
+	bad=$$($(MKTEMP)) || exit 1; printf 'services: [unclosed\n' > "$$bad"; \
 	$(COMPOSE) -f "$$bad" config >/dev/null 2>&1 \
 		&& { echo "negative: compose config が不正 YAML を素通し" >&2; rm -f "$$bad"; exit 1; }; \
 	rm -f "$$bad"; \
-	noghu=$$(mktemp); grep -v '^PROJECT_GH_USER=' ../project/.env > "$$noghu"; \
+	noghu=$$($(MKTEMP)) || exit 1; grep -v '^PROJECT_GH_USER=' ../project/.env > "$$noghu"; \
 	$(COMPOSE) --env-file "$$noghu" $(COMPOSE_FILES) config secrets-proxy >/dev/null 2>&1 \
 		|| { echo "dev-build 変数 PROJECT_GH_USER が非 dev サービス (secrets-proxy = bootstrap/proxy-web) まで gate している。compose は service 選択前に全体補間するので :? でなく :- + Dockerfile assert にする" >&2; rm -f "$$noghu"; exit 1; }; \
 	rm -f "$$noghu"; echo "ok  compose ($(COMPOSE_ENGINE))"
@@ -128,7 +135,7 @@ check-compose-paths: ## マージ compose のホスト側 bind source/context/se
 		| $(PY) bin/check_compose_paths.py --project-dir ../project >/dev/null 2>&1 \
 		|| { echo "compose のホスト側パスが実在しない (相対アンカー誤り?):" >&2; \
 		     $(COMPOSE) $(COMPOSE_FILES) config 2>/dev/null | $(PY) bin/check_compose_paths.py --project-dir ../project 2>&1 >/dev/null | grep '^NG' >&2; exit 1; }; \
-	bad=$$(mktemp); printf 'services:\n  dev:\n    volumes:\n      - ../core/DOES-NOT-EXIST-xyz:/probe:ro\n' > "$$bad"; \
+	bad=$$($(MKTEMP)) || exit 1; printf 'services:\n  dev:\n    volumes:\n      - ../core/DOES-NOT-EXIST-xyz:/probe:ro\n' > "$$bad"; \
 	$(COMPOSE) $(COMPOSE_FILES) -f "$$bad" config 2>/dev/null \
 		| $(PY) bin/check_compose_paths.py --project-dir ../project >/dev/null 2>&1 \
 		&& { echo "negative: check-compose-paths が不在 bind source を素通し" >&2; rm -f "$$bad"; exit 1; }; \
@@ -188,6 +195,11 @@ check-shell: ## shell script を bash -n で構文チェック
 check-shellcheck: ## shell script を shellcheck (CI/devcontainer 必須)
 	@shellcheck -S warning $(SHELL_SRCS) && echo "ok  shellcheck"
 
+# mktemp の呼び出し形 (-p TMPDIR + 直後の ||) を pin する。理由と許す形は bin/check_mktemp.py の docstring。
+# 検出器の negative probe (悪い形を弾き良い形を通す) は script が毎回 fixture で自己実行する。
+check-mktemp: ## mktemp が -p "$${TMPDIR:-/tmp}" + || 付きで呼ばれているか (bare mktemp の fail-open 防止)
+	@python3 bin/check_mktemp.py Makefile $(SHELL_SRCS)
+
 check-addon: ## addon.py / 踏み台スクリプトの構文を compile() で検査 (.pyc を残さない)
 	@for f in secrets-proxy/addon.py secrets-proxy/tcp-bridge.py proxy-web-tunnel.py; do \
 		python3 -c "compile(open('$$f').read(),'$$f','exec')" \
@@ -225,7 +237,7 @@ gen-dockerfile: ## ../Dockerfile を core template + project fragment から再�
 check-dockerfile-gen: ## ../Dockerfile が生成結果と一致するか (drift 検査 + marker 検出の negative probe)
 	@set -o pipefail; \
 	$(GEN_DOCKERFILE) | diff -u ../Dockerfile - || exit 1; \
-	bad=$$(mktemp); printf 'FROM scratch\n' > "$$bad"; \
+	bad=$$($(MKTEMP)) || exit 1; printf 'FROM scratch\n' > "$$bad"; \
 	$(GEN_DOCKERFILE) "$$bad" >/dev/null 2>&1 \
 		&& { echo "negative: gen-dockerfile が marker 欠落 template を素通し" >&2; rm -f "$$bad"; exit 1; }; \
 	rm -f "$$bad"; echo "ok  dockerfile-gen"
@@ -253,7 +265,7 @@ check-dockerfile-deps: ## Dockerfile 外部 image の digest 固定 / COPY --fro
 check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出を検証 (docker/podman compose 必須)
 	@python3 -c 'import json;json.load(open("redact/settings.json"))' \
 		|| { echo "redact/settings.json が不正 JSON" >&2; exit 1; }; \
-	cfgerr=$$(mktemp); \
+	cfgerr=$$($(MKTEMP)) || exit 1; \
 	REDACT_PROJECT=demo-redact REDACT_APP=demo REDACT_REPO=/repo REDACT_RAW=/repo/raw.flows \
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>"$$cfgerr" \
 		|| { echo "redact/compose.yaml が不正 (原因は直下の stderr):" >&2; cat "$$cfgerr" >&2; rm -f "$$cfgerr"; exit 1; }; \
@@ -265,7 +277,7 @@ check-redact-config: ## redact/ の compose/dnsmasq/settings/project 名導出�
 		$(COMPOSE) -f redact/compose.yaml config >/dev/null 2>&1 \
 		&& { echo "negative: redact compose が REDACT_PROJECT 欠落を素通し" >&2; exit 1; } || true; \
 	bash bin/check_projectname.sh $(PY) ../project/compose.yaml || exit 1; \
-	t=$$(mktemp); sed 's/__UPSTREAM_DNS__/127.0.0.11/g' redact/dnsmasq.conf > "$$t"; \
+	t=$$($(MKTEMP)) || exit 1; sed 's/__UPSTREAM_DNS__/127.0.0.11/g' redact/dnsmasq.conf > "$$t"; \
 	dnsmasq --test --conf-file="$$t" >/dev/null 2>&1 \
 		|| { echo "redact/dnsmasq.conf が不正" >&2; rm -f "$$t"; exit 1; }; \
 	rm -f "$$t"; echo "ok  redact-config (settings/compose/dnsmasq/project 名導出)"
@@ -283,7 +295,7 @@ check-redact-py: ## redact 系 Python (エンジン/テンプレート/selfcheck
 	@for f in redact/flows_to_ndjson.py redact/redact_flow.template.py bin/redact_selfcheck.py; do \
 		python3 -c "compile(open('$$f').read(),'$$f','exec')" || { echo "$$f invalid" >&2; exit 1; }; \
 	done; \
-	bad=$$(mktemp); printf 'def (:\n' > "$$bad"; \
+	bad=$$($(MKTEMP)) || exit 1; printf 'def (:\n' > "$$bad"; \
 	python3 -c "compile(open('$$bad').read(),'$$bad','exec')" 2>/dev/null \
 		&& { echo "negative: compile 検出器が不正 Python を素通し" >&2; rm -f "$$bad"; exit 1; }; \
 	rm -f "$$bad"; echo "ok  redact-py (compile)"
@@ -316,13 +328,13 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 		GH_CONFIG_DIR="$$d" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 		after=$$(cat "$$d/config.yml" "$$d/hosts.yml" | md5sum); \
 		[ "$$before" = "$$after" ]; }; \
-	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
+	tmp=$$($(MKTEMP) -d) || exit 1; cp gh/config.yml gh/hosts.yml "$$tmp/"; \
 	seed_noop "$$tmp"; st=$$?; rm -rf "$$tmp"; \
 	[ $$st -eq 0 ] || { echo "gh-seed: installed gh が seed を migration で書換える (root 所有 seed だと dev の gh が起動時に落ちる) → make -C .devcontainer/core gh-seed で再生成して commit" >&2; exit 1; }; \
-	tmp3=$$(mktemp -d); sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
+	tmp3=$$($(MKTEMP) -d) || exit 1; sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
 	seed_noop "$$tmp3"; st=$$?; rm -rf "$$tmp3"; \
 	[ $$st -eq 0 ] || { echo "gh-seed: 置換後 (実 user 名) の hosts.yml を installed gh が書換える — root 所有 seed だと dev の gh が起動時に落ちる。migration 内容を確認して seed 形式を追従" >&2; exit 1; }; \
-	tmp2=$$(mktemp -d); cp gh/hosts.yml "$$tmp2/hosts.yml"; \
+	tmp2=$$($(MKTEMP) -d) || exit 1; cp gh/hosts.yml "$$tmp2/hosts.yml"; \
 	GH_CONFIG_DIR="$$tmp2" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
 	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
 	rm -rf "$$tmp2"; \
@@ -340,7 +352,7 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 # 自動正規化はその変更を隠すので置かない (gh upgrade 時のみの稀な手作業)。
 gh-seed: ## gh/{config,hosts}.yml を installed gh の migration で更新 (gh upgrade 後に実行, ネット不要)
 	@command -v gh >/dev/null 2>&1 || { echo "gh が無い" >&2; exit 1; }; \
-	tmp=$$(mktemp -d); cp gh/config.yml gh/hosts.yml "$$tmp/"; \
+	tmp=$$($(MKTEMP) -d) || exit 1; cp gh/config.yml gh/hosts.yml "$$tmp/"; \
 	ver=$$(GH_CONFIG_DIR="$$tmp" GH_NO_UPDATE_NOTIFIER=1 gh config get version 2>/dev/null); \
 	[ -n "$$ver" ] || { echo "version を導出できない (migration がネット必須化した可能性)" >&2; rm -rf "$$tmp"; exit 1; }; \
 	{ printf '# gh の config マイグレーション台帳。生成元: make -C .devcontainer/core gh-seed\n'; \

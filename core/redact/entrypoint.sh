@@ -43,7 +43,7 @@ resolve_into_hostsdir() {
         ips="$(dig +short +time=3 +tries=1 "@$UPSTREAM_DNS" "$name" A 2>/dev/null \
                | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
         [ -n "$ips" ] || { rc=1; continue; }
-        tmp="$(mktemp "$RENDER/.hosts.XXXXXX")"
+        tmp="$(mktemp "$RENDER/.hosts.XXXXXX")" || { rc=1; continue; }
         while IFS= read -r ip; do
             printf '%s %s\n' "$ip" "$name" >> "$tmp"
             ipset add allowed-domains "$ip" 2>/dev/null || true

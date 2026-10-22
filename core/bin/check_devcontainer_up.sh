@@ -38,7 +38,7 @@ kitroot=$(cd "$selfdir/../.." && pwd) || { echo "kit root を解決できない"
 [ -d "$kitroot/templates/project" ] && [ -f "$kitroot/templates/devcontainer.json" ] && [ -d "$kitroot/core" ] \
     || { echo "kit-only smoke: $kitroot に templates/project + templates/devcontainer.json + core/ が要る (consumer では非対応)" >&2; exit 1; }
 
-tmproot=$(mktemp -d) || { echo "temp ディレクトリの作成 (mktemp -d) に失敗" >&2; exit 1; }
+tmproot=$(mktemp -d -p "${TMPDIR:-/tmp}") || { echo "temp ディレクトリの作成 (mktemp -d) に失敗" >&2; exit 1; }
 [ -n "$tmproot" ] || { echo "mktemp -d が空を返した" >&2; exit 1; }
 # proj token は mktemp の乱数 suffix から採る (PID でなく daemon 全体で一意に)。docker image/compose 名の
 # 規則に合わせ小文字 + 英数字のみへ正規化。

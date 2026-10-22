@@ -11,7 +11,7 @@ MAKEFLAGS += --output-sync=target
 # kit venv (`make setup` が作る。core/Makefile の $(PY) と同一実体)。
 PY := $(CURDIR)/.venv/bin/python
 
-OFFLINE_CHECKS := check-core check-install-sh check-templates check-placeholder check-contamination check-hadolint-version
+OFFLINE_CHECKS := check-core check-install-sh check-mktemp check-templates check-placeholder check-contamination check-hadolint-version
 .PHONY: help check check-offline setup $(OFFLINE_CHECKS)
 
 help: ## 一覧
@@ -26,6 +26,10 @@ check-core: ## core の検査集約を委譲実行 (要 scaffold 済み project 
 
 check-install-sh: ## install.sh と kit 補助スクリプト (bin/) を shellcheck (shellcheck 必須)
 	@shellcheck -S warning install.sh bin/*.sh && echo "ok  install.sh + bin/*.sh (shellcheck)"
+
+# core/ 側 (core/Makefile の check-mktemp) と同じ検査器をルート成果物 (installer / kit 補助スクリプト) に掛ける。
+check-mktemp: ## install.sh / bin/*.sh の mktemp が -p "$${TMPDIR:-/tmp}" + || 付きか (検査器は core/bin/check_mktemp.py)
+	@python3 core/bin/check_mktemp.py install.sh bin/*.sh Makefile
 
 check-templates: ## templates と .github の JSON/YAML が parse 可能か (kit venv の PyYAML 必須)
 	@python3 -c 'import json; json.load(open("templates/claude/settings.json")); json.load(open("templates/devcontainer.json"))' \

@@ -19,7 +19,7 @@ command -v sfw >/dev/null || exec uv sync "$@"
 # shellcheck disable=SC2016
 exec sfw bash -c '
   set -euo pipefail
-  bundle=$(mktemp)
+  bundle=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1
   trap "rm -f \"$bundle\"" EXIT
   # sfw がこの実行用に発行した CA ($SSL_CERT_FILE) を system バンドルへ結合
   # (間に改行を挟み、system バンドル末尾が改行なしでも PEM 境界が融合しないようにする)

@@ -11,7 +11,7 @@ if [ -z "${ip}" ]; then
 	exit 1
 fi
 
-conf=$(mktemp)
+conf=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1
 trap 'rm -f "$conf"' EXIT
 sed "s/@@SECRETS_PROXY_IP@@/${ip}/" /etc/proxychains4.conf >"$conf"
 

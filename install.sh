@@ -36,7 +36,7 @@ if [ -z "$SRC" ]; then
     REF=$(curl -fsSL "https://api.github.com/repos/$REPO_SLUG/releases/latest" \
       | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
   fi
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
   curl -fsSL "https://github.com/$REPO_SLUG/archive/$REF.tar.gz" | tar -xz -C "$tmp"
   # tarball の top dir 名は ref 表記に依存する (canon: facts/github-tarball/archive-tar-gz-topdir-naming) — glob で拾う
   set -- "$tmp"/*/

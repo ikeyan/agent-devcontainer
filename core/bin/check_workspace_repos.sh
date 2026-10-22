@@ -6,7 +6,7 @@
 # 揺れないように)。
 set -euo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-T=$(mktemp -d)
+T=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
 trap 'rm -rf "$T"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_COUNT=0 GIT_TERMINAL_PROMPT=0
 export HOME="$T/home"; mkdir -p "$HOME"

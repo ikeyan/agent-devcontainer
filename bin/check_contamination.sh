@@ -77,7 +77,7 @@ scan_in()      { ( cd "$1" || exit 2; scan . ); }
 name_scan_in() { ( cd "$1" || exit 2; name_scan . ); }
 
 # --- negative probe: 検出すべき fixture を実際に弾くか --------------------------------
-probe=$(mktemp -d)
+probe=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
 {
     for tok in "${TOKS[@]}"; do echo "plain $tok"; done
     echo "coexist github.com/ikeyan/agent-devcontainer/blob と ikeyan.github.io の同居"
@@ -95,7 +95,7 @@ for tok in "${TOKS[@]}" ikeyan.github.io agent-devcontainer-x agent-files-x myik
 done
 
 # --- negative probe: 純 allowlist/別語 fixture を誤検出しないか ------------------------
-clean=$(mktemp -d)
+clean=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
 printf '%s\n%s\n' \
     'https://raw.githubusercontent.com/ikeyan/agent-devcontainer/main/install.sh' \
     'setuptools_scm-8.whl と mytools-redact-probe' > "$clean/f"
@@ -104,7 +104,7 @@ st=$?
 [ $st -eq 1 ] || { echo "negative: 純 allowlist/別語 fixture を誤検出か走査エラー (st=$st)" >&2; exit 1; }
 
 # --- negative probe: ファイル名検出器 ---------------------------------------------------
-nprobe=$(mktemp -d)
+nprobe=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
 mkdir "$nprobe/ikeyan-dir"
 : > "$nprobe/tools_probe"
 nhits=$(name_scan_in "$nprobe")
@@ -114,7 +114,7 @@ st=$?
     || { echo "negative: ファイル名検出器が fixture を素通し" >&2; exit 1; }
 
 # --- probe: symlink 検出 (find -type l) が link を拾えるか (拒否の前提) ---
-sprobe=$(mktemp -d)
+sprobe=$(mktemp -d -p "${TMPDIR:-/tmp}") || exit 1
 echo "ikeyan.github.io" > "$sprobe/target"; ln -s target "$sprobe/link"
 [ -n "$(find "$sprobe" -type l)" ] \
     || { echo "negative: symlink 検出 (find -type l) が link を拾えない" >&2; exit 1; }

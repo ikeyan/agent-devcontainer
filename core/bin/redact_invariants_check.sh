@@ -73,7 +73,7 @@ done
 grep -q '^no-resolv' "$R/dnsmasq.conf" || fail "dnsmasq.conf に no-resolv が無い (転送停止が外れた)"
 ! grep -Eq '^[[:space:]]*server=/' "$R/dnsmasq.conf" \
     || fail "dnsmasq.conf に server=/.../ がある (suffix 一致で DNS exfil 経路 #8)"
-probe=$(mktemp); printf 'server=/api.anthropic.com/127.0.0.11\n' > "$probe"
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1; printf 'server=/api.anthropic.com/127.0.0.11\n' > "$probe"
 grep -Eq '^[[:space:]]*server=/' "$probe" || { rm -f "$probe"; fail "negative: server= 検出器が転送行を見逃す"; }
 rm -f "$probe"
 
@@ -92,7 +92,7 @@ for tool in Write Edit; do
     grep -q "$tool(//workspace/extract/__APP__/\*\*)" "$R/settings.json" \
         || fail "settings.json: $tool が //workspace 絶対で writable mount を許可していない (#5)"
 done
-probe=$(mktemp); printf '"Write(/workspace/extract/__APP__/**)"\n' > "$probe"
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1; printf '"Write(/workspace/extract/__APP__/**)"\n' > "$probe"
 if grep -q "Write(//workspace/extract/__APP__/\*\*)" "$probe"; then
     rm -f "$probe"; fail "negative: // 絶対の pin が単一 / 絶対を誤許容"
 fi
@@ -131,7 +131,7 @@ done
 # negative probe: 先頭ドット (.github.com) も dot 正規化後に捕まえる
 { e=".github.com"; e="${e#.}"; [[ "api.github.com" == *".$e" ]]; } || fail "negative: #5 が先頭ドット NO_PROXY エントリを取りこぼす"
 # negative probe: PROJECT_NO_PROXY 側に置かれた github.com も検査対象に入る (env 読取の回帰 pin)
-probe=$(mktemp); printf 'PROJECT_NO_PROXY=github.com\n' > "$probe"
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1; printf 'PROJECT_NO_PROXY=github.com\n' > "$probe"
 [ "$(sed -n 's/^PROJECT_NO_PROXY=//p' "$probe")" = "github.com" ] \
     || { rm -f "$probe"; fail "negative: .env の PROJECT_NO_PROXY 読取が壊れている"; }
 rm -f "$probe"
@@ -155,7 +155,7 @@ grep -Eq 'SECRETS_PROXY_WEB_HOST:-127\.0\.0\.1' "$EP" \
 ! grep -Eq 'web_host=("?)(0\.0\.0\.0|::)' "$EP" \
     || fail "mitmweb を 0.0.0.0/:: に bind している (dev/LAN へ露出)"
 # negative probe: loopback-default 検出器が非 loopback 既定を確かに弾く
-probe=$(mktemp); printf 'web_host="${SECRETS_PROXY_WEB_HOST:-0.0.0.0}"\n' > "$probe"
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1; printf 'web_host="${SECRETS_PROXY_WEB_HOST:-0.0.0.0}"\n' > "$probe"
 grep -Eq 'SECRETS_PROXY_WEB_HOST:-127\.0\.0\.1' "$probe" \
     && { rm -f "$probe"; fail "negative: loopback-default 検出器が 0.0.0.0 既定を誤許容"; }
 rm -f "$probe"
@@ -169,7 +169,7 @@ grep -Eq '^[[:space:]]*exec mitmdump.*flow_detail' <<<"$EP_JOINED" \
 ! grep -Eq '^[[:space:]]*exec mitmweb.*flow_detail' <<<"$EP_JOINED" \
     || fail "flow_detail を mitmweb に渡している (mitmweb では無意味な mitmdump 専用オプション; 継続行も含めて判定)"
 # negative probe: 継続行として紛れ込んだ flow_detail (mitmweb の既存3継続行と同じ書き方) も畳んだ後に捕まえる
-probe=$(mktemp)
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1
 printf 'exec mitmweb "${COMMON_OPTS[@]}" \\\n  --set web_open_browser=false \\\n  --set flow_detail=0 \\\n  --set web_port="${web_port}"\n' > "$probe"
 probe_joined=$(join_continuations "$probe")
 grep -Eq '^[[:space:]]*exec mitmweb.*flow_detail' <<<"$probe_joined" \
@@ -183,7 +183,7 @@ grep -Eq '^[[:space:]]*exec mitmweb.*web_password' <<<"$EP_JOINED" \
 grep -Eq 'token=\$\{?web_token' "$EP" \
     || fail "entrypoint が mitmweb の token URL (?token=<生成 token>) を echo していない"
 # negative probe: web_password 未設定の mitmweb exec を検出器が確かに捕まえる
-probe=$(mktemp)
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1
 printf 'exec mitmweb "${COMMON_OPTS[@]}" \\\n  --set web_host="${SECRETS_PROXY_WEB_HOST}"\n' > "$probe"
 probe_joined=$(join_continuations "$probe")
 grep -Eq '^[[:space:]]*exec mitmweb.*web_password' <<<"$probe_joined" \
@@ -204,7 +204,7 @@ grep -Eq 'SECRETS_PROXY_WEB:[[:space:]]*"?1' "$DCW" || fail "override が SECRET
 ! grep -Eq '8081|mitmweb|SECRETS_PROXY_WEB|web_host' "$CY" \
     || fail "既定 compose.yaml に Web UI 設定が漏れている"
 # negative probe: 8081 publish 検出器が publish 行を確かに捕まえる
-probe=$(mktemp); printf '      - "127.0.0.1:8081:8081"\n' > "$probe"
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1; printf '      - "127.0.0.1:8081:8081"\n' > "$probe"
 grep -Eq '8081:8081' "$probe" || { rm -f "$probe"; fail "negative: 8081 publish 検出器が見逃す"; }
 rm -f "$probe"
 
@@ -219,7 +219,7 @@ grep -q 'settings.local.json' "$DJ" || fail "devcontainer.json の initializeCom
 grep -q 'init-firewall.sh && sudo /usr/local/bin/install-proxy-ca.sh' "$DJ" \
     || fail "devcontainer.json の postStartCommand が firewall+CA を再実行しない"
 # negative probe: 逆順 [core, project] を順序検出器が弾く
-probe=$(mktemp); printf '"dockerComposeFile": ["core/compose.yaml", "project/compose.yaml"]\n' > "$probe"
+probe=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1; printf '"dockerComposeFile": ["core/compose.yaml", "project/compose.yaml"]\n' > "$probe"
 grep -Eq '"dockerComposeFile":[[:space:]]*\[[[:space:]]*"project/compose.yaml",[[:space:]]*"core/compose.yaml"[[:space:]]*\]' "$probe" \
     && { rm -f "$probe"; fail "negative: compose 順序検出器が逆順を誤許容"; }
 rm -f "$probe"
@@ -253,7 +253,7 @@ PY=.venv/bin/python
 # が別途 pin しており、ここで別実装を重複させない。
 EXPECTED_NAME=$(bash "$DC/bin/compose-project-name" "$P/compose.yaml") \
     || fail "§10: project/compose.yaml から project 名を導出できない"
-merged=$(mktemp); mergederr=$(mktemp)
+merged=$(mktemp -p "${TMPDIR:-/tmp}") || exit 1; mergederr=$(mktemp -p "${TMPDIR:-/tmp}") || { rm -f "$merged"; exit 1; }
 # stderr は握りつぶさない: 失敗原因はほぼ常に stderr にある (例: project/.env の必須変数
 # (`${VAR:?}` 宣言のもの) の不足による interpolation エラー)。隠すと「compose 未導入/不正」への誤診断を誘う。
 # env -u: ambient な COMPOSE_PROJECT_NAME は file の name: を黙って上書きし
