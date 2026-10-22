@@ -304,6 +304,8 @@ check-redact-invariants: ## redact の意味的不変条件を pin (bin/redact_i
 #     template 形と、@@GITHUB_USER@@ を実 user 名へ置換した runtime 形の両方で検査する — dev が
 #     実際に読むのは置換後の形であり、置換で migration 挙動が変わる回帰は template 形だけでは
 #     捕まらない。gh は CI/devcontainer 必須。
+#     negative probe は検出器 (seed_noop) 自体を、seed を書き換える偽の gh で確かめる。実物の gh が
+#     migration するかは版で変わる (gh 2.102.0 は起動時に何も書かない) ので、陽性の対照に実物を使わない。
 check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き換えないか検証 (gh 必須)
 	@[ "$$(grep -c '@@GITHUB_USER@@' gh/hosts.yml)" -eq 2 ] \
 		|| { echo "gh/hosts.yml の @@GITHUB_USER@@ が 2 箇所 (users: キー / user: 値) に無い (gh-seed 再生成で template token が崩れた? Dockerfile の焼込が空回りする)" >&2; exit 1; }; \
@@ -322,10 +324,10 @@ check-gh-seed: ## gh/ seed の形式 pin + installed gh が migration で書き�
 	tmp3=$$(mktemp -d); sed 's/@@GITHUB_USER@@/kitprobe/g' gh/hosts.yml > "$$tmp3/hosts.yml"; cp gh/config.yml "$$tmp3/"; \
 	seed_noop "$$tmp3"; st=$$?; rm -rf "$$tmp3"; \
 	[ $$st -eq 0 ] || { echo "gh-seed: 置換後 (実 user 名) の hosts.yml を installed gh が書換える — root 所有 seed だと dev の gh が起動時に落ちる。migration 内容を確認して seed 形式を追従" >&2; exit 1; }; \
-	tmp2=$$(mktemp -d); cp gh/hosts.yml "$$tmp2/hosts.yml"; \
-	GH_CONFIG_DIR="$$tmp2" GH_NO_UPDATE_NOTIFIER=1 gh config get version >/dev/null 2>&1 || true; \
-	if [ ! -f "$$tmp2/config.yml" ]; then echo "negative: gh-seed 検出器が migration を捕捉できない" >&2; rm -rf "$$tmp2"; exit 1; fi; \
-	rm -rf "$$tmp2"; \
+	tmp2=$$(mktemp -d); mkdir "$$tmp2/bin" "$$tmp2/cfg"; cp gh/config.yml gh/hosts.yml "$$tmp2/cfg/"; \
+	printf '#!/bin/sh\necho "# migrated" >> "$$GH_CONFIG_DIR/hosts.yml"\n' > "$$tmp2/bin/gh"; chmod +x "$$tmp2/bin/gh"; \
+	( PATH="$$tmp2/bin:$$PATH"; seed_noop "$$tmp2/cfg" ); st=$$?; rm -rf "$$tmp2"; \
+	[ $$st -ne 0 ] || { echo "negative: gh-seed 検出器が seed の書換え (migration の模擬) を捕捉できない" >&2; exit 1; }; \
 	[ "$$(sed 's/@@GITHUB_USER@@/rtprobe/g' gh/hosts.yml | awk -f gh-hosts-user.awk)" = rtprobe ] \
 		|| { echo "gh-hosts-user.awk が committed hosts.yml (置換後) から user を抽出できない — init-firewall の整合検査が毎起動 誤 mismatch する" >&2; exit 1; }; \
 	[ "$$(printf "    user: 'sq-probe'\n" | awk -f gh-hosts-user.awk)" = sq-probe ] \
