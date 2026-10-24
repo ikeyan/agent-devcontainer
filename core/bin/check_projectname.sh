@@ -22,18 +22,18 @@ expected=$("$PY" -c 'import sys, yaml; print(yaml.load(open(sys.argv[1]), Loader
     || { echo "compose-project-name の導出 '$derived' が PyYAML parse '$expected' と不一致 (literal parse の形式 drift)" >&2; exit 1; }
 
 fx=$(mktemp)
-trap 'rm -f "$fx"' EXIT
+trap 'rm -f "$fx" "$fx.err"' EXIT
 expect_ok() { # $1=期待名 $2=説明 (fixture は stdin)
     cat > "$fx"
     [ "$(bash "$DERIVE" "$fx")" = "$1" ] \
         || { echo "compose-project-name が $2 を読めない" >&2; exit 1; }
 }
-expect_reject() { # $1=説明 (fixture は stdin)
+expect_reject() { # $1=説明 (fixture は stdin)。名前の文法で弾いた (その文言を出し、名前を出さない) ことを確かめる
+    local out ec=0
     cat > "$fx"
-    if bash "$DERIVE" "$fx" >/dev/null 2>&1; then
-        echo "negative: compose-project-name が $1 を素通し" >&2
-        exit 1
-    fi
+    out=$(bash "$DERIVE" "$fx" 2>"$fx.err") || ec=$?
+    [ "$ec" -eq 1 ] && [ -z "$out" ] && grep -qF 'top-level name: が literal 宣言でない' "$fx.err" \
+        || { echo "negative: compose-project-name が $1 を名前の文法で弾かない (exit $ec): $(cat "$fx.err")" >&2; exit 1; }
 }
 printf 'name: plainprobe # comment\nservices: {dev: {}}\n' | expect_ok plainprobe "unquoted+コメント付き name:"
 printf '\357\273\277name: bomprobe\nservices: {dev: {}}\n' | expect_ok bomprobe "UTF-8 BOM 付きファイルの name:"

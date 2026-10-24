@@ -41,8 +41,13 @@ RULES_PATH = os.environ.get("SECRETS_PROXY_RULES", "/config/rules.yaml")
 
 # 本文を文字列として安全に書き換えてよい Content-Type
 _TEXTUAL = (
-    "text/", "application/json", "application/javascript", "application/xml",
-    "application/x-www-form-urlencoded", "+json", "+xml",
+    "text/",
+    "application/json",
+    "application/javascript",
+    "application/xml",
+    "application/x-www-form-urlencoded",
+    "+json",
+    "+xml",
 )
 
 
@@ -52,7 +57,7 @@ def _is_textual(ct: str) -> bool:
 
 
 def _host_to_regex(host: str) -> str:
-    """"example.com" -> 完全一致(+任意ポート)、"*.example.com" -> サブドメイン一致。"""
+    """ "example.com" -> 完全一致(+任意ポート)、"*.example.com" -> サブドメイン一致。"""
     host = host.lower()
     if host.startswith("*."):
         # サブドメインは必須 ("*.x.com" は a.x.com に一致、apex の x.com には一致しない)
@@ -93,31 +98,35 @@ def _json_path(data, path: str):
 class SecretsProxy:
     def __init__(self):
         # inject (静的注入)
-        self.inject = {}            # host(lower) -> [injection]
-        self.inject_wild = []       # [(regex, [injection])]
+        self.inject = {}  # host(lower) -> [injection]
+        self.inject_wild = []  # [(regex, [injection])]
         # capture (応答からの捕獲 = トークン化)
-        self.capture = {}           # host(lower) -> [capture]
-        self.capture_wild = []      # [(regex, [capture])]
+        self.capture = {}  # host(lower) -> [capture]
+        self.capture_wild = []  # [(regex, [capture])]
         # substitute (プレースホルダ -> 秘密の解決 / pre-seed)
-        self.substitute = {}        # host(lower) -> [spec]
-        self.substitute_wild = []   # [(regex, [spec])]
+        self.substitute = {}  # host(lower) -> [spec]
+        self.substitute_wild = []  # [(regex, [spec])]
         # その他のポリシー
-        self.allow_hosts = []       # [regex] 注入なしで通す
-        self.passthrough = []       # [regex str] MITM しない
-        self.block_rules = []       # [dict]
+        self.allow_hosts = []  # [regex] 注入なしで通す
+        self.passthrough = []  # [regex str] MITM しない
+        self.block_rules = []  # [dict]
         self.block_unlisted = True
         self.detect_leaks = True
         # 観測モード (allowlist 割り出し用)。既定 off = dev/redact の挙動は一切変えない。rules ではなく
         # 運用フラグなので RULES_PATH と同じく env で渡す。記録内容と位置は request() を参照。
-        self.log_requests = os.environ.get(
-            "SECRETS_PROXY_LOG_REQUESTS", "").strip().lower() in ("1", "true", "yes", "on")
+        self.log_requests = os.environ.get("SECRETS_PROXY_LOG_REQUESTS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
-        self._static = {}           # (item, field) -> value  (Vaultwarden キャッシュ)
-        self.salt = pysecrets.token_hex(4)   # プレースホルダの予測困難化 (起動ごと)
-        self.cap_store = {}         # key -> {"value", "ph", "bind":[regex]}
+        self._static = {}  # (item, field) -> value  (Vaultwarden キャッシュ)
+        self.salt = pysecrets.token_hex(4)  # プレースホルダの予測困難化 (起動ごと)
+        self.cap_store = {}  # key -> {"value", "ph", "bind":[regex]}
 
     # ===================== 設定読み込み =====================
-    def load(self, loader):
+    def load(self, loader):  # noqa: V107 -- mitmproxy が load(loader) を呼ぶので引数を消せない
         with open(RULES_PATH) as f:
             cfg = yaml.safe_load(f) or {}
 
@@ -153,10 +162,17 @@ class SecretsProxy:
             "secrets-proxy: inject=%d(+%d wild) capture=%d(+%d wild) "
             "substitute=%d(+%d wild) "
             "allow=%d passthrough=%d block=%d block_unlisted=%s detect_leaks=%s",
-            len(self.inject), len(self.inject_wild), len(self.capture),
-            len(self.capture_wild), len(self.substitute), len(self.substitute_wild),
-            len(self.allow_hosts), len(self.passthrough),
-            len(self.block_rules), self.block_unlisted, self.detect_leaks,
+            len(self.inject),
+            len(self.inject_wild),
+            len(self.capture),
+            len(self.capture_wild),
+            len(self.substitute),
+            len(self.substitute_wild),
+            len(self.allow_hosts),
+            len(self.passthrough),
+            len(self.block_rules),
+            self.block_unlisted,
+            self.detect_leaks,
         )
 
     def _assert_unique_stores(self):
@@ -185,7 +201,7 @@ class SecretsProxy:
         injs = [self._norm_injection(i) for i in (spec.get("inject") or [])]
         caps = [self._norm_capture(c) for c in (spec.get("capture") or [])]
         subs = []
-        for s in (spec.get("substitute") or []):
+        for s in spec.get("substitute") or []:
             subs.extend(self._norm_substitute(host_l, s))
         return injs, caps, subs
 
@@ -216,7 +232,7 @@ class SecretsProxy:
         methods = match.get("methods")
         return {
             "source": cls._norm_secret_source(secret),
-            "type": target["type"],          # header | cookie | query | form | json
+            "type": target["type"],  # header | cookie | query | form | json
             "name": target.get("name"),
             "value_tmpl": target.get("value", "${secret}"),
             "encode": target.get("encode"),  # None | "base64"
@@ -238,30 +254,33 @@ class SecretsProxy:
         spec: {"ph", "source", "bind_rx", "into"}。
         bind 省略時は宣言ホスト host_l に束縛する (空 bind を「全ホスト一致」にせず exfil を防ぐ。
         capture が捕獲元ホストへ既定束縛するのと対称)。"""
-        bind_rx = [re.compile(_host_to_regex(h)) for h in (s.get("bind") or [])] \
-            or [re.compile(_host_to_regex(host_l))]
+        bind_rx = [re.compile(_host_to_regex(h)) for h in (s.get("bind") or [])] or [re.compile(_host_to_regex(host_l))]
         if "name" in s:
             item = s["secret"]["item"]
             out = []
             for fe in s["fields"]:
                 field = fe["field"]
-                out.append({
-                    "ph": f"@@SECRET_{s['name']}_{field}@@",
-                    "source": ("bw", item, field),
-                    "bind_rx": bind_rx,
-                    "into": cls._norm_into(fe["into"]),
-                })
+                out.append(
+                    {
+                        "ph": f"@@SECRET_{s['name']}_{field}@@",
+                        "source": ("bw", item, field),
+                        "bind_rx": bind_rx,
+                        "into": cls._norm_into(fe["into"]),
+                    }
+                )
             return out
-        return [{
-            "ph": s["placeholder"],
-            "source": cls._norm_secret_source(s["secret"]),
-            "bind_rx": bind_rx,
-            "into": cls._norm_into(s["into"]),
-        }]
+        return [
+            {
+                "ph": s["placeholder"],
+                "source": cls._norm_secret_source(s["secret"]),
+                "bind_rx": bind_rx,
+                "into": cls._norm_into(s["into"]),
+            }
+        ]
 
     @classmethod
     def _norm_capture(cls, c):
-        src = c["from"]                      # {type, name} (into と同形)
+        src = c["from"]  # {type, name} (into と同形)
         if not isinstance(src, dict) or "type" not in src or "name" not in src:
             raise RuntimeError(f"capture.from は {{type, name}} が要る: {src!r}")
         into = cls._norm_into(c.get("into"))
@@ -270,9 +289,9 @@ class SecretsProxy:
         if into.get("encode") is not None:
             raise RuntimeError("capture.into は encode 非対応 (inject/substitute の into で使う)")
         return {
-            "from": src["type"],             # set-cookie | header | json | regex
-            "name": src["name"],             # cookie/header 名 | json パス | 正規表現
-            "store": c["store"],             # 保管キー = プレースホルダ名
+            "from": src["type"],  # set-cookie | header | json | regex
+            "name": src["name"],  # cookie/header 名 | json パス | 正規表現
+            "store": c["store"],  # 保管キー = プレースホルダ名
             "bind_rx": [re.compile(_host_to_regex(h)) for h in (c.get("bind") or [])],
             "into": into,
         }
@@ -291,7 +310,10 @@ class SecretsProxy:
     def _bw_get_item(self, ref):
         out = subprocess.run(
             ["bw", "get", "item", ref, "--raw", "--nointeraction"],
-            capture_output=True, text=True, env=os.environ,
+            capture_output=True,
+            text=True,
+            env=os.environ,
+            check=False,
         )
         if out.returncode != 0:
             raise RuntimeError(f"bw get item {ref!r} failed: {out.stderr.strip()}")
@@ -309,7 +331,7 @@ class SecretsProxy:
         if field == "uri":
             uris = login.get("uris") or []
             return uris[0]["uri"] if uris else None
-        name = field[len("fields."):] if field.startswith("fields.") else field
+        name = field.removeprefix("fields.")
         for f in item.get("fields") or []:
             if f.get("name") == name:
                 return f.get("value")
@@ -326,7 +348,10 @@ class SecretsProxy:
             if field == "totp":
                 out = subprocess.run(
                     ["bw", "get", "totp", item_ref, "--raw", "--nointeraction"],
-                    capture_output=True, text=True, env=os.environ,
+                    capture_output=True,
+                    text=True,
+                    env=os.environ,
+                    check=False,
                 )
                 value = out.stdout.strip() if out.returncode == 0 else None
             else:
@@ -359,7 +384,7 @@ class SecretsProxy:
                 try:
                     self._resolve_source(src)
                     warmed += 1
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     failed += 1
                     # warning であって error ではない: 暖機は単なる事前キャッシュで、
                     # 解決できない秘密は request 時に 502 で表面化する。ここで error を
@@ -379,19 +404,24 @@ class SecretsProxy:
                     # すべて「on-wire の形」(= encode 済み) を使うので取りこぼしが無い。
                     val = _apply_encode(self._resolve_source(sp_["source"]), sp_["into"].get("encode"))
                     self.cap_store[f"subst:{sp_['ph']}"] = {
-                        "value": val, "ph": sp_["ph"],
-                        "bind": sp_["bind_rx"], "into": sp_["into"],
+                        "value": val,
+                        "ph": sp_["ph"],
+                        "bind": sp_["bind_rx"],
+                        "into": sp_["into"],
                     }
                     warmed += 1
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     failed += 1
                     # 解決失敗は fail-closed: unresolved の sentinel を残し、その placeholder が
                     # 宣言場所に現れたリクエストは 502 で遮断する (placeholder が fake のまま
                     # 上流へ素通りするのを防ぐ)。substitute は request 時でなく warm 時に解決
                     # するので、ここで沈黙すると素通り = fail-open になってしまう。
                     self.cap_store[f"subst:{sp_['ph']}"] = {
-                        "value": None, "ph": sp_["ph"],
-                        "bind": sp_["bind_rx"], "into": sp_["into"], "unresolved": True,
+                        "value": None,
+                        "ph": sp_["ph"],
+                        "bind": sp_["bind_rx"],
+                        "into": sp_["into"],
+                        "unresolved": True,
                     }
                     log.warning("secrets-proxy: substitute warm failed %r: %s", sp_["ph"], e)
         msg = "secrets-proxy: warmed %d static secret(s), %d failure(s)"
@@ -450,18 +480,18 @@ class SecretsProxy:
         reason = self._blocked(req, host)
         if reason:
             flow.response = http.Response.make(
-                403, f"secrets-proxy: blocked ({reason})\n".encode(),
-                {"Content-Type": "text/plain"})
+                403, f"secrets-proxy: blocked ({reason})\n".encode(), {"Content-Type": "text/plain"}
+            )
             # path は出さない (上記 fail-closed と同じ理由)。どの endpoint かは reason (rule の人間可読な
             # 説明) + host で識別する。詳細な path 調査は信頼された debug 経路 (mitmweb/proxy-web) で行う。
-            log.warning("secrets-proxy: BLOCK-ENDPOINT %s %s (%s)",
-                        req.method, host, reason)
+            log.warning("secrets-proxy: BLOCK-ENDPOINT %s %s (%s)", req.method, host, reason)
             return
 
         # 2) allowlist 外の遮断
         if self.block_unlisted and not self._is_allowed(host):
             flow.response = http.Response.make(
-                403, b"secrets-proxy: host not allowed\n", {"Content-Type": "text/plain"})
+                403, b"secrets-proxy: host not allowed\n", {"Content-Type": "text/plain"}
+            )
             log.warning("secrets-proxy: BLOCK %s", host)
             return
 
@@ -469,7 +499,8 @@ class SecretsProxy:
         leaked = self._scan_leak(req)
         if leaked:
             flow.response = http.Response.make(
-                403, b"secrets-proxy: secret leak blocked\n", {"Content-Type": "text/plain"})
+                403, b"secrets-proxy: secret leak blocked\n", {"Content-Type": "text/plain"}
+            )
             log.error("secrets-proxy: LEAK BLOCKED real value of %r outbound to %s", leaked, host)
             return
 
@@ -477,8 +508,8 @@ class SecretsProxy:
         subst_block = self._subst_request(req, host)
         if subst_block:
             flow.response = http.Response.make(
-                502, b"secrets-proxy: unresolved secret placeholder\n",
-                {"Content-Type": "text/plain"})
+                502, b"secrets-proxy: unresolved secret placeholder\n", {"Content-Type": "text/plain"}
+            )
             log.error("secrets-proxy: BLOCK unresolved substitute to %s (%s)", host, subst_block)
             return
 
@@ -492,11 +523,11 @@ class SecretsProxy:
                     val = _apply_encode(self._resolve_source(inj["source"]), inj["encode"])
                     rendered = Template(inj["value_tmpl"]).safe_substitute(secret=val)
                     self._apply(req, inj, rendered)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log.error("secrets-proxy: inject failed for %s: %s", host, e)
                 flow.response = http.Response.make(
-                    502, b"secrets-proxy: secret resolution failed\n",
-                    {"Content-Type": "text/plain"})
+                    502, b"secrets-proxy: secret resolution failed\n", {"Content-Type": "text/plain"}
+                )
 
     def _blocked(self, req, host):
         h = host.lower()
@@ -526,7 +557,7 @@ class SecretsProxy:
         if _is_textual(req.headers.get("content-type", "")):
             try:
                 parts.append(req.get_text(strict=False) or "")
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  -- 漏洩検知は tripwire (本文が読めなくても拒否しない)
                 pass
         return "\n".join(parts)
 
@@ -536,7 +567,7 @@ class SecretsProxy:
         if not self.cap_store:
             return None
         h = host.lower()
-        blob = None   # 遅延評価: 非束縛エントリが存在する場合のみ生成
+        blob = None  # 遅延評価: 非束縛エントリが存在する場合のみ生成
         for ent in self.cap_store.values():
             bound = (not ent["bind"]) or any(rx.match(h) for rx in ent["bind"])
             into = ent.get("into")
@@ -554,8 +585,9 @@ class SecretsProxy:
                 if blob is None:
                     blob = self._request_blob(req)
                 if ent["ph"] in blob:
-                    log.warning("secrets-proxy: placeholder %s sent to non-bound host %s "
-                                "(not substituted)", ent["ph"], host)
+                    log.warning(
+                        "secrets-proxy: placeholder %s sent to non-bound host %s (not substituted)", ent["ph"], host
+                    )
         return None
 
     @staticmethod
@@ -572,7 +604,7 @@ class SecretsProxy:
         if t == "form":
             try:
                 form = req.urlencoded_form
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return False
             return name in form and ph in form[name]
         if t == "json":
@@ -614,7 +646,7 @@ class SecretsProxy:
         elif t == "form":
             try:
                 form = req.urlencoded_form
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return
             if name in form:
                 v = form[name]
@@ -669,7 +701,7 @@ class SecretsProxy:
         本文が空/非 JSON なら {} から作り、中間オブジェクトは必要に応じて作成する。"""
         try:
             raw = req.get_text(strict=False)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raw = None
         try:
             data = json.loads(raw) if raw else {}
@@ -704,8 +736,12 @@ class SecretsProxy:
         cap_store の bind 対象ホストも含める。別ホスト宣言の secret は _subst_request が bind 一致で
         このホストへ復元してしまうし、inject した静的秘密が応答に反射されることもあるので、
         いずれも応答 redact で dev への流出を防ぐ。"""
-        return bool(self._match_capture(host)) or bool(self._match_substitute(host)) \
-            or self._host_is_bind_target(host) or bool(self._match_inject(host))
+        return (
+            bool(self._match_capture(host))
+            or bool(self._match_substitute(host))
+            or self._host_is_bind_target(host)
+            or bool(self._match_inject(host))
+        )
 
     def responseheaders(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
@@ -724,9 +760,8 @@ class SecretsProxy:
         for cap in self._match_capture(host):
             try:
                 value = self._extract_response(flow, cap)
-            except Exception as e:
-                log.error("secrets-proxy: capture %s extract failed at %s: %s",
-                          cap["store"], host, e)
+            except Exception as e:  # noqa: BLE001
+                log.error("secrets-proxy: capture %s extract failed at %s: %s", cap["store"], host, e)
                 continue
             if not value:
                 continue
@@ -739,7 +774,7 @@ class SecretsProxy:
         # 3) このホストへ inject した静的秘密が応答に反射されても dev に返さない。inject は cap_store に
         #    placeholder を持たない (復元もしない) ので、固定マーカーで潰すだけにする。on-wire は
         #    into.encode で符号化されうるので、生値と符号化後の値の両方を redact する。
-        for inj in (self._match_inject(host) or []):
+        for inj in self._match_inject(host) or []:
             raw = self._static.get(inj["source"])
             if not raw:
                 continue
@@ -779,8 +814,9 @@ class SecretsProxy:
     def _redact_response(flow, value, ph):
         """本物の値の全出現をプレースホルダに置換し、dev に渡さない。"""
         if len(value) < 8:
-            log.warning("secrets-proxy: captured value is short (%d chars); "
-                        "blanket redaction may over-match", len(value))
+            log.warning(
+                "secrets-proxy: captured value is short (%d chars); blanket redaction may over-match", len(value)
+            )
         resp = flow.response
 
         # ヘッダ (Set-Cookie を含む)
@@ -798,10 +834,10 @@ class SecretsProxy:
         # 非 textual (Content-Type 欠落/誤り) でも redact しないと本物が dev に漏れる。値が無ければ no-op。
         try:
             body = resp.get_text(strict=False)
-        except Exception:
+        except Exception:  # noqa: BLE001
             body = None
         if body and value in body:
             resp.set_text(body.replace(value, ph))
 
 
-addons = [SecretsProxy()]
+addons = [SecretsProxy()]  # noqa: V107 -- mitmproxy が module の addons を読む

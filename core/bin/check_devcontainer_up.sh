@@ -132,8 +132,10 @@ fi
     || { echo "コンテナ内で clone した repo が host の workspace root に現れない ($tmproot/hello-world)" >&2; exit 1; }
 # negative: 存在しない repo の宣言は sync を止め、partial dir を残さない (fail-closed)
 printf 'example-org/no-such-repo-probe\n' >> "$probe_ws/project/repos.txt"
-if exec_in bash "/workspace/$proj/core/bin/workspace-repos" sync >/dev/null 2>&1; then
-    echo "negative: 存在しない repo の宣言で sync が成功扱い" >&2; exit 1
-fi
+out=$(exec_in bash "/workspace/$proj/core/bin/workspace-repos" sync 2>&1) \
+    && { echo "negative: 存在しない repo の宣言で sync が成功扱い" >&2; exit 1; }
+# clone を試みて落ちたことを、clone の行が出力に出たことで確かめる
+printf '%s\n' "$out" | grep -qF "clone https://github.com/example-org/no-such-repo-probe.git -> /workspace/no-such-repo-probe" \
+    || { echo "negative: sync が clone の前に別の理由で落ちた:" >&2; printf '%s\n' "$out" | tail -20 >&2; exit 1; }
 [ ! -e "$tmproot/no-such-repo-probe" ] || { echo "失敗した clone が partial dir を残した" >&2; exit 1; }
 echo "ok  devcontainer-up (postStart 完走 + gh seed OK: $expect_user / workspace: sibling 可視 + コンテナ内 clone が host に出現 + 未存在 repo で fail-closed)"

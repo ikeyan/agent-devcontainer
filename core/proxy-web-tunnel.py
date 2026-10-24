@@ -15,6 +15,7 @@ project 名 (top-level `name:`) は project/compose.yaml が供給するため�
 namespace を見て secrets-proxy を見つけられない (canon: facts/docker/compose-project-directory-and-env-resolution)。カレントは .devcontainer/core を想定。
 Ctrl-C で閉じる。secrets-proxy 本体は動いたまま。
 """
+
 import os
 import shlex
 import socket
@@ -31,8 +32,13 @@ os.environ.pop("COMPOSE_PROJECT_NAME", None)
 os.environ.pop("COMPOSE_ENV_FILES", None)
 COMPOSE = shlex.split(os.environ.get("COMPOSE", "docker compose -f ../project/compose.yaml -f compose.yaml"))
 EXEC_CMD = COMPOSE + [
-    "exec", "-T", "secrets-proxy",
-    "python", "/app/tcp-bridge.py", "127.0.0.1", "8081",
+    "exec",
+    "-T",
+    "secrets-proxy",
+    "python",
+    "/app/tcp-bridge.py",
+    "127.0.0.1",
+    "8081",
 ]
 
 
@@ -86,8 +92,7 @@ def main() -> None:
         sys.exit(1)
     srv.listen(64)
     sys.stderr.write(
-        f"[tunnel] http://{HOST}:{PORT}/?token=<上記 token> を開く"
-        " (Ctrl-C で閉じる; secrets-proxy は動いたまま)\n"
+        f"[tunnel] http://{HOST}:{PORT}/?token=<上記 token> を開く (Ctrl-C で閉じる; secrets-proxy は動いたまま)\n"
     )
     try:
         while True:

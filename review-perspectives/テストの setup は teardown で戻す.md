@@ -1,0 +1,7 @@
+@contextlib.contextmanager (python)
+tempfile.TemporaryDirectory, tempfile.NamedTemporaryFile (python)
+try / finally (python)
+@given, @settings (hypothesis)
+if __name__ == "__main__" (テストの実行の入口)
+trap ... EXIT (bash)
+mktemp (bash)

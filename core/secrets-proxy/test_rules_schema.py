@@ -10,6 +10,7 @@ oneOf の全枝、into 必須化・capture.into の encode 非対応などの ne
 
 依存は jsonschema + PyYAML 不要 (dict を直接検証)。実行: python3 test_rules_schema.py
 """
+
 import json
 import os
 import sys
@@ -49,149 +50,213 @@ def _bad(label, host_spec):
 
 # --- substitute: name 形 (糖衣 @@SECRET_<name>_<field>@@) ---
 
+
 def test_substitute_name_form_ok():
-    _ok("name 形", {
-        "substitute": [{
-            "name": "acct1",
-            "secret": {"item": "ACCT1"},
-            "fields": [
-                {"field": "username", "into": {"type": "form", "name": "emailAddress"}},
-                {"field": "password", "into": {"type": "form", "name": "password"}},
+    _ok(
+        "name 形",
+        {
+            "substitute": [
+                {
+                    "name": "acct1",
+                    "secret": {"item": "ACCT1"},
+                    "fields": [
+                        {"field": "username", "into": {"type": "form", "name": "emailAddress"}},
+                        {"field": "password", "into": {"type": "form", "name": "password"}},
+                    ],
+                }
             ],
-        }],
-    })
+        },
+    )
 
 
 def test_substitute_name_form_field_missing_into_is_rejected():
     # into 必須 (exfil 対策)。field 直下に into が無ければ弾く。
-    _bad("name 形 into 欠落", {
-        "substitute": [{
-            "name": "acct1",
-            "secret": {"item": "ACCT1"},
-            "fields": [{"field": "password"}],
-        }],
-    })
+    _bad(
+        "name 形 into 欠落",
+        {
+            "substitute": [
+                {
+                    "name": "acct1",
+                    "secret": {"item": "ACCT1"},
+                    "fields": [{"field": "password"}],
+                }
+            ],
+        },
+    )
 
 
 def test_substitute_name_form_secret_with_field_is_rejected():
     # name 形の secret は item のみ (field は fields[] 側)。secret.field は additionalProperties で弾く。
-    _bad("name 形 secret.field", {
-        "substitute": [{
-            "name": "acct1",
-            "secret": {"item": "ACCT1", "field": "password"},
-            "fields": [{"field": "password", "into": {"type": "form", "name": "password"}}],
-        }],
-    })
+    _bad(
+        "name 形 secret.field",
+        {
+            "substitute": [
+                {
+                    "name": "acct1",
+                    "secret": {"item": "ACCT1", "field": "password"},
+                    "fields": [{"field": "password", "into": {"type": "form", "name": "password"}}],
+                }
+            ],
+        },
+    )
 
 
 def test_substitute_name_form_totp_field_is_rejected():
     # substitute では totp を field に取れない (pattern から除外済み)。
-    _bad("name 形 totp", {
-        "substitute": [{
-            "name": "acct1",
-            "secret": {"item": "ACCT1"},
-            "fields": [{"field": "totp", "into": {"type": "form", "name": "otp"}}],
-        }],
-    })
+    _bad(
+        "name 形 totp",
+        {
+            "substitute": [
+                {
+                    "name": "acct1",
+                    "secret": {"item": "ACCT1"},
+                    "fields": [{"field": "totp", "into": {"type": "form", "name": "otp"}}],
+                }
+            ],
+        },
+    )
 
 
 # --- substitute: placeholder 形 (任意リテラル fake) ---
 
+
 def test_substitute_placeholder_form_ok():
-    _ok("placeholder 形", {
-        "substitute": [{
-            "placeholder": "sk-ant-FAKExxxx",
-            "secret": {"item": "ACCT1", "field": "password"},
-            "into": {"type": "header", "name": "x-api-key"},
-            "bind": ["api.anthropic.com"],
-        }],
-    })
+    _ok(
+        "placeholder 形",
+        {
+            "substitute": [
+                {
+                    "placeholder": "sk-ant-FAKExxxx",
+                    "secret": {"item": "ACCT1", "field": "password"},
+                    "into": {"type": "header", "name": "x-api-key"},
+                    "bind": ["api.anthropic.com"],
+                }
+            ],
+        },
+    )
 
 
 def test_substitute_placeholder_form_missing_into_is_rejected():
-    _bad("placeholder 形 into 欠落", {
-        "substitute": [{
-            "placeholder": "sk-ant-FAKExxxx",
-            "secret": {"item": "ACCT1", "field": "password"},
-        }],
-    })
+    _bad(
+        "placeholder 形 into 欠落",
+        {
+            "substitute": [
+                {
+                    "placeholder": "sk-ant-FAKExxxx",
+                    "secret": {"item": "ACCT1", "field": "password"},
+                }
+            ],
+        },
+    )
 
 
 def test_substitute_unknown_key_is_rejected():
-    _bad("未知キー", {
-        "substitute": [{
-            "placeholder": "fake",
-            "secret": {"env": "T"},
-            "into": {"type": "header", "name": "x"},
-            "bogus": 1,
-        }],
-    })
+    _bad(
+        "未知キー",
+        {
+            "substitute": [
+                {
+                    "placeholder": "fake",
+                    "secret": {"env": "T"},
+                    "into": {"type": "header", "name": "x"},
+                    "bogus": 1,
+                }
+            ],
+        },
+    )
 
 
 # --- capture: from={type,name} 形 + into 必須化 (回帰) ---
 
+
 def test_capture_with_into_ok():
-    _ok("capture into あり", {
-        "capture": [{
-            "from": {"type": "set-cookie", "name": "sid"},
-            "store": "sid",
-            "into": {"type": "cookie", "name": "sid"},
-        }],
-    })
+    _ok(
+        "capture into あり",
+        {
+            "capture": [
+                {
+                    "from": {"type": "set-cookie", "name": "sid"},
+                    "store": "sid",
+                    "into": {"type": "cookie", "name": "sid"},
+                }
+            ],
+        },
+    )
 
 
 def test_capture_without_into_is_rejected():
-    _bad("capture into 欠落", {
-        "capture": [{"from": {"type": "set-cookie", "name": "sid"}, "store": "sid"}],
-    })
+    _bad(
+        "capture into 欠落",
+        {
+            "capture": [{"from": {"type": "set-cookie", "name": "sid"}, "store": "sid"}],
+        },
+    )
 
 
 def test_capture_from_string_form_is_rejected():
-    # 旧形式 (from が string + 兄弟 name) はもう無効。
-    _bad("capture from string", {
-        "capture": [{"from": "set-cookie", "name": "sid", "store": "sid",
-                     "into": {"type": "cookie", "name": "sid"}}],
-    })
+    # 各 fixture は通る base から 1 か所だけ変えた 1 違反にする (2 違反を 1 つに入れると、片方の規則が消えても緑になる)。
+    base = {"from": {"type": "set-cookie", "name": "sid"}, "store": "sid", "into": {"type": "cookie", "name": "sid"}}
+    _ok("capture from base", {"capture": [base]})
+    _bad("capture from string", {"capture": [{**base, "from": "set-cookie"}]})
+    _bad("capture 兄弟 name", {"capture": [{**base, "name": "sid"}]})
 
 
 def test_capture_from_missing_name_is_rejected():
-    _bad("capture from name 欠落", {
-        "capture": [{"from": {"type": "json"}, "store": "t",
-                     "into": {"type": "header", "name": "x"}}],
-    })
+    _bad(
+        "capture from name 欠落",
+        {
+            "capture": [{"from": {"type": "json"}, "store": "t", "into": {"type": "header", "name": "x"}}],
+        },
+    )
 
 
 def test_capture_into_encode_is_rejected():
     # capture.into は captureInto ($def) で encode 非対応 (addon の fail-closed と一致)。encode 付きは弾く。
-    _bad("capture into encode", {
-        "capture": [{
-            "from": {"type": "json", "name": "t"},
-            "store": "t",
-            "into": {"type": "header", "name": "x-auth", "encode": "base64"},
-        }],
-    })
+    _bad(
+        "capture into encode",
+        {
+            "capture": [
+                {
+                    "from": {"type": "json", "name": "t"},
+                    "store": "t",
+                    "into": {"type": "header", "name": "x-auth", "encode": "base64"},
+                }
+            ],
+        },
+    )
 
 
 # --- into.encode ---
 
+
 def test_substitute_into_encode_base64_ok():
-    _ok("encode base64", {
-        "substitute": [{
-            "placeholder": "fakeb64",
-            "secret": {"env": "T"},
-            "into": {"type": "json", "name": "buser", "encode": "base64"},
-        }],
-    })
+    _ok(
+        "encode base64",
+        {
+            "substitute": [
+                {
+                    "placeholder": "fakeb64",
+                    "secret": {"env": "T"},
+                    "into": {"type": "json", "name": "buser", "encode": "base64"},
+                }
+            ],
+        },
+    )
 
 
 def test_into_encode_unknown_value_is_rejected():
-    _bad("encode 未知値", {
-        "substitute": [{
-            "placeholder": "fakeb64",
-            "secret": {"env": "T"},
-            "into": {"type": "json", "name": "buser", "encode": "rot13"},
-        }],
-    })
+    _bad(
+        "encode 未知値",
+        {
+            "substitute": [
+                {
+                    "placeholder": "fakeb64",
+                    "secret": {"env": "T"},
+                    "into": {"type": "json", "name": "buser", "encode": "rot13"},
+                }
+            ],
+        },
+    )
 
 
 def _run_all():

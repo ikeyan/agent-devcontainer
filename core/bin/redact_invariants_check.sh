@@ -61,20 +61,24 @@ fail() { echo "NG: $*" >&2; exit 1; }
 join_continuations() { { cat "$1"; echo; echo; } | sed -e ':a' -e '/\\$/{N' -e 's/\\\n//' -e 'ba' -e '}'; }
 
 # --- 1. redact-flow の app 名検証 (negative probe = 拒否方向だけ pin) ---------
-# 正常名は docker build まで進む (重い副作用) ので走らせない。危険名が検証段階で exit 2 する
-# ことだけ確認する (どれも mkdir / docker 到達前に弾かれるので副作用なし)。
-for bad in '.' '..' 'a/b' '../x' 'a b' ''; do
-    ec=0
-    core/bin/redact-flow "$bad" /dev/null >/dev/null 2>&1 || ec=$?
-    [ "$ec" -eq 2 ] || fail "redact-flow が不正 app 名 '$bad' を弾かない (exit=$ec)"
+# 正常名は docker build まで進む (重い副作用) ので走らせない。危険名が検証段階で exit 2 し、その名前を
+# 弾く guard の文言を出すことを確かめる (後段の realpath 封じ込めも exit 2 なので、終了コードだけでは
+# どの guard が弾いたか分からない。どれも mkdir / docker 到達前に弾かれるので副作用なし)。
+for c in '.|app 名に . / .. は使えない' '..|app 名に . / .. は使えない' 'a/b|app 名が不正' \
+         '../x|app 名が不正' 'a b|app 名が不正' '|app 名が不正'; do
+    bad=${c%%|*}; ec=0
+    err=$(core/bin/redact-flow "$bad" /dev/null 2>&1 >/dev/null) || ec=$?
+    [ "$ec" -eq 2 ] && [[ "$err" == *"${c#*|}"* ]] \
+        || fail "redact-flow が不正 app 名 '$bad' を「${c#*|}」で弾かない (exit=$ec): $err"
 done
 
 # --- 2. dnsmasq は転送しない -------------------------------------------------
 grep -q '^no-resolv' "$R/dnsmasq.conf" || fail "dnsmasq.conf に no-resolv が無い (転送停止が外れた)"
-! grep -Eq '^[[:space:]]*server=/' "$R/dnsmasq.conf" \
+dnsmasq_forwards() { grep -Eq '^[[:space:]]*server=/' "$1"; }
+! dnsmasq_forwards "$R/dnsmasq.conf" \
     || fail "dnsmasq.conf に server=/.../ がある (suffix 一致で DNS exfil 経路 #8)"
-probe=$(mktemp); printf 'server=/api.anthropic.com/127.0.0.11\n' > "$probe"
-grep -Eq '^[[:space:]]*server=/' "$probe" || { rm -f "$probe"; fail "negative: server= 検出器が転送行を見逃す"; }
+probe=$(mktemp); printf '  server=/api.anthropic.com/127.0.0.11\n' > "$probe"
+dnsmasq_forwards "$probe" || { rm -f "$probe"; fail "negative: server= 検出器が (字下げした) 転送行を見逃す"; }
 rm -f "$probe"
 
 # --- 3. __APP__ 展開の一貫性 -------------------------------------------------
@@ -88,53 +92,59 @@ grep -Eq -- '--settings[[:space:]]+"\$RENDER/settings.json"' "$R/entrypoint.sh" 
     || fail 'claude が展開済み settings ($RENDER) を渡していない (#3)'
 
 # --- 4. settings.json の writable mount は // 絶対パス -----------------------
+allows_abs_writable() { grep -q "$1(//workspace/extract/__APP__/\*\*)" "$2"; }   # $1 = tool, $2 = file
+probe=$(mktemp); printf '"Write(/workspace/extract/__APP__/**)"\n"Edit(/workspace/extract/__APP__/**)"\n' > "$probe"
 for tool in Write Edit; do
-    grep -q "$tool(//workspace/extract/__APP__/\*\*)" "$R/settings.json" \
+    allows_abs_writable "$tool" "$R/settings.json" \
         || fail "settings.json: $tool が //workspace 絶対で writable mount を許可していない (#5)"
+    ! allows_abs_writable "$tool" "$probe" || { rm -f "$probe"; fail "negative: $tool の // 絶対の pin が単一 / 絶対を誤許容"; }
 done
-probe=$(mktemp); printf '"Write(/workspace/extract/__APP__/**)"\n' > "$probe"
-if grep -q "Write(//workspace/extract/__APP__/\*\*)" "$probe"; then
-    rm -f "$probe"; fail "negative: // 絶対の pin が単一 / 絶対を誤許容"
-fi
 rm -f "$probe"
 
 # --- 5. NO_PROXY が proxy 経由ホストを suffix 一致でバイパスしない --------------
 # NO_PROXY エントリは末尾一致でサブドメインも捕まえる (curl/Go 共通)。rules.yaml で MITM + substitute
 # するホストを compose の NO_PROXY が suffix 一致すると proxy をバイパスし substitute/leak 検知が効かない。
 DC=core
-noproxy=$(sed -n 's/^x-no-proxy:.*"\(.*\)".*/\1/p' "$DC/compose.yaml")
-[ -n "$noproxy" ] || fail "compose.yaml の x-no-proxy アンカー値が読めない (#5)"
-# project 層の PROJECT_NO_PROXY (project/.env) も同じ suffix 一致検査にかける
-proj_noproxy=$(sed -n 's/^PROJECT_NO_PROXY=//p' "$P/.env")
-noproxy="$noproxy,$proj_noproxy"
-check_no_suffix() {  # $1 = proxy 経由にすべきホスト。それを suffix 一致する NO_PROXY エントリがあれば fail
-    local target="$1" e
+# 判定は 3 つの関数に分け、本番と negative probe の両方がそれを通す。
+# NO_PROXY の一覧 $1 (カンマ区切り) のうち、ホスト $2 を (完全一致か suffix 一致で) 直結させるエントリを出す。
+noproxy_bypass_entry() {
+    local target="$2" e
     local IFS=,
-    for e in $noproxy; do
+    for e in $1; do
         e="${e//[[:space:]]/}"; e="${e#.}"   # 先頭ドット (.github.com も suffix 一致) を正規化
         [ -n "$e" ] || continue
-        if [ "$target" = "$e" ] || [[ "$target" == *".$e" ]]; then
-            fail "NO_PROXY '$e' が proxy 経由ホスト '$target' を suffix 一致でバイパスする (substitute 無効化) (#5)"
-        fi
+        if [ "$target" = "$e" ] || [[ "$target" == *".$e" ]]; then printf '%s\n' "$e"; return 0; fi
     done
+    return 1
 }
+# NO_PROXY の全体 = compose.yaml の x-no-proxy アンカー値 + project/.env の PROJECT_NO_PROXY ($1 = core, $2 = .env)
+noproxy_of() {
+    local base
+    base=$(sed -n 's/^x-no-proxy:.*"\(.*\)".*/\1/p' "$1/compose.yaml")
+    [ -n "$base" ] || return 1
+    printf '%s,%s\n' "$base" "$(sed -n 's/^PROJECT_NO_PROXY=//p' "$2")"
+}
+# rules.yaml $1 がホスト $2 を proxy 経由 (hosts: キー or allow_hosts エントリ) にしているか。bind 配列や
+# コメント内の出現で誤発火しないよう、行頭の list/key 形のみに一致させる。
+rules_lists_host() { grep -qE "^[[:space:]]*(-[[:space:]]+)?\"${2//./\\.}\"[[:space:]]*:?[[:space:]]*(#.*)?$" "$1"; }
+noproxy=$(noproxy_of "$DC" "$P/.env") || fail "compose.yaml の x-no-proxy アンカー値が読めない (#5)"
 for gh_host in api.github.com uploads.github.com; do
-    # rules.yaml が当該ホストを proxy 経由 (hosts: キー or allow_hosts エントリ) にしている時だけ要求する。
-    # bind 配列やコメント内の出現で誤発火しないよう、行頭の list/key 形のみに一致させる。
-    esc="${gh_host//./\\.}"
-    if grep -qE "^[[:space:]]*(-[[:space:]]+)?\"$esc\"[[:space:]]*:?[[:space:]]*(#.*)?$" "$P/rules.yaml"; then
-        check_no_suffix "$gh_host"
+    if rules_lists_host "$P/rules.yaml" "$gh_host" && hit=$(noproxy_bypass_entry "$noproxy" "$gh_host"); then
+        fail "NO_PROXY '$hit' が proxy 経由ホスト '$gh_host' を suffix 一致でバイパスする (substitute 無効化) (#5)"
     fi
 done
-# negative probe: 検出述語が github.com → api.github.com の suffix 一致を実際に捕まえる
-[[ "api.github.com" == *".github.com" ]] || fail "negative: #5 の suffix 一致述語が github.com→api.github.com を見逃す"
-# negative probe: 先頭ドット (.github.com) も dot 正規化後に捕まえる
-{ e=".github.com"; e="${e#.}"; [[ "api.github.com" == *".$e" ]]; } || fail "negative: #5 が先頭ドット NO_PROXY エントリを取りこぼす"
-# negative probe: PROJECT_NO_PROXY 側に置かれた github.com も検査対象に入る (env 読取の回帰 pin)
-probe=$(mktemp); printf 'PROJECT_NO_PROXY=github.com\n' > "$probe"
-[ "$(sed -n 's/^PROJECT_NO_PROXY=//p' "$probe")" = "github.com" ] \
-    || { rm -f "$probe"; fail "negative: .env の PROJECT_NO_PROXY 読取が壊れている"; }
-rm -f "$probe"
+# negative probe: 合成の core/compose.yaml・.env・rules.yaml で、同じ 3 関数が PROJECT_NO_PROXY の
+# 先頭ドット付き github.com による api.github.com のバイパスを捕まえ、無関係なエントリは通す
+probe=$(mktemp -d)
+printf 'x-no-proxy: &np "localhost,127.0.0.1"\n' > "$probe/compose.yaml"
+printf 'PROJECT_NO_PROXY= .github.com\n' > "$probe/.env"
+printf 'hosts:\n  "api.github.com":\n    # "uploads.github.com"\n' > "$probe/rules.yaml"
+np=$(noproxy_of "$probe" "$probe/.env") && rules_lists_host "$probe/rules.yaml" api.github.com \
+    && [ "$(noproxy_bypass_entry "$np" api.github.com)" = github.com ] \
+    && ! rules_lists_host "$probe/rules.yaml" uploads.github.com \
+    && ! noproxy_bypass_entry "localhost,notgithub.com" api.github.com >/dev/null \
+    || { rm -rf "$probe"; fail "negative: #5 の NO_PROXY suffix 一致の検出器が合成入力を正しく判定しない"; }
+rm -rf "$probe"
 
 # --- 6. secrets-proxy: 既定 mitmdump / web は loopback bind の mitmweb を起動 ------
 # entrypoint は SECRETS_PROXY_WEB ゲートで既定 mitmdump / opt-in mitmweb を切替える。
@@ -150,13 +160,16 @@ grep -Eq '^[[:space:]]*exec mitmdump' "$EP" || fail "entrypoint の既定分岐�
 grep -Eq '^[[:space:]]*exec mitmweb'  "$EP" || fail "entrypoint に mitmweb 分岐が無い"
 # 経路防御の要: mitmweb の web_host 既定は container loopback (127.0.0.1)。0.0.0.0/実 IP/:: に化けると
 # dev/LAN から到達可能になるので pin する (これが崩れると token 一本に戻る)。
-grep -Eq 'SECRETS_PROXY_WEB_HOST:-127\.0\.0\.1' "$EP" \
+web_host_default_is_loopback() { grep -Eq 'SECRETS_PROXY_WEB_HOST:-127\.0\.0\.1' "$1"; }
+# mitmweb の exec (継続行を畳んだ論理行) に $1 の設定が含まれるか ($2 = 畳んだ本文)
+mitmweb_exec_has() { grep -Eq "^[[:space:]]*exec mitmweb.*$1" <<<"$2"; }
+web_host_default_is_loopback "$EP" \
     || fail "mitmweb の web_host 既定が 127.0.0.1 (loopback) でない (dev から到達可能になる)"
 ! grep -Eq 'web_host=("?)(0\.0\.0\.0|::)' "$EP" \
     || fail "mitmweb を 0.0.0.0/:: に bind している (dev/LAN へ露出)"
 # negative probe: loopback-default 検出器が非 loopback 既定を確かに弾く
 probe=$(mktemp); printf 'web_host="${SECRETS_PROXY_WEB_HOST:-0.0.0.0}"\n' > "$probe"
-grep -Eq 'SECRETS_PROXY_WEB_HOST:-127\.0\.0\.1' "$probe" \
+web_host_default_is_loopback "$probe" \
     && { rm -f "$probe"; fail "negative: loopback-default 検出器が 0.0.0.0 既定を誤許容"; }
 rm -f "$probe"
 # flow_detail は mitmdump(dumper) 専用。mitmweb では未登録なので defer され黙って無視される (落ちはしない)
@@ -166,19 +179,19 @@ rm -f "$probe"
 EP_JOINED=$(join_continuations "$EP")
 grep -Eq '^[[:space:]]*exec mitmdump.*flow_detail' <<<"$EP_JOINED" \
     || fail "flow_detail が mitmdump 分岐に無い"
-! grep -Eq '^[[:space:]]*exec mitmweb.*flow_detail' <<<"$EP_JOINED" \
+! mitmweb_exec_has flow_detail "$EP_JOINED" \
     || fail "flow_detail を mitmweb に渡している (mitmweb では無意味な mitmdump 専用オプション; 継続行も含めて判定)"
 # negative probe: 継続行として紛れ込んだ flow_detail (mitmweb の既存3継続行と同じ書き方) も畳んだ後に捕まえる
 probe=$(mktemp)
 printf 'exec mitmweb "${COMMON_OPTS[@]}" \\\n  --set web_open_browser=false \\\n  --set flow_detail=0 \\\n  --set web_port="${web_port}"\n' > "$probe"
 probe_joined=$(join_continuations "$probe")
-grep -Eq '^[[:space:]]*exec mitmweb.*flow_detail' <<<"$probe_joined" \
+mitmweb_exec_has flow_detail "$probe_joined" \
     || { rm -f "$probe"; fail "negative: flow_detail 検出器が継続行に混ぜたケースを見逃す"; }
 rm -f "$probe"
 # web_open_browser=false だと mitmweb は token をログに出さない (v11.1.3 webaddons.py: web_url を出すのは
 # browser 起動失敗パスのみ。canon: facts/mitmproxy/mitmweb-token-not-logged-when-headless)。entrypoint が token を生成し web_password に
 # 固定して URL を echo することで token を surface する。これが外れると「token 取得不能」に逆戻りするので pin。
-grep -Eq '^[[:space:]]*exec mitmweb.*web_password' <<<"$EP_JOINED" \
+mitmweb_exec_has web_password "$EP_JOINED" \
     || fail "mitmweb 分岐が web_password を設定していない (token がログに出ず取得不能になる)"
 grep -Eq 'token=\$\{?web_token' "$EP" \
     || fail "entrypoint が mitmweb の token URL (?token=<生成 token>) を echo していない"
@@ -186,7 +199,7 @@ grep -Eq 'token=\$\{?web_token' "$EP" \
 probe=$(mktemp)
 printf 'exec mitmweb "${COMMON_OPTS[@]}" \\\n  --set web_host="${SECRETS_PROXY_WEB_HOST}"\n' > "$probe"
 probe_joined=$(join_continuations "$probe")
-grep -Eq '^[[:space:]]*exec mitmweb.*web_password' <<<"$probe_joined" \
+mitmweb_exec_has web_password "$probe_joined" \
     && { rm -f "$probe"; fail "negative: web_password 検出器が未設定を見逃す"; }
 rm -f "$probe"
 
@@ -198,14 +211,15 @@ DCW=core/compose.mitmweb.yaml
 CY=core/compose.yaml   # 既定 compose.yaml ファイル ($DC は #5 で core ディレクトリを指すので別名)
 [ -f "$DCW" ] || fail "compose.mitmweb.yaml が無い"
 grep -Eq 'SECRETS_PROXY_WEB:[[:space:]]*"?1' "$DCW" || fail "override が SECRETS_PROXY_WEB=1 を与えていない"
-! grep -Eq '8081:8081' "$DCW" || fail "override が 8081 を publish している (loopback bind 方針では publish しない)"
+publishes_8081() { grep -Eq '8081:8081' "$1"; }
+! publishes_8081 "$DCW" || fail "override が 8081 を publish している (loopback bind 方針では publish しない)"
 ! grep -Eq 'SECRETS_PROXY_WEB_HOST' "$DCW" || fail "override が web_host を上書きしている (loopback 既定を崩す恐れ)"
 # 既定 compose.yaml に Web UI 設定を漏らさない
 ! grep -Eq '8081|mitmweb|SECRETS_PROXY_WEB|web_host' "$CY" \
     || fail "既定 compose.yaml に Web UI 設定が漏れている"
 # negative probe: 8081 publish 検出器が publish 行を確かに捕まえる
 probe=$(mktemp); printf '      - "127.0.0.1:8081:8081"\n' > "$probe"
-grep -Eq '8081:8081' "$probe" || { rm -f "$probe"; fail "negative: 8081 publish 検出器が見逃す"; }
+publishes_8081 "$probe" || { rm -f "$probe"; fail "negative: 8081 publish 検出器が見逃す"; }
 rm -f "$probe"
 
 # --- 8. devcontainer.json: project 層の必須配線 --------------------------------
@@ -213,14 +227,15 @@ rm -f "$probe"
 # [project, core] 順 = .env と後勝ち保証 / settings.local.json の mask / postStart の firewall+CA)
 # が編集で消える drift をここで pin する。
 DJ=devcontainer.json
-grep -Eq '"dockerComposeFile":[[:space:]]*\[[[:space:]]*"project/compose.yaml",[[:space:]]*"core/compose.yaml"[[:space:]]*\]' "$DJ" \
+compose_order_ok() { grep -Eq '"dockerComposeFile":[[:space:]]*\[[[:space:]]*"project/compose.yaml",[[:space:]]*"core/compose.yaml"[[:space:]]*\]' "$1"; }
+compose_order_ok "$DJ" \
     || fail 'devcontainer.json の dockerComposeFile が ["project/compose.yaml", "core/compose.yaml"] でない'
 grep -q 'settings.local.json' "$DJ" || fail "devcontainer.json の initializeCommand が settings.local.json を用意しない (local-mask が空振りする)"
 grep -q 'init-firewall.sh && sudo /usr/local/bin/install-proxy-ca.sh' "$DJ" \
     || fail "devcontainer.json の postStartCommand が firewall+CA を再実行しない"
 # negative probe: 逆順 [core, project] を順序検出器が弾く
 probe=$(mktemp); printf '"dockerComposeFile": ["core/compose.yaml", "project/compose.yaml"]\n' > "$probe"
-grep -Eq '"dockerComposeFile":[[:space:]]*\[[[:space:]]*"project/compose.yaml",[[:space:]]*"core/compose.yaml"[[:space:]]*\]' "$probe" \
+compose_order_ok "$probe" \
     && { rm -f "$probe"; fail "negative: compose 順序検出器が逆順を誤許容"; }
 rm -f "$probe"
 
@@ -336,9 +351,15 @@ vol_compose=$(sed -n 's/^  *name: \([A-Za-z0-9_-]*\).*/\1/p' "$DC/redact/compose
 # 発見面なので、iso_sites への追加漏れは code review で捕まえる (検査は登録済み入口の変数欠落を守る)。
 iso_vars=(COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES)
 iso_sites=("$DC/Makefile" "$DC/bin/redact-flow" "$DC/bin/redact_invariants_check.sh" "$DC/proxy-web-tunnel.py")
+# コメント行は除く (コメントの「env -u ...」の説明だけが残って実際の隔離が消えても緑になるのを防ぐ)。
+# grep -q で受けると pipefail の下で前段が SIGPIPE で落ちて偽になるので、件数で受ける。
+isolates() { [ "$(grep -v '^[[:space:]]*#' "$2" | grep -Ec -- "-u $1|pop\(['\"]$1")" -gt 0 ]; }   # $1 = 変数, $2 = file
+probe=$(mktemp); printf '# env -u COMPOSE_PROJECT_NAME を付ける\ndocker compose config\n' > "$probe"
+! isolates COMPOSE_PROJECT_NAME "$probe" || { rm -f "$probe"; fail "negative: §12 の検出器がコメントの env -u を隔離とみなす"; }
+rm -f "$probe"
 for v in "${iso_vars[@]}"; do
     for s in "${iso_sites[@]}"; do
-        grep -Eq -- "-u $v|pop\(['\"]$v" "$s" \
+        isolates "$v" "$s" \
             || fail "§12: $s が ambient 変数 $v を無害化していない (env -u / os.environ.pop)"
     done
 done

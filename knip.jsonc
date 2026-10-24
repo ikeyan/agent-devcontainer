@@ -1,0 +1,8 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["core/podman/gen-seccomp.ts"],
+  "project": ["core/**/*.ts"],
+  // devcontainer の CLI は core/bin/check_devcontainer_up.sh が shell から呼び、TS の import と
+  // package.json の scripts には現れない。
+  "ignoreDependencies": ["@devcontainers/cli"]
+}

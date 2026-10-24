@@ -17,13 +17,14 @@ self-probe (redact_selfcheck.py と同じ流儀): 埋め込み fixture の diges
 を検出できなければ fail、正常 fixture (alias 参照 + digest 付き FROM) を誤検知したら fail。検査器自体が
 機能していることを毎回 pin する。
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-from tree_sitter import Language, Parser
 import tree_sitter_containerfile as tsc
+from tree_sitter import Language, Parser
 
 _PARSER = Parser(Language(tsc.language()))
 
@@ -50,8 +51,7 @@ def find_violations(src: bytes) -> list[str]:
             # digest 固定不能な予約ベース) は外部 image でないので digest 不要。
             if image not in aliases and image != "scratch" and not _named(spec, "image_digest"):
                 errs.append(
-                    f"L{line}: FROM {spec.text.decode()} が @sha256:<digest> 未固定 "
-                    "(外部 image は digest 必須)"
+                    f"L{line}: FROM {spec.text.decode()} が @sha256:<digest> 未固定 (外部 image は digest 必須)"
                 )
             # このステージが定義する alias は、以降の FROM/COPY からのみ参照可 (自己参照は不可)。
             for al in _named(inst, "image_alias"):
@@ -60,7 +60,7 @@ def find_violations(src: bytes) -> list[str]:
             for p in _named(inst, "param"):
                 t = p.text.decode()
                 if t.startswith("--from="):
-                    ref = t[len("--from="):]
+                    ref = t[len("--from=") :]
                     if ref not in aliases:
                         errs.append(
                             f"L{line}: COPY --from={ref} が先行ステージ alias でない "
