@@ -17,7 +17,7 @@ dependencies = [
 # redact イメージ (Dockerfile の redact ステージ) が `uv pip install --group redact` で読む。
 # mitmproxy だけを厳密に固定する (hypothesis/PyYAML を巻き込まない)。
 [dependency-groups]
-redact = ["mitmproxy==12.2.3"]
+redact = ["mitmproxy==12.3.0"]
 
 # 供給網の門。exclude-newer は公開から 3 日経っていない配布物を解決に使わない
 # (uv.lock には期間 exclude-newer-span として残る。canon: facts/uv/exclude-newer-relative-span-lock)。
