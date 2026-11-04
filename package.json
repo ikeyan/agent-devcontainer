@@ -4,7 +4,7 @@
   "type": "module",
   "allowScripts": {},
   "devDependencies": {
-    "@devcontainers/cli": "0.89.0",
+    "@devcontainers/cli": "0.90.0",
     "@types/node": "24.19.2",
     "knip": "6.42.0",
     "typescript": "7.0.2"
