@@ -6,7 +6,7 @@
   "devDependencies": {
     "@devcontainers/cli": "0.90.0",
     "@types/node": "24.19.2",
-    "knip": "6.42.0",
+    "knip": "6.44.2",
     "typescript": "7.0.2"
   }
 }
