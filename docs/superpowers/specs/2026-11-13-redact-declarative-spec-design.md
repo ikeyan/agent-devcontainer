@@ -18,7 +18,7 @@ ikeyan/agent-devcontainer#44 では、このやり方に Codex の指摘が 18 �
 
 ## 目的
 
-- アプリごとの redact を、kit が解釈する**宣言データ** (`extract/<app>/redact.toml`) にする。サンドボックスの外で動くコードを kit のコードだけにする。
+- アプリごとの redact を、kit が解釈する**宣言データ** (`extract/<app>/redact/redact.toml`) にする。サンドボックスの外で動くコードを kit のコードだけにする。
 - 守りたい性質を、観察ではなく engine の構造で成り立たせる。性質の検査は、engine に対して kit 側で 1 回行えば済むようにする。
 - 既定を fail-closed にする。値を見せる例外は宣言に明示させ、認証情報らしい名前を見せるときは理由を書かせる。
 
@@ -51,7 +51,7 @@ shiraseru-bus と nestle-jp-nbapp の redact 済み出力は、`extract/<app>/cl
 
 ## 宣言の仕様 (v1)
 
-宣言ファイルは `extract/<app>/redact.toml` に 1 つ置く。未知のキー、型の誤り、正規表現のコンパイル失敗は、すべて宣言エラーとして実行を止める (fail-closed)。
+宣言ファイルは `extract/<app>/redact/redact.toml` に 1 つ置く。未知のキー、型の誤り、正規表現のコンパイル失敗は、すべて宣言エラーとして実行を止める (fail-closed)。
 
 ```toml
 version = 1
@@ -91,15 +91,23 @@ reason = "enum (Bearer)。値に秘密を含まない"
 | 場所 | 既定 | 見せる方法 |
 |---|---|---|
 | ヘッダ | 値を伏せる (`<masked>`) | kit の基本リスト ＋ `headers.keep` |
-| Cookie (要求) / Set-Cookie (応答) | Cookie 名と Set-Cookie の属性は残し、値を伏せる | `cookies.keep` |
-| URL の query | キーは残し、値を伏せる | `query.keep` |
+| Cookie (要求) / Set-Cookie (応答) | Cookie 名と Set-Cookie の属性は残し、値を伏せる。`=` のない片は、片全体を値として伏せる | `cookies.keep` |
+| URL の query | キーは残し、値を伏せる。`=` のない片は、片全体を値として伏せる | `query.keep` |
 | URL の scheme・host・port・path | 見せる (値の形の規則だけを当てる) | — |
 | 本文 (`mode = "structure"`) | キーは残し、プリミティブ値を `<str>` / `<num>` / `<bool>` にする。`null` は残す | `body.keep` |
 | 本文 (`mode = "values"`) | 値を見せる。認証情報らしいキー名と `body.mask` のキーは値を伏せる (型を問わず部分木ごと `<masked>`) | — |
 | フォーム形式の本文 | JSON 本文と同じ規則を、キーと値の組に当てる | 同上 |
-| SSE の本文 | `data:` 行ごとに JSON 本文と同じ規則を当てる。JSON でない `data:` 行は文字の本文と同じ扱い | 同上 |
+| SSE の本文 | `data:` 行ごとに JSON 本文と同じ規則を当てる。JSON でない `data:` 行は文字の本文と同じ扱い。`event:` と `retry:` は値を見せ (値の形の規則は当てる)、`id:`、コメント行 (`:` 始まり)、その他のフィールドは値を伏せる | 同上 |
 | 文字の本文 (上記以外) | 本文全体を `<masked text len=N>` にする | `body.text = "keep"` (値の形の規則だけを当てる。報告に載る) |
-| バイナリの本文 | `<binary len=N>` | — |
+| バイナリの本文 | `<binary len=N>`。`text = "keep"` でも見せない | — |
+
+`=` のない片の扱いは mitmproxy の解析に合わせた規則である。`Cookie: SECRETNOEQ; a=1` は `request.cookies` で名前 `SECRETNOEQ`・値 `''` になり、`Set-Cookie: SECRETRAW` は名前 `SECRETRAW`・値 `None` になる。query の `?eyJabc&k=v` も、キー `eyJabc`・値 `''` になる (2026-11-13、12.3.1 で実測)。名前を残す規則のままだと、`=` なしで送られたセッショントークンがそのまま出る。
+
+### 名前の照合
+
+- ヘッダ名は大小を区別せずに照合する (HTTP の規則)。
+- Cookie 名・query のキー・本文のキーは、「伏せる」側の照合 (`body.mask` と認証情報らしい名前の判定) では大小を区別しない。「見せる」側の照合 (`*.keep` と `[[expose]]`) では大小を区別する。見せる範囲が意図より広がらないように、照合の緩さを伏せる側にだけ寄せる。
+- 同じ名前が「伏せる」と「見せる」の両方に書かれていたら宣言エラーにする (どちらが勝つかを決めない)。
 
 kit の基本リストは、値に認証情報が載らない標準ヘッダだけにする。候補は `content-type`、`content-length`、`content-encoding`、`accept`、`accept-encoding`、`accept-language`、`user-agent`、`host`、`date`、`cache-control`、`pragma`、`expires`、`etag`、`last-modified`、`connection`、`vary`、`server`、`sec-fetch-*`、`priority`。`location` と `referer` は URL を運び、OAuth のコードや query の token が載りうるので入れない。
 
@@ -117,7 +125,7 @@ kit の基本リストは、値に認証情報が載らない標準ヘッダだ�
 
 ### 値の形の規則 (`[[pattern]]`) と優先順位
 
-engine が出力する文字列には、すべて値の形の規則を当てる。対象は、ヘッダ値、Cookie 値、query 値、path、JSON のキーと文字列値、フォームの値、`text = "keep"` の本文。規則はアプリの `[[pattern]]` を上から順に当て、その後に kit 共通の規則を当てる。
+engine が出力する**すべての文字列**に値の形の規則を当てる。値だけでなく名前も対象で、ヘッダ名、Cookie 名、query のキー、フォームのキー、JSON のキーを含む。名前の位置に置かれたトークン (`=` のない片、トークンを含むキー) も、label に置き換わる。
 
 kit 共通の規則の候補は、形の誤検出が少ない認証情報に限る。
 
@@ -129,30 +137,35 @@ kit 共通の規則の候補は、形の誤検出が少ない認証情報に限�
 - Google API キー
 - PEM の秘密鍵ブロック
 
-それぞれの形は、実装の前に一次情報で確かめて canon に記録する。
+それぞれの形は、実装の前に一次情報で確かめて canon に記録する。kit 共通の規則の label は kit が固定する。JWT の label は、いまの shiraseru の出力と同じ `JWT_REDACTED` にする。
 
-1 つの値に対する処理は次の順に決める。
+**規則は順に当てない。** 全規則 (アプリの `[[pattern]]` と kit 共通の規則) を**元の文字列**に対して照合し、当たった範囲の和集合を置き換える。
 
-1. その場所の規則が「伏せる」なら、値の形の規則に当たったときはその label (例: `<JWT_REDACTED>`) を、当たらなければその場所のプレースホルダ (`<masked>`、`<str>` など) を出す。
-2. その場所の規則が「見せる」なら、値の中で規則に当たった部分を label に置き換えて出す。
+- 順に当てると、先の規則が後の規則の対象の一部だけを書き換えて、残りが出る。例えば nestle の 16 桁数字の規則が JWT や PEM ブロックの途中に当たると、kit の JWT の規則はもう当たらない。残りの部分がそのまま出て、事後条件も通ってしまう。
+- 重なる範囲は 1 つにまとめる。label は、範囲の始まりが最も早い規則のものを使う。始まりが同じなら長い方、それも同じならアプリの規則を kit の規則より先とする。
 
-いまの出力のプレースホルダ (`<JWT_REDACTED>`、`<UUID_REDACTED>` など) は label で再現できる。commit 済みの `sample.jsonl` と表記がずれない。
+1 つの文字列に対する処理は次のとおり。
+
+1. その場所の規則が「伏せる」なら、規則に当たったときはその label (例: `<JWT_REDACTED>`) だけを、当たらなければその場所のプレースホルダ (`<masked>`、`<str>` など) を出す。
+2. その場所の規則が「見せる」なら、当たった範囲を label に置き換えて出す。
+
+いまの出力のプレースホルダのうち、値の形の規則から出たもの (`<JWT_REDACTED>`、`<UUID_REDACTED>` など) は label で再現できる。**名前の規則から出たものは再現しない。** nestle の `sample.jsonl` には、`x-barista-id`・`cookie`・Set-Cookie の値・`buser`・`bpass` に `<REDACTED>` が 22 箇所あり、新しい engine ではこれらが `<masked>` になる。再生テストは、サンプルの値をそのまま送り返したかを比べるだけなので通る。新旧の出力を比べると、ここに差分が出る。
 
 ### 実行時の事後条件
 
 engine は出力する各行について、次を assert する。破れたら、その行を出さずに非 0 で終了する。
 
 - 行は 1 つの JSON object で、キーはいまの出力と同じ集合 (`method`, `url`, `request_headers`, `request_body`, `status_code`, `response_headers`, `response_body`) に収まる。
-- 出力したどの文字列にも、値の形の規則がもう当たらない。
+- 出力したどの文字列 (名前を含む) にも、値の形の規則がもう当たらない。規則はすべての文字列に当てているので、これが破れるのは engine の不具合のときだけである。この assert は不具合で出力が漏れないための防御で、正常なアプリの実行を止めることはない。
 
 ## engine の振る舞い
 
 新しい engine は `core/redact/redact.py`。いまの `flows_to_ndjson.py` の読み取りループ (`iter_flow_dicts`) とドメイン判定 (`host_in_domains`) を引き継ぐ。
 
 ```
-python3 .devcontainer/core/redact/redact.py extract/<app>/redact.toml < raw.flows > out.jsonl
-python3 .devcontainer/core/redact/redact.py --check  extract/<app>/redact.toml   # 宣言の検証だけ
-python3 .devcontainer/core/redact/redact.py --report extract/<app>/redact.toml   # 値を見せる箇所の一覧
+python3 .devcontainer/core/redact/redact.py extract/<app>/redact/redact.toml < raw.flows > out.jsonl
+python3 .devcontainer/core/redact/redact.py --check  extract/<app>/redact/redact.toml   # 宣言の検証だけ
+python3 .devcontainer/core/redact/redact.py --report extract/<app>/redact/redact.toml   # 値を見せる箇所の一覧
 ```
 
 - **出力の形は変えない。** ヘッダは「名前 → 値」の dict のまま出す。同名ヘッダは、値を 1 つずつ伏せてから、いまと同じ `", "` で畳む。`ikeyan/tools` の `bin/flows.ts` と `client/test-helpers.ts` はそのまま動く。
@@ -160,10 +173,13 @@ python3 .devcontainer/core/redact/redact.py --report extract/<app>/redact.toml  
 - **query は生の文字列のまま扱う。** `&` と `=` で区切り、キーは percent-decode して照合する。値は伏せる部分だけを差し替え、伏せない部分は元のバイト列のまま残す。何も伏せない URL は、元と 1 文字も変わらない。再生テストは URL を文字列として完全一致で比べるので、再エンコードで表記が変わってはならない。
 - **JSON 本文は解析して再直列化する。** 区切りは `(",", ":")`、`ensure_ascii=False`。数値は Python の `json` が往復させる値で出す。JavaScript の `JSON.parse` で読んで同じ値になり、表記は変わりうる。再生テストは JSON として比べるので影響しない。
   - キーの重複がある JSON は、文字の本文として扱う (`object_pairs_hook` で検出する)。`json.loads` は後の値だけを残すので、解析すると重複した値が黙って消える。
-- **JSON・フォーム・SSE かどうかの判定:**
-  - JSON: content-type に依らず解析を試みる (claude-code のいまの挙動と同じ)。
-  - フォーム: content-type が `application/x-www-form-urlencoded` のとき。
-  - SSE: content-type が `text/event-stream` のとき。
+  - `NaN`・`Infinity`・範囲外の数 (`1e999`) を含む JSON は、文字の本文として扱う。`json.loads` は既定でこれらを読み、`json.dumps` は既定で非標準の `NaN` / `Infinity` を書き戻すので、`JSON.parse` で読めない行になる。`parse_constant` で拒否し、`dumps` は `allow_nan=False` にする (`canon: facts/python/json-loads-accepts-nan-infinity`)。
+- **本文の種類の判定 (上から順に):**
+  1. バイナリ: content-type が文字の型 (`text/*`、`application/json`、`*+json`、`application/javascript`、`application/xml`、`*+xml`、`application/x-www-form-urlencoded`) でない。または `get_content()` のバイト列が UTF-8 として読めないか、NUL を含む。`get_text(strict=False)` の戻り値では判定できない。content-type が無ければ latin-1 でどんなバイト列も読み、`None` も surrogate escape も返さないためである (`canon: facts/mitmproxy/get-text-never-signals-binary`)。
+  2. SSE: content-type が `text/event-stream`。
+  3. フォーム: content-type が `application/x-www-form-urlencoded`。
+  4. JSON: content-type に依らず解析を試み、**最上位が object か array のとき**だけ JSON 本文とする。最上位がスカラーの本文 (例: `123456` という OTP、`"opaqueToken"`) は、キーを持たないので名前の規則が働かない。JSON として扱うと、`values` では値がそのまま出てしまう。
+  5. それ以外は文字の本文。
 - **ドメイン絞り込みの検証規則は、いまの `declared_domains` と同じ。** 小文字の dot 区切りの tuple で、重複・入れ子を拒否する。違いは、ast からではなく TOML のデータから読むこと。
 
 ## 安全性 (`core/redact/SECURITY-MODEL.md` との照合)
@@ -171,8 +187,12 @@ python3 .devcontainer/core/redact/redact.py --report extract/<app>/redact.toml  
 前提は「子 claude は node と同一 uid の敵対的プロセス」。
 
 - **外で動くコードが kit のコードだけになる。** 宣言は TOML のデータで、engine は読むだけで実行しない。子が書いたものが外で実行される経路は、redact については消える。
-- **サンドボックスの出力を宣言ファイル 1 つに限る (新設)。** launcher (`core/bin/redact-flow`) は、サンドボックスの終了後に `extract/<app>/` の変更を調べる。`redact.toml` 以外が増えたり変わったりしていたら、警告して非 0 で終える。
-  - `extract/<app>/` には、外で書いた API クライアントやテスト (`client.ts`、`*.test.ts`) も置かれ、外の vitest が実行する。いまは、サンドボックスがここに書いた TS が外で実行されうる。この経路も塞ぐ。
+- **サンドボックスが書けるのを、宣言ファイルだけを置く専用のディレクトリに限る (新設)。**
+  - いまは `extract/<app>/` 全体を rw でマウントしている。ここには、外で書いた API クライアントやテスト (`client.ts`、`*.test.ts`) も置かれ、外の vitest が実行する。サンドボックスがここに TS を書けば、外で実行されうる。
+  - rw でマウントするのを `extract/<app>/redact/` だけにする。外の道具はこのディレクトリのものを何も実行しない。
+  - launcher (`core/bin/redact-flow`) は、サンドボックスの終了後にこのディレクトリを調べる。通常ファイルの `redact.toml` 以外 (他のファイル、ディレクトリ、symlink、通常ファイルでない `redact.toml`) は削除して、警告と非 0 で終える。ディレクトリはサンドボックス専用なので、削除で消える正当なものは無い。比較の基準を持つ必要もない。
+  - consumer 側の `check-redact-selfcheck` も、`extract/*/redact/` に `redact.toml` 以外があれば赤にする。launcher を経ずに置かれたものを捕まえるためである。
+  - 多層の防御として、consumer の vitest・tsc の対象から `extract/*/redact/` を外すことを移行の手順に入れる。
 - **値を見せる例外は宣言に現れる。** `[[expose]]`、`text = "keep"`、`mode = "values"` は `--report` に一覧で出る。レビューで見るのは「どこを見せているか」の一覧だけになる。
 - **残る危険:**
   - `mode = "values"` の本文に、名前も形も未知の認証情報が載ると素通しする。shiraseru と nestle は、再生テストのためにこの方式を選ぶ。この方式であることは宣言に明示され、報告にも出る。
@@ -192,20 +212,21 @@ engine の性質は、hypothesis (すでに `core/pyproject.toml` の依存に�
 - P1: 残した flow 1 本につき、JSON object の行がちょうど 1 行出る。
 - P2: ドメイン絞り込みが dot 境界を守る。`not<root>`、`<root>.x.invalid`、Host ヘッダの偽装を落とす。
 - P3: 見せるリストにないヘッダの値に入れた目印は、出力に現れない。
-- P4: Cookie の名前は残り、値は `cookies.keep` にない限り現れない。
-- P5: query の値は `query.keep` にない限り現れない。何も伏せない URL は元と一致する。
+- P4: Cookie の値は `cookies.keep` にない限り現れない。`=` のない片も現れない。生成器は `name=value` の形だけでなく、`=` のない片も作る。
+- P5: query の値は `query.keep` にない限り現れない。`=` のない片も現れない。何も伏せない URL は元と一致する。
 - P6: `structure` では、本文のプリミティブ値は `body.keep` と `[[expose]]` 以外に現れない。
-- P7: `values` では、認証情報らしい名前のキーの値が、深さと型に依らず現れない。`[[expose]]` の名前だけは現れる。
-- P8: 出力のどこにも、値の形の規則がもう当たらない。
-- 宣言エラーの negative probe: 未知のキー、型の誤り、不正な正規表現、入れ子の root、認証情報らしい名前を keep に書くこと、`version` の欠落。
+- P7: `values` では、認証情報らしい名前のキーの値が、深さと型と大小文字に依らず現れない。`[[expose]]` の名前だけは現れる。最上位がスカラーの本文は現れない。
+- P8: 秘密の目印を、他の規則にも当たる文字列の内側や隣に埋めても (例: 16 桁の数字を含む JWT)、目印のどの部分も出力に現れない。出力のどこにも、値の形の規則がもう当たらない。
+- P9: どの行も `JSON.parse` 相当の厳密な解析で読める (`NaN`・`Infinity` を含まない)。
+- 宣言エラーの negative probe: 未知のキー、型の誤り、不正な正規表現、入れ子の root、認証情報らしい名前を keep に書くこと、同じ名前を伏せる側と見せる側の両方に書くこと、`version` の欠落。
 
-consumer 側の `check-redact-selfcheck` は、各 `extract/*/redact.toml` について `--check` と smoke を回し、`--report` を出す。移行が終わったら、`extract/*/redact_flow.py` が存在すること自体をエラーにする。任意のコードへの後戻りを防ぐためである。
+consumer 側の `check-redact-selfcheck` は、各 `extract/*/redact/redact.toml` について `--check` と smoke を回し、`--report` を出す。移行が終わったら、`extract/*/redact_flow.py` が存在すること自体をエラーにする。任意のコードへの後戻りを防ぐためである。
 
 ## 移行
 
 1. **kit: engine と検査を足す。** `redact.py`、engine の性質の検査、宣言のテンプレート (`redact.toml.template`) を追加する。selfcheck は、`redact.toml` を持つアプリには新しい検査を、`redact_flow.py` を持つアプリには従来の検査を当てる (並存期間)。
-2. **kit: サンドボックスの手順を宣言に切り替える。** `core/redact/interview.md`、launcher の scaffold、`entrypoint.sh` の存在確認、`SECURITY-MODEL.md` の記述、終了後の差分確認を更新する。
-3. **tools: 3 アプリを移す。** 下の宣言の素案から始める。手元の生 flow に新旧を両方当てて差分を確かめる手順は、Makefile のターゲット (例: `redact-compare APP=… RAW=…`) として用意する。生 flow はリポジトリに置かない前提なので、この比較はユーザーの手元で行う。
+2. **kit: サンドボックスの手順を宣言に切り替える。** `core/redact/interview.md`、launcher の scaffold、`entrypoint.sh` の存在確認、`core/redact/compose.yaml` の rw マウント (`extract/<app>/redact/` だけにする)、`SECURITY-MODEL.md` の記述、終了後の専用ディレクトリの確認を更新する。
+3. **tools: 3 アプリを移す。** 下の宣言の素案から始める。vitest・tsc の対象から `extract/*/redact/` を外す。手元の生 flow に新旧を両方当てて差分を確かめる手順は、Makefile のターゲット (例: `redact-compare APP=… RAW=…`) として用意する。生 flow はリポジトリに置かない前提なので、この比較はユーザーの手元で行う。
 4. **kit: 任意の関数の経路を消す。** `redact_flow.template.py`、`flows_to_ndjson.py` の `redact` 引数、`redact_selfcheck.py` の旧検査を削除する。`redact_flow.py` の存在を検査でエラーにする。
 
 ### 3 アプリの宣言の素案
@@ -270,7 +291,6 @@ reason = "enum (access_token / refresh_token)。値に秘密を含まない"
 ## 実装の前に確かめること
 
 - redact イメージの `python3` の版。宣言の読み込みに標準ライブラリの `tomllib` (Python 3.11 以上) を使う。版が足りなければ JSON に切り替える。確かめた結果は canon に記録する。
-- `get_text(strict=False)` がバイナリの本文に何を返すか (12.3.1)。バイナリと文字の判定はこれに依る。
 - SSE の応答が flow ファイルにどう記録されるか (`canon: facts/mitmproxy/response-streaming`)。
 - kit 共通の値の形の規則に入れる各トークンの形式。一次情報で確かめて canon に記録する。
 
