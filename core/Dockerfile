@@ -152,7 +152,7 @@ USER node
 
 FROM hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552 AS hadolint
 
-FROM docker/compose-bin:v5.6.0@sha256:db34ebea4a1acd4b130e9abc305cdb51b3fe53b9116a6c2ac268a451eb308bed AS compose
+FROM docker/compose-bin:v5.8.0@sha256:c9f99a4efa43ca83e5acc056da938c38504010c10a2dd804569032be5d3b0dd5 AS compose
 
 # @@PROJECT:top@@
 
